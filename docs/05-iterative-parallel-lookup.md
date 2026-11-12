@@ -163,10 +163,11 @@ its output.
 
 ## What's next
 
-You've now covered everything on `main`. Next:
+[06-store-and-find-value.md](06-store-and-find-value.md): the same lookup,
+used to store and retrieve values. Or, to see docs 01–05 in motion first:
 
-- [DRY-RUN.md](DRY-RUN.md) — all five pieces in motion, traced function
-  by function through a real run of the demo.
+- [DRY-RUN.md](DRY-RUN.md) part 1 — all five pieces traced function by
+  function through a real run of the demo.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — how the files depend on each other.
 - The top-level [README.md](../README.md) — project status against the
   end goal, and which simplifications must be undone before it.

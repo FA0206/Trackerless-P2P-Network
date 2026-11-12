@@ -53,6 +53,9 @@ Each packet we actually put on the wire looks like:
 
 See `Transport.Send` / `decodeEnvelope` in
 [`internal/kademlia/transport.go`](../internal/kademlia/transport.go).
+The frame format itself lives in its own tiny package,
+[`internal/framing`](../internal/framing/framing.go). The TCP file
+transfer ([07](07-file-transfer-over-tcp.md)) uses the same package.
 
 Here's the nuance worth understanding, rather than taking on faith: **a
 single UDP datagram is already one atomic unit as far as the two ends are
@@ -81,12 +84,13 @@ the paper says so" (it doesn't specify a wire format at all):
    data is rejected by a one-line integer comparison instead of partway
    through JSON parsing, which is a clearer failure mode to reason about
    and log.
-2. **Transport-agnosticism.** If this project later adds a TCP-based
-   transport (the natural choice for the piece-transfer extension
-   mentioned in the README) framing stops being optional — TCP has no
-   message boundaries, full stop — and reusing exactly this
-   `[length][body]` scheme for both means `decodeEnvelope`'s logic doesn't
-   need to change depending on which transport carried the bytes.
+2. **One format for both transports.** File pieces travel over TCP
+   ([07](07-file-transfer-over-tcp.md)), and on TCP framing is not
+   optional: TCP has no message boundaries, full stop. Both sides use the
+   same `[length][body]` frames from `internal/framing`. `Encode`/`Decode`
+   handle one frame per datagram (UDP); `Write`/`Read` handle frames on a
+   stream (TCP), where `Read` reads exactly 4 bytes, then exactly that many
+   more.
 
 If you take one thing from this: don't walk away thinking "UDP has no
 message boundaries" — it does, per-datagram. What UDP *doesn't* have is
@@ -109,20 +113,22 @@ type FindNodeResponse struct {
 ```
 
 `PING`/`PONG` carry no payload at all — the envelope's `Type` and `RPCID`
-are the entire message.
+are the entire message. `STORE` and `FIND_VALUE` and their replies are
+covered in [06](06-store-and-find-value.md).
 
 ## Where this lives in the code
 
 | Concept | Function / Type | File |
 |---|---|---|
-| Message envelope, RPC payload shapes | `Envelope`, `FindNodeRequest`, `FindNodeResponse` | `messages.go` |
-| Wire framing (length prefix), send/receive | `Transport.Send`, `Transport.Listen`, `decodeEnvelope` | `transport.go` |
+| Message envelope, RPC payload shapes | `Envelope`, `FindNodeRequest`, `FindNodeResponse`, … | `messages.go` |
+| Frame format, for datagrams and streams | `Encode`, `Decode`, `Write`, `Read` | `internal/framing/framing.go` |
+| UDP send/receive | `Transport.Send`, `Transport.Listen`, `decodeEnvelope` | `transport.go` |
 | Matching replies to requests, routing-table updates on receipt | `Node.sendAndWait`, `Node.deliverResponse`, `Node.handleMessage` | `node.go` |
 
-No dedicated unit tests for framing itself — it's exercised end-to-end by
-`internal/kademlia/integration_test.go`, which runs real `Node`s over real
-loopback UDP sockets (`TestPingRoundTrip`, `TestEndToEndBootstrapAndLookup`),
-which is a more meaningful check than mocking the socket would be here.
+Tests: `internal/framing/framing_test.go` (round trips, a mismatched
+length prefix, frames back to back on a stream, oversize and truncated
+frames). The UDP path is also exercised end to end by
+`internal/kademlia/integration_test.go` over real loopback sockets.
 
 ## What's next
 

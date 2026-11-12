@@ -140,14 +140,35 @@ bytes vs. payload bytes". Swapping the encoding later only touches
 ### Can nodes run on different machines yet?
 
 Untested. Nodes record each other's addresses from real packet sources,
-so a LAN may already work *if every node bootstraps via a LAN address*.
-Bootstrapping via `127.0.0.1` would hand loopback addresses to remote
-machines, which can't use them. Multi-device is a planned later step.
+so the DHT part may already work on a LAN *if every node bootstraps via
+a LAN address*. Bootstrapping via `127.0.0.1` would hand loopback
+addresses to remote machines, which can't use them. File sharing also
+needs each node started with `--advertise-ip <its LAN IP>`, since that
+IP goes into its provider records. Multi-device is a planned later step.
 
-## File transfer (planned — being built on branch `feature/store-findvalue-tcp`)
+## STORE / FIND_VALUE
 
-The main branch only has `PING` and `FIND_NODE`. These answers describe
-the design being implemented on the feature branch.
+### Where does a value actually live?
+
+On the k nodes whose IDs are closest (by XOR) to the key — not on the
+node that stored it, unless that node happens to be one of them. The
+publisher and the searcher both run a lookup toward the key, so they end
+up at the same nodes ([06](06-store-and-find-value.md)).
+
+### Why did `get` say "from this node's own store"?
+
+That node is itself one of the k closest to the key, so it holds a
+copy. `FindValue` checks locally before asking anyone. With `k = 20` and
+5 nodes every node holds every value, which is why
+`scripts/demo-transfer.sh` uses `--k 3`.
+
+### Can a key hold more than one value?
+
+Yes, up to 16 distinct values of at most 256 bytes each. That's how
+"every peer that has file X" fits under file X's key. The limits keep a
+full `FIND_VALUE` reply inside one UDP datagram.
+
+## File transfer (TCP)
 
 ### How does the output of the Kademlia algorithm tell us how to open a TCP connection?
 
@@ -165,24 +186,54 @@ The flow:
 2. **Find.** A node that wants the file runs `FIND_VALUE(key)`. This is
    the same iterative lookup, but it stops as soon as any node returns
    the stored records. The result is a list of provider records.
-3. **Connect.** For each provider record, `net.Dial("tcp", ip:tcp_port)`.
-   The operating system does the TCP three-way handshake. On that
-   connection we send length-prefixed requests ("send me the file
-   description", "send me piece 7") and get length-prefixed replies.
+3. **Connect.** For each provider record,
+   `net.Dialer.DialContext(ctx, "tcp4", ip:tcp_port)` (`dialProvider` in
+   `internal/transfer/client.go`). The operating system does the TCP
+   three-way handshake, and on the provider `Accept()` returns
+   (`server.go`). On that connection we send length-prefixed requests
+   (`GET_MANIFEST`, then `GET_PIECE i`) and get length-prefixed replies.
 
 So Kademlia answers *"who has the file?"*, and TCP carries the file.
-That's how BitTorrent uses its DHT too.
+That's how BitTorrent uses its DHT too. Step by step with real logs:
+[07](07-file-transfer-over-tcp.md) and [DRY-RUN.md](DRY-RUN.md) part 2.
 
 ### What exact attributes do we receive, and which ones do we use to connect?
 
 | Source | Attributes | Used for |
 |---|---|---|
-| `FIND_NODE` / lookup result (contact) | node ID, IP, **UDP** port | routing: who to ask next |
-| `FIND_VALUE` result (provider record, a stored value) | provider's node ID, IP, **TCP** port | connecting to download |
+| `FIND_NODE` / lookup result (`Contact`) | node ID, IP, **UDP** port | routing: who to ask next |
+| `FIND_VALUE` result (`ProviderRecord`, a stored value) | `node_id`, `ip`, **`tcp_port`** | connecting to download |
 
-The provider record carries its own TCP port, so a node can serve files
-on a different port from its DHT socket. TCP and UDP port numbers are
-separate spaces, so the default reuses the same number.
+A real provider record from the demo (87 bytes of JSON, stored as an
+opaque DHT value):
+
+```json
+{"node_id":"10f71961bd11dd33c1c95c771b98cf0e09d57b7c","ip":"127.0.0.1","tcp_port":9001}
+```
+
+The record carries its own TCP port, so a node can serve files on a
+different port from its DHT socket. TCP and UDP port numbers are separate
+spaces, so by default the CLI uses the same number for both. The `ip`
+comes from the provider's `--advertise-ip`.
+
+### Why not take the TCP address from the connection itself?
+
+A provider sees a downloader's connection coming from an OS-chosen
+temporary port (e.g. `127.0.0.1:57976`), not the downloader's own server
+port. You can only learn where a peer *listens* by being told. That's
+why the record states `tcp_port` explicitly.
+
+### What happens if a provider is dead or lying?
+
+- **Dead** (process gone): `connect: connection refused` (instant on
+  localhost), or a dial timeout on a real network. The downloader marks
+  it dead and retries the same piece on the next provider. The demo's
+  part 3 shows exactly this after killing the seeder.
+- **Lying** (wrong manifest or corrupted piece): the hash check fails, and
+  the provider is treated as dead. `TestCorruptProviderIsSkipped`.
+
+A dead provider's record stays in the DHT (no expiry yet), so every
+downloader pays one failed connection for it.
 
 ### Why not send the file itself through STORE / FIND_VALUE?
 
@@ -194,10 +245,20 @@ peers that want it.
 
 ### How do we know a piece from a stranger isn't corrupted or fake?
 
-The content key is a hash of the file's description, which includes a
-hash of every piece. A downloader checks
-`hash(description) == key` and then `hash(piece) == description.piece_hash[i]`
-for each piece. A peer can't send a fake piece without breaking a hash.
+The content key is a hash of the file's manifest, which includes a hash
+of every piece. A downloader checks `hash(manifest) == key`
+(`DecodeManifest`), then `SHA-256(piece) == manifest.piece_hashes[i]`
+for each piece (`VerifyPiece`). A peer can't send a fake piece without
+breaking a hash.
+
+### Why SHA-1 for node IDs but SHA-256 for files?
+
+Kademlia IDs and keys are 160 bits, SHA-1's output size, so node IDs use
+SHA-1 as the paper suggests. A node ID needs no collision resistance;
+it just has to be spread out. File integrity does: the content key is
+the root of the trust chain, and SHA-1 has practical collision attacks.
+So file keys are **SHA-256 truncated to 160 bits** (BitTorrent v2 does
+the same) and piece hashes are full SHA-256.
 
 ### Do Merkle trees make sense here?
 

@@ -29,17 +29,22 @@ evaluation includes performance graphs:
 | **Peer discovery (the DHT core):** 160-bit IDs, XOR metric, k-bucket routing table, `PING`/`FIND_NODE` over UDP, joining via one known node, iterative α-parallel lookup | ✅ Done | `main` — this README, [docs 01–05](#documentation) |
 | Unit + integration tests for the core, one runnable 5-process demo | ✅ Done | `internal/kademlia/*_test.go`, `scripts/demo.sh` |
 | Debugging tooling: logs, per-node console, VSCode debug configs | ✅ Done | [docs/DEBUGGING.md](docs/DEBUGGING.md) |
-| `STORE` / `FIND_VALUE` (the DHT can hold "who has file X") | 🚧 In progress | branch `feature/store-findvalue-tcp` |
-| File transfer over TCP (pieces, integrity checks) | 🚧 In progress | branch `feature/store-findvalue-tcp` |
-| Download from several peers; survive the seeder being killed | ⬜ Not started (the branch lays groundwork) | — |
-| Pieces spread so **no single node has the whole file** | ⬜ Not started | — |
-| Runs across multiple devices / Wi-Fi | ⬜ Not started — needs address handling (see simplifications) | — |
+| `STORE` / `FIND_VALUE` (the DHT holds "who has file X") | ✅ Done | branch `feature/store-findvalue-tcp` — [docs/06](docs/06-store-and-find-value.md) |
+| File transfer over TCP: pieces, SHA-256 verification, content keys | ✅ Done | branch `feature/store-findvalue-tcp` — [docs/07](docs/07-file-transfer-over-tcp.md) |
+| Share a file / download it from the CLI; transfer demo | ✅ Done | `share` / `fetch` console commands, `scripts/demo-transfer.sh` |
+| Download from several peers; survive the seeder being killed | 🟡 Basic version: pieces round-robin over providers, failover to the next provider; finished downloaders become providers | [docs/07](docs/07-file-transfer-over-tcp.md) |
+| Pieces spread so **no single node has the whole file** | ⬜ Not started — next step: per-piece availability | — |
+| Runs across multiple devices / Wi-Fi | ⬜ Not started — `--advertise-ip` exists; untested off localhost | — |
+| Sending messages (as opposed to files) | ⬜ Not started — `put`/`get` store short text, but there's no messaging feature | — |
 | Visual demo | ⬜ Not started | — |
 | Performance graphs (the four above) | ⬜ Not started | — |
 | Merkle trees | ⬜ Not started — optional; see [FAQ](docs/FAQ.md#do-merkle-trees-make-sense-here) | — |
 
-In short: nodes can find each other, join, and locate the nodes
-responsible for any ID. Nothing is stored or transferred yet on `main`.
+In short: nodes find each other and join; any node can store and find
+small values; and a file shared by one node can be downloaded by others
+over TCP, verified piece by piece. That still works after the original
+seeder is killed, as long as someone who finished downloading is still
+online.
 
 ## Documentation
 
@@ -51,11 +56,13 @@ needed, and which function implements it.
 3. [03 — Messages and framing over UDP](docs/03-message-framing.md)
 4. [04 — Bootstrap and join: what a new node needs](docs/04-bootstrap-and-join.md)
 5. [05 — Iterative parallel lookup](docs/05-iterative-parallel-lookup.md)
+6. [06 — STORE and FIND_VALUE](docs/06-store-and-find-value.md)
+7. [07 — File transfer over TCP](docs/07-file-transfer-over-tcp.md)
 
 **Reference:**
 
-- [DRY-RUN.md](docs/DRY-RUN.md) — `scripts/demo.sh` traced from start to
-  finish, with real logs, naming every function and file as it runs.
+- [DRY-RUN.md](docs/DRY-RUN.md) — both demo scripts traced from start
+  to finish, with real logs, naming every function and file as it runs.
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) — which file depends on which,
   goroutines and locks, invariants, "if you change X also touch Y".
 - [DEBUGGING.md](docs/DEBUGGING.md) — logs, a live network in VSCode
@@ -82,6 +89,20 @@ needed, and which function implements it.
    in parallel for *their* closest contacts. It merges the answers, keeps
    the k = 20 closest, and repeats until all of those have been asked
    ([05](docs/05-iterative-parallel-lookup.md)).
+
+4. **Store / find a value.** `Node.Store(key, value)` looks up the k
+   closest nodes to the key and sends each a `STORE`. `Node.FindValue(key)`
+   runs the same lookup with `FIND_VALUE` and stops at the first node that
+   has it ([06](docs/06-store-and-find-value.md)).
+5. **Share a file.** `Peer.Share` cuts the file into 64 KiB pieces,
+   hashes each, and computes the content key (a hash of that
+   description). It then `Store`s a provider record `{node_id, ip,
+   tcp_port}` under the key.
+6. **Download.** `Peer.Download` runs `FindValue(key)` to get provider
+   records, opens TCP connections to them, and checks that the manifest
+   hashes to the key. It fetches pieces round-robin across providers,
+   checking each piece's hash and skipping any provider that fails. It
+   then announces itself as a provider ([07](docs/07-file-transfer-over-tcp.md)).
 
 Throughout, every received message updates the sender's k-bucket
 (move-to-tail, or ping-the-oldest-and-maybe-evict when full;
@@ -120,6 +141,35 @@ nodes and k = 20 those never come up. [DRY-RUN.md](docs/DRY-RUN.md)
 explains this, and [DEBUGGING.md](docs/DEBUGGING.md) has exercises that
 trigger each by hand.
 
+### The file-transfer demo
+
+```sh
+bash scripts/demo-transfer.sh
+```
+
+This starts 5 nodes with `k = 3`, so values live on 3 of the 5 nodes and
+`FIND_VALUE` has to search. Then:
+
+1. node0 `put`s a text value and node4 `get`s it.
+2. node1 shares a random 1 MiB file (16 pieces).
+3. node3 downloads it (one provider), then node4 (two providers, pieces
+   alternating).
+4. node1, the original seeder, is killed, and node2 downloads anyway
+   from node3 and node4.
+5. Every copy is checked byte for byte against the original.
+
+```
+  [node2] > fetch 5951f7ca… $WORK/node2.bin
+    fetched "original.bin" (1048576 bytes, 16 pieces) into $WORK/node2.bin in 2.022s
+        11 piece(s) from 127.0.0.1:9003
+        5 piece(s) from 127.0.0.1:9004
+        provider 127.0.0.1:9001 failed and was skipped
+...
+PASS: three downloads completed and verified, the last one after the seeder was killed.
+```
+
+Why 11/5, and where the 2 s go: [DRY-RUN.md](docs/DRY-RUN.md) part 2.
+
 ### One node at a time (e.g. in split VSCode terminals)
 
 ```sh
@@ -127,12 +177,20 @@ go run ./cmd/node --port 9000 --id-seed nodeA
 go run ./cmd/node --port 9001 --id-seed nodeB --bootstrap 127.0.0.1:9000
 ```
 
-Then type console commands into a node's terminal: `table`, `lookup self`,
-`lookup <hex-id>`, `ping 127.0.0.1:9000`, `help`.
+Then type console commands into a node's terminal:
+
+| Command | |
+|---|---|
+| `id`, `table`, `lookup <hex-id\|self>`, `ping <host:port>` | inspect the DHT |
+| `put <name> <text…>`, `get <name>` | STORE / FIND_VALUE text under key SHA-1(name) |
+| `share <path>`, `fetch <key> <out-path>`, `files` | share and download files |
+| `help` | list them all |
 
 | Flag | Meaning |
 |---|---|
 | `--port` | UDP port (default 9000) |
+| `--tcp-port` | TCP port for the file server (default: same number as `--port`) |
+| `--advertise-ip` | IP others should use to reach this node, put in provider records (default `127.0.0.1`) |
 | `--id-seed <s>` | node ID = SHA-1(s); random if omitted |
 | `--bootstrap <host:port>` | join through this node |
 | `--lookup <hex>` `--lookup-after <dur>` | after joining, run one lookup and log it (used by the demo) |
@@ -146,11 +204,19 @@ Then type console commands into a node's terminal: `table`, `lookup self`,
 go test ./... -race -count=1
 ```
 
-- `id_test.go` — XOR metric properties, ordering, bucket indexes
-- `bucket_test.go` — every branch of the k-bucket update rule
-- `routingtable_test.go` — never stores self; `Closest` ordering
-- `integration_test.go` — real nodes over real loopback UDP: joins,
-  lookup, bootstrap failures, ping
+- `internal/kademlia/id_test.go` — XOR metric properties, ordering, bucket indexes
+- `internal/kademlia/bucket_test.go` — every branch of the k-bucket update rule
+- `internal/kademlia/routingtable_test.go` — never stores self; `Closest` ordering
+- `internal/kademlia/store_test.go` — values per key, limits, datagram fit
+- `internal/kademlia/integration_test.go` — real nodes over real loopback
+  UDP: joins, lookup, bootstrap failures, replies exclude the requester, ping
+- `internal/kademlia/values_test.go` — STORE lands on exactly the k
+  closest nodes (checked by brute force); FIND_VALUE finds it from every node
+- `internal/framing/framing_test.go` — frames on datagrams and on a byte stream
+- `internal/transfer/manifest_test.go` — piece layout, corrupted pieces
+  and tampered manifests rejected
+- `internal/transfer/transfer_test.go` — real UDP + TCP: one and two
+  providers, seeder shut down mid-way, corrupt provider skipped, unknown key
 
 `KADEMLIA_TEST_LOGS=1` shows the nodes' logs during tests.
 
@@ -158,20 +224,32 @@ go test ./... -race -count=1
 
 ```
 cmd/node/            the executable
-  main.go            flags, bootstrap, --lookup trigger, shutdown
-  console.go         interactive debug commands (table, lookup, ping)
+  main.go            flags, node + file server startup, bootstrap, --lookup trigger, shutdown
+  console.go         interactive commands (table, lookup, put, get, share, fetch, ...)
 internal/kademlia/   the DHT (see docs/ARCHITECTURE.md for dependencies)
   id.go              160-bit IDs, XOR distance, bucket index
   contact.go         (ID, IP, UDP port)
   bucket.go          one k-bucket and its update rule (no I/O)
   routingtable.go    160 buckets, Closest()
-  messages.go        envelope + PING/FIND_NODE payloads
-  transport.go       UDP socket, [length][JSON] framing
-  node.go            RPC engine, receive path, eviction, Bootstrap
-  lookup.go          iterative alpha-parallel lookup
+  messages.go        envelope + payloads for PING, FIND_NODE, STORE, FIND_VALUE
+  transport.go       UDP socket
+  store.go           this node's share of stored values, size limits
+  node.go            Config, RPC engine, receive path + replies, eviction, Bootstrap
+  lookup.go          iterative alpha-parallel lookup (FIND_NODE and FIND_VALUE)
+  values.go          Store, FindValue
   logging.go         structured stdout logs
-scripts/demo.sh      the 5-process demo
-docs/                concept docs 01-05 + reference docs
+internal/framing/    [4-byte length][body] frames, for UDP datagrams and TCP streams
+internal/transfer/   file sharing on top of the DHT
+  manifest.go        pieces, SHA-256 per piece, content key
+  provider.go        provider record = the DHT value {node_id, ip, tcp_port}
+  protocol.go        TCP request/response shapes
+  library.go         files this peer can serve
+  server.go          TCP server
+  client.go          TCP client side
+  peer.go            Share, Download (round-robin + failover), announce
+scripts/demo.sh            5 processes: joining and lookup
+scripts/demo-transfer.sh   5 processes: put/get, share, downloads, killed seeder
+docs/                concept docs 01-07 + reference docs
 .vscode/launch.json  debug configurations
 ```
 
@@ -186,17 +264,29 @@ Here is whether each one blocks the end goal:
 | `Closest()` sorts every known contact | No; at most a few thousand contacts. | Keep. |
 | Length-prefixed framing on UDP ([03](docs/03-message-framing.md)) | No — it gets reused for TCP. | Keep. |
 | JSON encoding | No, but it inflates the "control bytes" measurement. | Keep; say so in the evaluation. |
-| **Loopback addresses** (`Node.Self()` hardcodes `127.0.0.1`; demos bootstrap via `127.0.0.1`) | **Yes, for multi-device.** File-sharing also needs a node to advertise an address *others* can reach. | Partly on the feature branch (`--advertise-ip`); finish before the multi-device demo. |
+| **Advertise IP set by hand** (`--advertise-ip`, default `127.0.0.1`; demos bootstrap via `127.0.0.1`) | **Yes, for multi-device.** Each node must be started with its LAN IP, and bootstrap via LAN addresses. No NAT traversal. | Before the multi-device demo: test on a LAN, maybe auto-detect the LAN IP. |
 | **Synchronous lookup rounds** ([05](docs/05-iterative-parallel-lookup.md)) | **Yes, for the latency and recovery graphs.** A dead node stalls a round by a full RPC timeout, and the seeder-kill scenario is exactly that. | Before measuring latency or recovery time. |
 | **No bucket refresh** — neither the post-join refresh nor the paper's hourly refresh ([04](docs/04-bootstrap-and-join.md)) | **Yes, for churn.** Dead contacts linger until a full bucket triggers a ping. | Before the seeder-kill experiments. Refresh traffic also belongs in the control-bytes count. |
 | No lookup early-exit heuristic ([05](docs/05-iterative-parallel-lookup.md)) | Slightly inflates RPC counts. | Optional, before the graphs. |
+| **Values never expire or get republished** ([06](docs/06-store-and-find-value.md)) | **Yes, for churn.** Dead providers' records linger (one wasted connection each), and records don't move to closer nodes that join later. | Before the seeder-kill and recovery experiments. |
+| No caching of found values ([06](docs/06-store-and-find-value.md)) | No. | Keep. |
+| **Providers must have the whole file** ([07](docs/07-file-transfer-over-tcp.md)) | **Yes:** "no single node has the whole file" needs per-piece availability. | Next feature step. |
+| Pieces fetched one at a time ([07](docs/07-file-transfer-over-tcp.md)) | Not for correctness; matters for the download-time graph. | Before the download-time graph. |
+| One failure drops a provider; no retries; no resume ([07](docs/07-file-transfer-over-tcp.md)) | Not yet. | Revisit with real networks / Wi-Fi. |
 | No security (ID spoofing, Sybil, rate limits) | Not in the goal list. | Later, if at all. |
 
-**Bottom line:** none of these block the next step, `STORE`/`FIND_VALUE`
-plus TCP transfer. Addresses, synchronous rounds, and bucket refresh
-must be fixed before the multi-device demo and the performance
-measurements. They're fixed then rather than now, so each change can be
-tested and explained on its own.
+**Bottom line:** nothing here had to be undone before adding
+`STORE`/`FIND_VALUE` and TCP transfer, and it's all built now. Before the
+end goal, in roughly this order:
+
+1. **per-piece availability**, so pieces can be spread out with no
+   complete copy anywhere;
+2. **synchronous rounds, bucket refresh, and value expiry/republish**,
+   so churn (killing the seeder) is handled the way the paper intends
+   before measuring recovery time;
+3. **addresses on a real LAN**, for the multi-device demo.
+
+Each is a separate, testable step.
 
 ## Paper reference
 

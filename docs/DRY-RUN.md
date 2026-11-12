@@ -1,10 +1,17 @@
-# Dry run: what happens inside `scripts/demo.sh`
+# Dry runs: what happens inside the demo scripts
 
-This traces one run of `bash scripts/demo.sh`, from the first shell line
-to the last process exiting. At each step it names the file and function
-that runs. All log lines are real output from a run (timestamps and the
-repeated `node=` field stripped). Your IDs will match these, because the
-demo derives them from fixed seeds; RPC IDs are random and will differ.
+- **Part 1** — `scripts/demo.sh`: joining and lookup (below).
+- **Part 2** — `scripts/demo-transfer.sh`: STORE/FIND_VALUE and TCP file
+  transfer, including killing the seeder ([jump](#part-2--scriptsdemo-transfersh)).
+
+Each part traces one real run from the first shell line to the last
+process exiting, naming the file and function that runs at each step.
+All log lines are real output (timestamps and the repeated `node=` field
+stripped, IDs shortened to 8 hex digits). Node IDs come from fixed seeds,
+so yours will match. RPC IDs, and in part 2 the file's content key,
+differ on every run.
+
+# Part 1 — `scripts/demo.sh`
 
 Read [01](01-ids-and-xor-distance.md)–[05](05-iterative-parallel-lookup.md)
 first if a term is unfamiliar; this document shows *when* things happen,
@@ -45,7 +52,7 @@ not *why* they're designed that way.
   querying *everybody*, because "the k closest nodes" is the whole network.
   Seeing `O(log n)` rounds needs `n` much larger than `k` (or a small `k`).
   That's the future "latency vs. network size" experiment.
-- **Storing or transferring data.** Not implemented on this branch.
+- **Storing or transferring data.** That's part 2.
 
 ## Phase 0 — the script sets up (bash only, no Go yet)
 
@@ -287,3 +294,235 @@ Things to notice:
 - **Bucket order is recency.** In node0's bucket 159, node2 comes before
   node3: node3 was seen more recently. The head of the list is the
   eviction candidate.
+
+---
+
+# Part 2 — `scripts/demo-transfer.sh`
+
+Five nodes again (same IDs as part 1), but started with **`--k 3`**, so
+every value lives on only 3 of the 5 nodes and `FIND_VALUE` has to
+search. Each node also runs a TCP file server on the same port number as
+its UDP socket (TCP and UDP port numbers are separate spaces).
+
+## How the script types into five nodes
+
+Each node's console reads stdin. The script makes stdin a **named pipe**:
+
+```bash
+mkfifo node1.in
+node --port 9001 ... < node1.in > node1.log &   # the node reads commands from the pipe
+exec 4> node1.in                                 # the script holds the write end open on fd 4
+printf 'share /path/original.bin\n' >&4          # = typing "share ..." into node1's terminal
+```
+
+Holding the write end open matters: if it closed, the node would see
+end-of-file and its console would stop. Console output goes into the
+same log file as the structured log lines, which is where the script
+reads results from.
+
+## Who is "closest" to what
+
+Both demo keys are compared against the five fixed IDs. For the text key
+`SHA-1("greeting") = a0f7e779…`, the XOR distance's first byte decides:
+
+| Node | ID starts | `a0 XOR id` | Rank |
+|---|---|---|---|
+| node3 | `94` | `34` | 1 |
+| node2 | `db` | `7b` | 2 |
+| node0 | `2b` | `8b` | 3 |
+| node4 | `3f` | `9f` | 4 |
+| node1 | `10` | `b0` | 5 |
+
+With k = 3, "greeting" belongs on node3, node2, and node0.
+
+One more effect of k = 3 shows up in the joins. node4's self-lookup only
+keeps the 3 candidates closest to *its own* ID: node0, node1, node3.
+node2 is the farthest (`3f XOR db = e4…`), so node4 never contacts it,
+and node2 isn't in node4's routing table at the start. Filling far
+buckets like that is the job of the paper's post-join bucket refresh,
+which we skip (README, simplifications).
+
+## Phase 1 — `put greeting hello from node0` (node0)
+
+```
+console.go     consoleEnv.put        key = kademlia.HashID("greeting") = a0f7e779…
+values.go      Node.Store
+lookup.go        Lookup(key) → iterativeFind(findValue=false)   1 round, 3 FIND_NODEs
+values.go        selfAmongClosest → true (node0 is 3rd closest) → valueStore.put locally,
+                 drop the farthest target so the total stays k = 3
+node.go          storeRPC × 2, each in its own goroutine
+                 ── on node2/node3: handleMessage → replyStore → valueStore.put → STORE_RESP {stored:true}
+```
+
+```
+[node0] msg="lookup converged" target=a0f7e779… rounds=1 rpcs_sent=3 rpcs_failed=0 closest_found=3
+[node0] msg="rpc sent" type=STORE to=94fab99d…@127.0.0.1:9003
+[node0] msg="rpc sent" type=STORE to=db612776…@127.0.0.1:9002
+[node3] msg="value stored" key=a0f7e779… bytes=16
+[node0] msg="store complete" key=a0f7e779… stored_at=2 stored_locally=true failed=0
+    put greeting (key a0f7e779…): stored on 2 other node(s), locally=true, failed=0
+```
+
+## Phase 2 — `get greeting` (node4)
+
+```
+console.go     consoleEnv.get
+values.go      Node.FindValue        local store has nothing for this key
+lookup.go        iterativeFind(findValue=true)
+node.go            findValueRPC × 3 (alpha) to node4's 3 closest known: node3, node0, node1
+                   ── node3, node0: replyFindValue → Values = ["hello from node0"]
+                   ── node1:        replyFindValue → no values → Contacts (closestExcluding)
+lookup.go          appendDistinct merges both copies into one; values found → stop after this round
+```
+
+```
+[node4] msg="rpc sent" type=FIND_VALUE to=10f71961…@127.0.0.1:9001
+[node4] msg="rpc sent" type=FIND_VALUE to=94fab99d…@127.0.0.1:9003
+[node4] msg="rpc sent" type=FIND_VALUE to=2b370ab7…@127.0.0.1:9000
+[node4] msg="find_value finished" key=a0f7e779… values_found=1 rounds=1 rpcs_sent=3 rpcs_failed=0
+    get greeting: 1 value(s) via network: rounds=1 rpcs_sent=3 rpcs_failed=0
+        "hello from node0"
+```
+
+## Phase 3 — `share original.bin` (node1)
+
+The script writes a random 1 MiB file first, so the content key differs
+on every run (it was `5951f7ca…` in this one).
+
+```
+console.go     consoleEnv.share
+peer.go        Peer.Share
+manifest.go      BuildManifest       16 pieces × 64 KiB, SHA-256 each
+manifest.go      EncodeManifest → 1146 bytes; ContentKey → 5951f7ca…
+library.go       Library.add         node1 can now serve it
+peer.go          announce → kademlia Node.Store(key, {"node_id":"10f71961…","ip":"127.0.0.1","tcp_port":9001})
+```
+
+```
+[node1] msg="lookup converged" target=5951f7ca… rounds=1 rpcs_sent=3 rpcs_failed=0 closest_found=3
+[node1] msg="store complete" key=5951f7ca… stored_at=2 stored_locally=true failed=0     ← holders: node1, node0, node4
+[node1] msg="provider announced" key=5951f7ca… tcp_addr=127.0.0.1:9001 replicas=3
+[node1] msg="share complete" key=5951f7ca… name=original.bin size=1048576 pieces=16
+```
+
+## Phase 4 — `fetch <key> node3.bin` (node3), the full TCP path
+
+```
+console.go     consoleEnv.fetch
+peer.go        Peer.Download
+values.go        node.FindValue(key)           round 1 asks node0, node1, node4 — all three are holders
+peer.go          decodeProviders               → 1 provider: node1 @ 127.0.0.1:9001
+peer.go          downloader.fetchManifest → fetch(start 0, GET_MANIFEST)
+peer.go            downloader.conn → client.go dialProvider → net.Dialer.DialContext("tcp4", "127.0.0.1:9001")
+                   ══ TCP three-way handshake ══
+                   ── node1: server.go serve: Accept() returns → go handleConn
+client.go          providerConn.fetch: framing.Write(request) → framing.Read(header) → framing.Read(data)
+                   ── node1: handleConn: framing.Read(request) → answer → Library.lookup → writeData
+manifest.go        DecodeManifest: ContentKey(bytes) == key ✓, Validate ✓
+peer.go          fetchPiecesInto: os.OpenFile(out, O_CREATE|O_EXCL)
+                   for i in 0..15: fetch(start i, GET_PIECE i) → Manifest.VerifyPiece(i) → WriteAt(offset)
+                   ── node1: answer → Library.readPiece (ReadAt from original.bin)
+library.go       Library.add(out)              node3 can now serve it
+peer.go          announce                      node3's provider record → the 3 holders
+```
+
+The downloader:
+
+```
+[node3] msg="find_value finished" key=5951f7ca… values_found=1 rounds=1 rpcs_sent=3 rpcs_failed=0
+[node3] msg="providers found" key=5951f7ca… count=1
+[node3] msg="tcp connected to provider" provider=127.0.0.1:9001
+[node3] msg="piece received" index=0 of=16 from=127.0.0.1:9001 bytes=65536
+          … 14 more …
+[node3] msg="piece received" index=15 of=16 from=127.0.0.1:9001 bytes=65536
+[node3] msg="provider announced" key=5951f7ca… tcp_addr=127.0.0.1:9003 replicas=3
+[node3] msg="download complete" … pieces=16 providers=1 failed_providers=0 duration=19ms
+```
+
+The provider, at the same moment:
+
+```
+[node1] msg="tcp connection accepted" from=127.0.0.1:57976
+[node1] msg="tcp request served" to=127.0.0.1:57976 op=GET_MANIFEST index=0 bytes=1146
+[node1] msg="tcp request served" to=127.0.0.1:57976 op=GET_PIECE index=0 bytes=65536
+          … one line per piece …
+```
+
+Notice `from=127.0.0.1:57976`, not `:9003`. The *client* end of a TCP
+connection gets a temporary port picked by the OS. A provider therefore
+can't learn a downloader's server port from the connection, which is one
+reason provider records carry `tcp_port` explicitly.
+
+## Phase 5 — `fetch` again (node4): two providers
+
+node4 is one of the 3 holders of this key, so `FindValue` needs no
+network at all:
+
+```
+[node4] msg="find_value answered from local store" key=5951f7ca… values_found=2   ← node1's and node3's records
+[node4] msg="tcp connected to provider" provider=127.0.0.1:9001
+[node4] msg="tcp connected to provider" provider=127.0.0.1:9003
+  index=0 from=127.0.0.1:9001
+  index=1 from=127.0.0.1:9003
+  index=2 from=127.0.0.1:9001      … alternating, 8 + 8
+```
+
+`downloader.candidates(i)` starts at provider `i mod 2`, so consecutive
+pieces alternate. Each provider has one open connection, reused for all
+of its pieces.
+
+## Phase 6 — kill node1, then `fetch` (node2)
+
+The script sends node1 SIGTERM. Its sockets close; its provider record
+stays in the DHT (no expiry).
+
+```
+[node2] msg="rpc sent" type=FIND_VALUE to=2b370ab7…@127.0.0.1:9000
+[node2] msg="rpc sent" type=FIND_VALUE to=10f71961…@127.0.0.1:9001        ← node1: dead
+[node2] msg="rpc sent" type=FIND_VALUE to=3fb55a72…@127.0.0.1:9004
+[node2] msg="find_value finished" key=5951f7ca… values_found=3 rounds=1 rpcs_sent=3 rpcs_failed=1
+[node2] msg="providers found" key=5951f7ca… count=3                        ← node1, node3, node4
+[node2] msg="provider failed, trying the next one" provider=127.0.0.1:9001 error="dial tcp4 127.0.0.1:9001: connect: connection refused"
+[node2] msg="tcp connected to provider" provider=127.0.0.1:9003
+[node2] msg="tcp connected to provider" provider=127.0.0.1:9004
+[node2] msg="download complete" … providers=3 failed_providers=1 duration=2.022s
+    11 piece(s) from 127.0.0.1:9003
+    5 piece(s) from 127.0.0.1:9004
+    provider 127.0.0.1:9001 failed and was skipped
+```
+
+Reading it:
+
+- **Where the 2 seconds went.** Not the transfer, which takes ~20 ms.
+  The `FIND_VALUE` round included dead node1, and a round waits for all
+  its RPCs, so it sat out the 2 s RPC timeout. That's the synchronous-rounds
+  simplification ([05](05-iterative-parallel-lookup.md)), and exactly
+  what a "time to recovery" measurement would pick up. The announce
+  afterwards hits node1 again (another 2 s), outside the reported
+  duration.
+- **Why 11 / 5.** The provider order is `[node1, node3, node4]`. Pieces
+  with `i mod 3 = 0` (0, 3, … 15: six pieces) start at dead node1 and
+  fall through to node3. node3 also gets its own five (`i mod 3 = 1`), so
+  11 in total; node4 gets its five.
+- **Connection refused is instant on localhost**, because the OS answers
+  for the closed port. Across a real network, a crashed machine would
+  instead cost a full dial timeout.
+- After the download, node2's announce found that, with node1 gone, node2
+  itself is now among the 3 closest to the key (`stored_locally=true`).
+
+## Phase 7 — verification and cleanup
+
+`cmp` compares each downloaded file with the original byte for byte, and
+the script prints `PASS`. The `EXIT` trap kills the nodes. Everything
+(logs, FIFOs, downloaded files) stays in the printed temp directory.
+
+## What part 2 doesn't show
+
+- **A file with no complete copy anywhere.** Every provider here has the
+  whole file. That needs per-piece availability (next step;
+  [07](07-file-transfer-over-tcp.md)).
+- **Stale records going away.** node1's record would be returned forever
+  (no expiry).
+- **Parallel downloading.** Pieces arrive one at a time, even from two
+  providers.
+- **Other machines.** Everything is `127.0.0.1`.

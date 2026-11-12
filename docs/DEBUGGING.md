@@ -82,10 +82,15 @@ Each node reads **console commands** from its terminal
 | Command | What it does |
 |---|---|
 | `help` | list commands |
-| `id` | this node's ID and address |
-| `table` | every non-empty k-bucket, contacts oldest → newest |
+| `id` | this node's ID, UDP address, TCP port |
+| `table` | every non-empty k-bucket, contacts oldest → newest; how many keys it holds values for |
 | `lookup <hex-id>` / `lookup self` | run an iterative lookup, print rounds, RPCs, and the closest nodes with their XOR distances |
 | `ping <host:port>` | PING an address, report the reply time |
+| `put <name> <text…>` | STORE the text under key SHA-1(name); prints which nodes kept it |
+| `get <name>` | FIND_VALUE for SHA-1(name); says whether it was answered locally or via the network |
+| `share <path>` | publish a file; prints its content key |
+| `fetch <hex-key> <out-path>` | download a file; prints pieces per provider and any failed providers |
+| `files` | files this node can serve |
 
 Log lines and console output share the terminal. Use `--quiet` on the
 pane you're typing into. If you start a node in the background with `&`
@@ -135,7 +140,27 @@ then `lookup self` on another. You'll see `rpcs_failed=1`, and the dead
 node won't be in the result. The lookup still finishes, after one RPC
 timeout.
 
-**d) Bootstrap mistakes.** `--bootstrap 127.0.0.1:9999` (nobody there)
+**d) Share a file by hand, then kill the seeder.** Four panes, `k = 3`
+so values don't land everywhere:
+
+```sh
+go run ./cmd/node --port 9000 --id-seed demo0 --k 3 --quiet
+go run ./cmd/node --port 9001 --id-seed demo1 --k 3 --quiet --bootstrap 127.0.0.1:9000
+go run ./cmd/node --port 9002 --id-seed demo2 --k 3 --quiet --bootstrap 127.0.0.1:9000
+go run ./cmd/node --port 9003 --id-seed demo3 --k 3 --quiet --bootstrap 127.0.0.1:9000
+```
+
+- pane 2: `share README.md` → copy the printed content key
+- pane 3: `fetch <key> /tmp/copy1.md` → all pieces from `127.0.0.1:9001`
+- any pane: `table` ends with `holding values for N keys`, which is
+  non-zero on the 3 nodes holding the provider records
+- `Ctrl+C` pane 2 (the seeder), then pane 4: `fetch <key> /tmp/copy2.md`
+  → `provider 127.0.0.1:9001 failed and was skipped`, pieces from 9002
+
+Drop `--quiet` on the downloading pane to watch every `FIND_VALUE`, TCP
+connection, and piece arrive.
+
+**e) Bootstrap mistakes.** `--bootstrap 127.0.0.1:9999` (nobody there)
 fails with "did not answer PING" after `--rpc-timeout`. Bootstrapping a
 node against its own port fails immediately.
 
@@ -194,6 +219,11 @@ surprises.
 | each lookup round | the `for {` loop in `Node.Lookup` (`lookup.go`) — inspect `order`, `candidates`, `batch` |
 | a join | `Node.Bootstrap` (`node.go`) |
 | raw bytes before JSON decoding | `decodeEnvelope` (`transport.go`) — inspect `packet` |
+| a value arriving / being served | `Node.replyStore`, `Node.replyFindValue` (`node.go`) |
+| FIND_VALUE stopping early | the `if len(result.Values) > 0` check in `iterativeFind` (`lookup.go`) |
+| a provider answering a TCP request | `server.handleConn` / `server.answer` (`internal/transfer/server.go`) |
+| the downloader choosing a provider | `downloader.candidates`, `downloader.fetch` (`peer.go`) |
+| a piece failing verification | `Manifest.VerifyPiece` (`manifest.go`) |
 
 Useful VSCode features:
 
@@ -230,6 +260,10 @@ practice means "run the tests whose names match a pattern" with `-run`
 (a regex). Different terminals can run different patterns:
 
 ```sh
+go test ./internal/framing -v                              # frames on datagrams and streams
+go test ./internal/transfer -run 'Manifest|Piece|Content' -v   # piece hashing, no network
+go test ./internal/transfer -run 'Share|Download|Corrupt' -v   # real UDP + TCP transfers
+go test ./internal/kademlia -run 'Store|FindValue|ValueStore' -v   # STORE / FIND_VALUE
 go test ./internal/kademlia -run '^TestBucket' -v          # bucket.go's update rule
 go test ./internal/kademlia -run '^TestXor|^TestLess|^TestBucketIndex|^TestID|^TestHash' -v   # id.go
 go test ./internal/kademlia -run '^TestRoutingTable' -v    # routingtable.go
@@ -261,13 +295,28 @@ Or Wireshark: interface **Loopback: lo0**, display filter
 `udp.port >= 9000 && udp.port <= 9004`. The first 4 bytes of each
 payload are the length, and the rest is the JSON envelope.
 
+For file transfers, capture TCP on the same ports:
+
+```sh
+sudo tcpdump -i lo0 'tcp portrange 9000-9004'
+```
+
+You'll see the three-way handshake (`[S]`, `[S.]`, `[.]`) when a
+downloader connects, then the request/header/data frames. In Wireshark,
+*Follow → TCP Stream* on one connection shows the whole exchange. A
+dead provider shows up as a `[S]` answered by `[R.]` (reset), which is
+what "connection refused" is.
+
 ---
 
 ## Symptom → likely cause
 
 | Symptom | Likely cause / fix |
 |---|---|
-| `bind: address already in use` | A node from an earlier run is still alive. Find it: `lsof -nP -iUDP:9000`, then `kill <pid>`. |
+| `bind: address already in use` | A node from an earlier run is still alive (it holds both UDP and TCP on that port number). Find it: `lsof -nP -i :9000`, then `kill <pid>`. |
+| `fetch failed: … file exists` | Downloads never overwrite; pick a new output path. |
+| `no providers found` | Wrong key, or every node holding the provider records is gone (values aren't republished yet). |
+| A download pauses ~2 s before starting | Its `FIND_VALUE` round included a dead node (synchronous rounds; see DRY-RUN part 2). |
 | `bootstrap node … did not answer PING` | Seed not started yet, wrong port, or seed paused in the debugger with a short `--rpc-timeout`. |
 | Lookup shows `rpcs_failed` while debugging | Some node was paused at a breakpoint longer than `--rpc-timeout`. Raise it. |
 | A node "disappears" from another's table | It was evicted after failing a ping. Check the `--verbose` log of the node that dropped it. |
