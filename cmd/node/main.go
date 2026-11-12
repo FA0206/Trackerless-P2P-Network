@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"kademlia-demo/internal/kademlia"
+	"kademlia-demo/internal/transfer"
 )
 
 func main() {
@@ -28,6 +29,7 @@ func main() {
 
 func run() error {
 	port := flag.Int("port", 9000, "UDP port to listen on")
+	tcpPort := flag.Int("tcp-port", 0, "TCP port for serving files; 0 means the same number as -port (TCP and UDP port numbers don't clash)")
 	advertiseIP := flag.String("advertise-ip", "127.0.0.1", "IP other nodes should use to reach this one (set to your LAN IP for multi-device use)")
 	idSeed := flag.String("id-seed", "", "deterministic node ID = SHA-1(id-seed); if empty, a random ID is used")
 	bootstrap := flag.String("bootstrap", "", "host:port of an existing node to join through (optional)")
@@ -35,7 +37,7 @@ func run() error {
 	lookupAfter := flag.Duration("lookup-after", 1*time.Second, "how long to wait after bootstrap before running -lookup, to give the rest of the demo network time to join")
 	verbose := flag.Bool("verbose", false, "log at debug level (every bucket update, every RPC timeout)")
 	quiet := flag.Bool("quiet", false, "log warnings/errors only (handy when typing console commands)")
-	console := flag.Bool("console", true, "read debug commands (help, table, lookup, ping) from stdin")
+	console := flag.Bool("console", true, "read commands (help, table, lookup, put, get, share, fetch, ...) from stdin")
 	k := flag.Int("k", kademlia.DefaultK, "bucket size / replication parameter k")
 	alpha := flag.Int("alpha", kademlia.DefaultAlpha, "lookup concurrency parameter alpha")
 	rpcTimeout := flag.Duration("rpc-timeout", kademlia.DefaultRPCTimeout, "per-RPC timeout (raise this, e.g. to 5m, when pausing at breakpoints)")
@@ -75,7 +77,16 @@ func run() error {
 	n.Start()
 	defer n.Close()
 
-	logger.Info("node started", "id", id.String(), "addr", n.Addr().String())
+	if *tcpPort == 0 {
+		*tcpPort = n.Addr().Port
+	}
+	peer, err := transfer.NewPeer(n, *tcpPort, transfer.DefaultIOTimeout)
+	if err != nil {
+		return err
+	}
+	defer peer.Close()
+
+	logger.Info("node started", "id", id.String(), "addr", n.Addr().String(), "tcp_port", peer.TCPPort())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -129,7 +140,8 @@ func run() error {
 	}
 
 	if *console {
-		go runConsole(ctx, n, opTimeout, os.Stdin, os.Stdout)
+		c := &consoleEnv{node: n, peer: peer, opTimeout: opTimeout, transferTimeout: 10 * opTimeout, out: os.Stdout}
+		go c.run(ctx, os.Stdin)
 	}
 
 	<-ctx.Done()
