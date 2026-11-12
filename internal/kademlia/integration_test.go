@@ -106,6 +106,38 @@ func TestBootstrapLearnsRealSeedID(t *testing.T) {
 	}
 }
 
+// A FIND_NODE reply must not spend one of its k slots on the requester.
+// With k=1 that would leave the requester learning nothing at all.
+func TestFindNodeReplyExcludesRequester(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	nodes := make([]*Node, 3)
+	for i := range nodes {
+		n, err := NewNode(Config{ID: HashID([]byte{'x', byte(i)}), K: 1, RPCTimeout: 500 * time.Millisecond,
+			Logger: slog.New(slog.DiscardHandler)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		n.Start()
+		t.Cleanup(func() { n.Close() })
+		nodes[i] = n
+	}
+	a, b, c := nodes[0], nodes[1], nodes[2]
+	if _, err := c.Bootstrap(ctx, b.Self().UDPAddr()); err != nil { // b now knows c
+		t.Fatal(err)
+	}
+
+	got, err := a.FindNode(ctx, b.Self(), a.ID) // b also records a before answering
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, contact := range got {
+		if contact.ID == a.ID {
+			t.Fatalf("reply to %s included %s itself: %v", shortID(a.ID), shortID(a.ID), got)
+		}
+	}
+}
+
 func TestBootstrapFailures(t *testing.T) {
 	a := spinUpNode(t, HashID([]byte("a")))
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

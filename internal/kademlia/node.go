@@ -283,7 +283,7 @@ func (n *Node) replyFindNode(from *net.UDPAddr, req Envelope) {
 		n.logger.Warn("malformed FIND_NODE request", "from", from.String(), "error", err)
 		return
 	}
-	closest := n.rt.Closest(payload.Target, n.k)
+	closest := n.closestExcluding(payload.Target, req.SenderID)
 	resp := Envelope{
 		Type:     MsgFindNodeResp,
 		RPCID:    req.RPCID,
@@ -357,9 +357,24 @@ func (n *Node) replyFindValue(from *net.UDPAddr, req Envelope) {
 	if values := n.store.get(payload.Key); len(values) > 0 {
 		resp.Values = values
 	} else {
-		resp.Contacts = n.rt.Closest(payload.Key, n.k)
+		resp.Contacts = n.closestExcluding(payload.Key, req.SenderID)
 	}
 	n.reply(from, req, MsgFindValueResp, resp)
+}
+
+// closestExcluding returns the k contacts closest to target, leaving out
+// the requester. handleMessage has already added the requester to our
+// table, so it would otherwise often appear in its own answer -- a wasted
+// slot that, with a small k, hides a real node from it.
+func (n *Node) closestExcluding(target, requester ID) []Contact {
+	out := n.rt.Closest(target, n.k+1)
+	for i, c := range out {
+		if c.ID == requester {
+			out = append(out[:i], out[i+1:]...)
+			break
+		}
+	}
+	return out[:min(len(out), n.k)]
 }
 
 // reply sends a response envelope that echoes the request's RPC ID.
