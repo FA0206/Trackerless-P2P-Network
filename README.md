@@ -29,8 +29,8 @@ evaluation includes performance graphs:
 | **Peer discovery (the DHT core):** 160-bit IDs, XOR metric, k-bucket routing table, `PING`/`FIND_NODE` over UDP, joining via one known node, iterative α-parallel lookup | ✅ Done | `main` — this README, [docs 01–05](#documentation) |
 | Unit + integration tests for the core, one runnable 5-process demo | ✅ Done | `internal/kademlia/*_test.go`, `scripts/demo.sh` |
 | Debugging tooling: logs, per-node console, VSCode debug configs | ✅ Done | [docs/DEBUGGING.md](docs/DEBUGGING.md) |
-| `STORE` / `FIND_VALUE` (the DHT holds "who has file X") | ✅ Done | branch `feature/store-findvalue-tcp` — [docs/06](docs/06-store-and-find-value.md) |
-| File transfer over TCP: pieces, SHA-256 verification, content keys | ✅ Done | branch `feature/store-findvalue-tcp` — [docs/07](docs/07-file-transfer-over-tcp.md) |
+| `STORE` / `FIND_VALUE` (the DHT holds "who has file X") | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/06](docs/06-store-and-find-value.md) |
+| File transfer over TCP: pieces, SHA-256 verification, content keys | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/07](docs/07-file-transfer-over-tcp.md) |
 | Share a file / download it from the CLI; transfer demo | ✅ Done | `share` / `fetch` console commands, `scripts/demo-transfer.sh` |
 | Download from several peers; survive the seeder being killed | 🟡 Basic version: pieces round-robin over providers, failover to the next provider; finished downloaders become providers | [docs/07](docs/07-file-transfer-over-tcp.md) |
 | Pieces spread so **no single node has the whole file** | ⬜ Not started — next step: per-piece availability | — |
