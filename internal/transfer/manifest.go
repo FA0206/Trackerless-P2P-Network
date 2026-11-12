@@ -140,10 +140,16 @@ func EncodeManifest(m Manifest) ([]byte, error) {
 	return json.Marshal(m)
 }
 
-// ContentKey is the DHT key a file is published under: SHA-1 of its
-// manifest bytes, which lands it in Kademlia's 160-bit key space.
+// ContentKey is the DHT key a file is published under: SHA-256 of its
+// manifest bytes, truncated to 160 bits to fit Kademlia's key space (the
+// same trick BitTorrent v2 uses). Plain SHA-1 would fit without
+// truncating, but SHA-1 has practical collision attacks, and this key is
+// the root of the whole integrity chain.
 func ContentKey(manifestBytes []byte) kademlia.ID {
-	return kademlia.HashID(manifestBytes)
+	sum := sha256.Sum256(manifestBytes)
+	var key kademlia.ID
+	copy(key[:], sum[:kademlia.IDBytes])
+	return key
 }
 
 // DecodeManifest parses manifest bytes received from a peer, after
