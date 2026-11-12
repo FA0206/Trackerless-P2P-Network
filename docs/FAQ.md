@@ -183,7 +183,9 @@ sender knows which request a reply answers ([03](03-message-framing.md)).
 Lookup stops once the `k` closest nodes it has seen have all been
 queried. With 5 nodes and `k = 20`, "the 20 closest" means everyone.
 `O(log n)` behavior only shows once `n` is much larger than `k`. Use a
-small `--k` or many nodes to see it.
+small `--k` or many nodes to see it. `scripts/demo-big-network.sh` does
+both (20 nodes, `k = 4`): its lookups take 2–3 rounds and ask about 7 of
+the 20 nodes ([DRY-RUN part 4](DRY-RUN.md#part-4--scriptsdemo-big-networksh-multi-round-lookups)).
 
 ### node0 never sends anything in the demo. How does it know everyone?
 

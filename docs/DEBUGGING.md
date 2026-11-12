@@ -201,6 +201,20 @@ handles:
 - **Job notices.** Killing a background job makes bash print
   `Killed: 9`. `kill_node` reaps it with `wait` to keep output clean.
 
+For `scripts/demo-big-network.sh` specifically:
+
+- **Ports.** It uses `9300…9300+N-1` (`BASE_PORT`), away from the other
+  demos' 9000–9004 and 9200–9204. If a run is interrupted, check for
+  leftovers with `lsof -nP -i :9300-9399`.
+- **Reproducing a failure.** Joins, queriers, and targets come from
+  bash's `RANDOM`, seeded with `SEED` (printed in the first line). Rerun
+  with `SEED=<number>` to get the same network and the same lookups. Node
+  IDs are fixed (`SHA-1("big<i>")`), so the same seed means the same run.
+- **Reading one node's view.** Each node logs to `$WORK/node<i>.log`.
+  For a mismatch, look in the querying node's log for the lookup's
+  `FIND_NODE` sends and replies (DRY-RUN part 4 shows how one reads).
+  Then use the console's `table` on the nodes you expected to be found.
+
 ---
 
 ## 3. Breakpoints in VSCode

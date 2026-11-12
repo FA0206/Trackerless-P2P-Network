@@ -6,6 +6,9 @@
 - **Part 3** — `scripts/demo-seeder-death.sh`: the seeder dies while
   every leecher is mid-download, and the file is lost
   ([jump](#part-3--scriptsdemo-seeder-deathsh-the-file-is-lost)).
+- **Part 4** — `scripts/demo-big-network.sh`: 20 nodes, random joins,
+  multi-round lookups checked by brute force
+  ([jump](#part-4--scriptsdemo-big-networksh-multi-round-lookups)).
 
 Each part traces one real run from the first shell line to the last
 process exiting, naming the file and function that runs at each step.
@@ -667,3 +670,88 @@ Three rules combine to lose the file:
 
 The branch removes 1 and 2. Rule 3 stays, but it only bites if a
 download really fails.
+
+---
+
+# Part 4 — `scripts/demo-big-network.sh`: multi-round lookups
+
+Parts 1–3 used 5 nodes, where "the k closest" is nearly everyone, so a
+lookup ends after a round or two having asked every node. This demo uses
+**20 nodes** and **`k = 4`**, on ports 9300–9319. Node 0 starts alone,
+and each later node bootstraps through a **randomly chosen node that is
+already running**. Here's the join list from the run below
+(`SEED=95330`; rerun with that `SEED` to repeat it):
+
+```
+joins: node0: first node, node1<-node0, node2<-node1, node3<-node1, node4<-node2, node5<-node1,
+       node6<-node0, node7<-node5, node8<-node1, node9<-node6, node10<-node5, node11<-node6, …
+```
+
+## How the answers are checked
+
+Four random nodes each look up three targets: `lookup <hex>` typed into
+their console. For every answer the script computes the truth itself.
+Each node ID is `SHA-1("big<i>")` (the same as `--id-seed big<i>`); the
+script XORs each with the target. It does that 8 hex digits at a time,
+because bash integers are 64-bit. It sorts the distances as hex strings
+(equal-length hex sorts numerically) and keeps the 4 smallest, excluding
+the querying node, since a node never returns itself. The console's
+answer must be exactly that set.
+
+```
+=== Lookups checked against a brute-force answer ===
+  node19 -> ea64cae1…: rounds=3 rpcs_sent=7 rpcs_failed=0  ok
+  node15 -> 10cd54e8…: rounds=3 rpcs_sent=7 rpcs_failed=0  ok
+  …
+  12 of 12 lookups needed more than one round
+```
+
+All 12 matched in each of 6 runs with different seeds, and also with
+`N=30 K=3`.
+
+## One lookup, round by round
+
+node19 looking up `ea64cae1…`. It joined via node15 and its routing
+table had 5 contacts:
+
+```
+04:49:08.977 msg="rpc sent" type=FIND_NODE to=8d9525b0…@127.0.0.1:9308    ┐ round 1: the α = 3 closest
+04:49:08.977 msg="rpc sent" type=FIND_NODE to=bcc19592…@127.0.0.1:9315    │ node19 already knew
+04:49:08.977 msg="rpc sent" type=FIND_NODE to=8c2fbba0…@127.0.0.1:9309    ┘
+04:49:08.978 msg="rpc received" type=FIND_NODE_RESP from=8d9525b0…   (×3)
+04:49:08.979 msg="rpc sent" type=FIND_NODE to=c171dbbe…@127.0.0.1:9300    ┐ round 2: nodes learned
+04:49:08.979 msg="rpc sent" type=FIND_NODE to=e321952e…@127.0.0.1:9305    │ from round 1's replies
+04:49:08.979 msg="rpc sent" type=FIND_NODE to=f4cd1c48…@127.0.0.1:9304    ┘
+04:49:08.980 msg="rpc received" type=FIND_NODE_RESP from=e321952e…   (×3)
+04:49:08.980 msg="rpc sent" type=FIND_NODE to=f165d62b…@127.0.0.1:9307    ← round 3: learned in round 2
+04:49:08.980 msg="rpc received" type=FIND_NODE_RESP from=f165d62b…
+04:49:08.980 msg="lookup converged" target=ea64cae1… rounds=3 rpcs_sent=7 rpcs_failed=0 closest_found=4
+lookup ea64cae1…: rounds=3 rpcs_sent=7 rpcs_failed=0
+   1. e321952e…@127.0.0.1:9305  distance=09455fcf…
+   2. f165d62b…@127.0.0.1:9307  distance=1b011cca…
+   3. f4cd1c48…@127.0.0.1:9304  distance=1ea9d6a9…
+   4. c171dbbe…@127.0.0.1:9300  distance=2b15115f…
+```
+
+What this shows that parts 1–3 couldn't:
+
+- **Round 1's nodes are stepping stones.** `8d…`, `bc…`, `8c…` are at
+  XOR distances starting `67…`, `56…`, `66…` from the target `ea…`. None
+  of them is in the final answer. Their job was to point at closer
+  nodes: every final node starts `09…` to `2b…`.
+- **The candidate list moves.** Round 2 asks only nodes node19 learned
+  about in round 1. Round 3 asks `f165…`, learned in round 2.
+- **It stops on its own.** After round 3, all 4 closest candidates have
+  been asked (`iterativeFind`'s stopping rule in `lookup.go`). That took
+  7 RPCs, not 19. With 20 nodes the saving is small; it grows with the
+  network, because lookups need about `log₂(N/k)` rounds.
+- The **round barrier** is visible: round 2 starts only after all three
+  round-1 replies are in (the synchronous-rounds simplification, docs
+  05). On localhost each round takes ~1 ms, so it costs nothing here.
+
+## The transfer across the network
+
+One random node shares a 1 MiB file; three others fetch it at the same
+time. With `k = 4`, the provider record lives on 4 of the 20 nodes, and
+each downloader's `FIND_VALUE` has to find it. All three copies matched
+the original in every run.

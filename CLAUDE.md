@@ -47,6 +47,7 @@ go test ./... -race -count=1                    # must pass before claiming done
 bash scripts/demo.sh                            # join + lookup demo; must print PASS
 bash scripts/demo-transfer.sh                   # put/get + file transfer + killed seeder; must print PASS
 bash scripts/demo-seeder-death.sh               # seeder dies mid-download; on main PASS means the file was lost
+bash scripts/demo-big-network.sh                # 20 nodes, random joins, lookups vs brute force + transfer; must print PASS
 ```
 
 Packages: `internal/kademlia` (the DHT, opaque values), `internal/transfer`

@@ -27,7 +27,7 @@ evaluation includes performance graphs:
 | Part of the goal | Status | Where |
 |---|---|---|
 | **Peer discovery (the DHT core):** 160-bit IDs, XOR metric, k-bucket routing table, `PING`/`FIND_NODE` over UDP, joining via one known node, iterative α-parallel lookup | ✅ Done | `main` — this README, [docs 01–05](#documentation) |
-| Unit + integration tests for the core, one runnable 5-process demo | ✅ Done | `internal/kademlia/*_test.go`, `scripts/demo.sh` |
+| Unit + integration tests for the core; runnable demos (5-process chain, 20-node random joins with brute-force-checked lookups) | ✅ Done | `internal/kademlia/*_test.go`, `scripts/demo.sh`, `scripts/demo-big-network.sh` |
 | Debugging tooling: logs, per-node console, VSCode debug configs | ✅ Done | [docs/DEBUGGING.md](docs/DEBUGGING.md) |
 | `STORE` / `FIND_VALUE` (the DHT holds "who has file X") | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/06](docs/06-store-and-find-value.md) |
 | File transfer over TCP: pieces, SHA-256 verification, content keys | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/07](docs/07-file-transfer-over-tcp.md) |
@@ -199,6 +199,31 @@ can land mid-download (localhost is otherwise too fast). Walkthrough:
 [DRY-RUN.md](docs/DRY-RUN.md) part 3. Branch
 `feature/parallel-partial-seeding` makes the same scenario succeed.
 
+### The big-network demo (20 nodes, random joins)
+
+```sh
+bash scripts/demo-big-network.sh        # env: N=20 K=4 BASE_PORT=9300 SEED=<number>
+```
+
+`N` nodes (default 20) on ports 9300 onward. Each node joins through a
+**randomly chosen** running node, not a chain, and `k` is small (4), so
+lookups take several rounds. Four random nodes each look up three
+targets. Every answer is compared with the true 4 closest nodes, which
+the script computes itself by brute force over all node IDs. Then one
+node shares a 1 MiB file and three others download it at once.
+
+```
+  node19 -> ea64cae1…: rounds=3 rpcs_sent=7 rpcs_failed=0  ok
+  …
+  12 of 12 lookups needed more than one round
+...
+PASS: 20 nodes, random joins, every lookup returned the true 4 closest nodes, and the file reached all leechers intact.
+```
+
+A failing run prints its `SEED`; rerun with `SEED=<that number>` to
+repeat the same joins and targets. Walkthrough of a 3-round lookup:
+[DRY-RUN.md](docs/DRY-RUN.md) part 4.
+
 ### One node at a time (e.g. in split VSCode terminals)
 
 ```sh
@@ -280,6 +305,7 @@ internal/transfer/   file sharing on top of the DHT
 scripts/demo.sh            5 processes: joining and lookup
 scripts/demo-transfer.sh   5 processes: put/get, share, downloads, killed seeder
 scripts/demo-seeder-death.sh  seeder killed mid-download: the file is lost on main
+scripts/demo-big-network.sh   20 nodes, random joins, lookups checked by brute force, transfer
 scripts/lib/nodes.sh       shared helper: start N nodes with console FIFOs (bash 3.2)
 docs/                concept docs 01-07 + reference docs
 .vscode/launch.json  debug configurations
