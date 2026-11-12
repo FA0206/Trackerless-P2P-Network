@@ -4,9 +4,8 @@ import "encoding/json"
 
 // MessageType identifies which of the (currently two) Kademlia RPCs an
 // Envelope carries. Paper Sec. 2.3 defines four: PING, STORE, FIND_NODE,
-// FIND_VALUE. STORE/FIND_VALUE are out of scope for this pass -- see
-// docs/05-iterative-parallel-lookup.md's "what's next" note and the
-// top-level README.
+// FIND_VALUE. STORE/FIND_VALUE are not implemented yet -- see the status
+// table in the top-level README.
 type MessageType string
 
 const (

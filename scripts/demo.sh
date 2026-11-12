@@ -54,28 +54,28 @@ wait_for_log() {
 }
 
 echo "Starting node0 on :9000 (first node, nothing to bootstrap against)..."
-"$BIN" --port 9000 --id-seed demo0 >"$LOG_DIR/node0.log" 2>&1 &
+"$BIN" --console=false --port 9000 --id-seed demo0 >"$LOG_DIR/node0.log" 2>&1 &
 PIDS="$PIDS $!"
 sleep 0.3
 
 echo "Starting node1 on :9001, bootstrapping via node0..."
-"$BIN" --port 9001 --id-seed demo1 --bootstrap 127.0.0.1:9000 >"$LOG_DIR/node1.log" 2>&1 &
+"$BIN" --console=false --port 9001 --id-seed demo1 --bootstrap 127.0.0.1:9000 >"$LOG_DIR/node1.log" 2>&1 &
 PIDS="$PIDS $!"
 wait_for_log "$LOG_DIR/node1.log" "bootstrap complete" 10
 
 echo "Starting node2 on :9002, bootstrapping via node1..."
-"$BIN" --port 9002 --id-seed demo2 --bootstrap 127.0.0.1:9001 >"$LOG_DIR/node2.log" 2>&1 &
+"$BIN" --console=false --port 9002 --id-seed demo2 --bootstrap 127.0.0.1:9001 >"$LOG_DIR/node2.log" 2>&1 &
 PIDS="$PIDS $!"
 wait_for_log "$LOG_DIR/node2.log" "bootstrap complete" 10
 
 echo "Starting node3 on :9003, bootstrapping via node2..."
-"$BIN" --port 9003 --id-seed demo3 --bootstrap 127.0.0.1:9002 >"$LOG_DIR/node3.log" 2>&1 &
+"$BIN" --console=false --port 9003 --id-seed demo3 --bootstrap 127.0.0.1:9002 >"$LOG_DIR/node3.log" 2>&1 &
 PIDS="$PIDS $!"
 wait_for_log "$LOG_DIR/node3.log" "bootstrap complete" 10
 
 TARGET="$(node_id demo2)"
 echo "Starting node4 on :9004, bootstrapping via node3, then looking up node2's ID ($TARGET)..."
-"$BIN" --port 9004 --id-seed demo4 --bootstrap 127.0.0.1:9003 \
+"$BIN" --console=false --port 9004 --id-seed demo4 --bootstrap 127.0.0.1:9003 \
 	--lookup "$TARGET" --lookup-after 300ms >"$LOG_DIR/node4.log" 2>&1 &
 PIDS="$PIDS $!"
 wait_for_log "$LOG_DIR/node4.log" "TRIGGERED LOOKUP RESULT" 15
@@ -99,6 +99,17 @@ echo
 echo "Rounds:      $ROUNDS"
 echo "RPCs sent:   $RPCS_SENT"
 echo "RPCs failed: $RPCS_FAILED"
+echo
+
+# Every message a node receives carries the sender's ID, and the receiver
+# records that sender in its routing table. Counting the distinct senders in
+# each log shows that knowledge spreads as a side effect of joins and
+# lookups: node0 learns about nodes that never bootstrapped through it.
+echo "=== Who learned about whom (distinct peers each node received RPCs from) ==="
+for i in 0 1 2 3 4; do
+	PEERS="$(grep -o 'from=[0-9a-f]*@' "$LOG_DIR/node$i.log" | sort -u | wc -l | tr -d ' ')"
+	echo "node$i heard directly from $PEERS of the other 4 nodes"
+done
 echo
 
 if [ "$EXPECTED" = "$ACTUAL" ]; then

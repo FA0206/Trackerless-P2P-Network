@@ -93,6 +93,12 @@ func (n *Node) RoutingTableSize() int {
 	return n.rt.Size()
 }
 
+// RoutingTableSnapshot returns every non-empty k-bucket, keyed by bucket
+// index (see RoutingTable.Snapshot). Used by the CLI's `table` command.
+func (n *Node) RoutingTableSnapshot() map[int][]Contact {
+	return n.rt.Snapshot()
+}
+
 // handleMessage is the single entry point for every received packet: it
 // updates the routing table for whoever sent it (paper Sec. 2.2: "when a
 // node receives any message... it updates the appropriate k-bucket for the
@@ -248,28 +254,34 @@ func (n *Node) replyFindNode(from *net.UDPAddr, req Envelope) {
 	}
 }
 
-// Bootstrap joins the network through a single known contact: it performs
-// a node lookup for its own ID, seeded with that one contact. Per paper
-// Sec. 2.3 ("To join the network..."), that lookup is what actually
-// populates this node's routing table (via the FIND_NODE responses it
-// gets back) and announces this node's existence to everyone on the
-// lookup path (since each of them sees this node as the RPC sender and
-// updates their own routing table in turn).
+// Bootstrap joins the network given only the UDP address of one node that
+// is already in it. Two steps (docs/04-bootstrap-and-join.md):
 //
-// We don't yet know the seed's real node ID when this is called (the CLI
-// only has a host:port to bootstrap against) -- but we don't need to: the
-// seed is passed only as a starting *lookup candidate*, never written
-// into the routing table directly. The first reply we get back from it
-// carries its real ID in the envelope, and the normal receive path
-// (handleMessage -> touchContact) records it correctly from there. If we
-// instead inserted a placeholder ID into the routing table up front, we'd
-// permanently corrupt one bucket slot with a real address under the wrong
-// ID. See docs/04-bootstrap-and-join.md.
+//  1. PING the address. We only know an IP:port, not who is listening
+//     there; the PONG's envelope carries the responder's real node ID, and
+//     the normal receive path (handleMessage -> touchContact) files it in
+//     our routing table under that real ID. No reply means the bootstrap
+//     node is unreachable, which we report instead of carrying on.
+//  2. Look up our own ID (paper Sec. 2.3, "To join the network..."). That
+//     lookup fills our routing table from the FIND_NODE replies, and every
+//     node we query records us as an RPC sender, which is how the network
+//     learns we exist.
 //
 // SIMPLIFICATION: the paper additionally has a freshly-joined node refresh
 // every bucket farther away than its closest neighbor. We skip that extra
 // refresh pass; the self-lookup alone is enough to populate a useful
 // routing table at this project's scale.
-func (n *Node) Bootstrap(ctx context.Context, seed Contact) (*LookupResult, error) {
-	return n.lookup(ctx, n.ID, []Contact{seed})
+func (n *Node) Bootstrap(ctx context.Context, addr *net.UDPAddr) (*LookupResult, error) {
+	unknown := Contact{IP: addr.IP.String(), Port: addr.Port} // ID is all-zero: not known yet
+	pingCtx, cancel := context.WithTimeout(ctx, n.rpcTimeout)
+	pong, err := n.sendAndWait(pingCtx, unknown, MsgPing, nil)
+	cancel()
+	if err != nil {
+		return nil, fmt.Errorf("kademlia: bootstrap node %s did not answer PING: %w", addr, err)
+	}
+	if pong.SenderID == n.ID {
+		return nil, fmt.Errorf("kademlia: bootstrap address %s is this node itself", addr)
+	}
+	n.logger.Info("bootstrap node identified", "id", pong.SenderID.String(), "addr", addr.String())
+	return n.Lookup(ctx, n.ID)
 }

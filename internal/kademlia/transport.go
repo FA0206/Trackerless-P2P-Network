@@ -38,7 +38,7 @@ const lengthPrefixSize = 4
 // into making sense of junk), and because it means the exact same framing
 // function could be reused unchanged if this transport were ever swapped
 // for TCP (relevant if/when piece transfer is added on a separate TCP
-// connection -- see the README's "what's next"). See
+// connection -- see the README's status table). See
 // docs/03-message-framing.md for the full reasoning.
 type Transport struct {
 	conn   *net.UDPConn

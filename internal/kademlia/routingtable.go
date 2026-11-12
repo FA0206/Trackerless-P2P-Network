@@ -82,6 +82,18 @@ func (rt *RoutingTable) Closest(target ID, count int) []Contact {
 	return all
 }
 
+// Snapshot returns the contents of every non-empty bucket, keyed by bucket
+// index, each oldest-first. It's for inspection/debugging only.
+func (rt *RoutingTable) Snapshot() map[int][]Contact {
+	out := make(map[int][]Contact)
+	for i, b := range rt.buckets {
+		if contacts := b.Contacts(); len(contacts) > 0 {
+			out[i] = contacts
+		}
+	}
+	return out
+}
+
 // Size returns the total number of contacts known across all buckets.
 func (rt *RoutingTable) Size() int {
 	n := 0

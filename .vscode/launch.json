@@ -1,0 +1,53 @@
+{
+    // See docs/DEBUGGING.md for how to use these.
+    // Start them in order (node0, wait for "node started", then node1, ...):
+    // a node that starts bootstrapping before its seed is listening will
+    // wait a full --rpc-timeout for a PONG that never comes.
+    // --rpc-timeout is 5m so pausing at a breakpoint in one node doesn't make
+    // the other nodes give up on it.
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "node0 :9000 (first node)",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/cmd/node",
+            "args": ["--port", "9000", "--id-seed", "demo0", "--rpc-timeout", "5m", "--verbose"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "node1 :9001 (joins via 9000)",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/cmd/node",
+            "args": ["--port", "9001", "--id-seed", "demo1", "--bootstrap", "127.0.0.1:9000", "--rpc-timeout", "5m", "--verbose"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "node2 :9002 (joins via 9001)",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/cmd/node",
+            "args": ["--port", "9002", "--id-seed", "demo2", "--bootstrap", "127.0.0.1:9001", "--rpc-timeout", "5m", "--verbose"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "test: TestEndToEndBootstrapAndLookup",
+            "type": "go",
+            "request": "launch",
+            "mode": "test",
+            "program": "${workspaceFolder}/internal/kademlia",
+            "args": ["-test.run", "^TestEndToEndBootstrapAndLookup$", "-test.v"]
+        },
+        {
+            "name": "attach to a running node process",
+            "type": "go",
+            "request": "attach",
+            "mode": "local",
+            "processId": "${command:pickProcess}"
+        }
+    ]
+}

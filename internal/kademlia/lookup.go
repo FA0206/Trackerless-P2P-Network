@@ -45,17 +45,14 @@ type lookupCandidate struct {
 // regardless of whether earlier rounds improved on the best distance, which
 // is simpler to implement correctly and produces the same final answer, at
 // the cost of occasionally issuing a few more RPCs than the paper's
-// version would in the "lookup already converged early" case. See
-// docs/05-iterative-parallel-lookup.md.
+// version would in the "lookup already converged early" case.
+//
+// SIMPLIFICATION: rounds are synchronous -- each round waits for all of its
+// RPCs (including timeouts) before picking the next batch, whereas the
+// paper keeps alpha RPCs in flight and continues as soon as any reply
+// lands. A dead contact therefore costs one full rpcTimeout per round.
+// See docs/05-iterative-parallel-lookup.md.
 func (n *Node) Lookup(ctx context.Context, target ID) (*LookupResult, error) {
-	return n.lookup(ctx, target, nil)
-}
-
-// lookup is Lookup's implementation, with room for extra starting
-// candidates that aren't (yet) in the routing table -- used by Bootstrap
-// to seed the very first round with a contact whose real ID isn't known
-// yet. See Bootstrap's doc comment for why that distinction matters.
-func (n *Node) lookup(ctx context.Context, target ID, extraSeeds []Contact) (*LookupResult, error) {
 	result := &LookupResult{Target: target}
 
 	candidates := make(map[ID]*lookupCandidate)
@@ -72,9 +69,6 @@ func (n *Node) lookup(ctx context.Context, target ID, extraSeeds []Contact) (*Lo
 		order = append(order, c.ID)
 	}
 	for _, c := range n.rt.Closest(target, n.k) {
-		addCandidate(c)
-	}
-	for _, c := range extraSeeds {
 		addCandidate(c)
 	}
 
