@@ -112,7 +112,7 @@ show 3 "fetch"
 send 4 "fetch $KEY $WORK/node4.bin"
 wait_for_log "$WORK/node4.log" "fetch" 30
 show 4 "fetch"
-echo "  node4 piece by piece (round-robin over its providers):"
+echo "  node4 piece by piece, in arrival order (rarest-first, fetched in parallel):"
 grep 'msg="piece received"' "$WORK/node4.log" | grep -o 'index=[0-9]* of=[0-9]* from=[^ ]*' | sed 's/^/    /'
 
 echo
