@@ -56,7 +56,10 @@ wait_for_log() {
 echo "Starting node0 on :9000 (first node, nothing to bootstrap against)..."
 "$BIN" --console=false --port 9000 --id-seed demo0 >"$LOG_DIR/node0.log" 2>&1 &
 PIDS="$PIDS $!"
-sleep 0.3
+# Wait until node0's socket is bound: a PING sent earlier is silently lost
+# (UDP to an unbound port), and macOS can take a moment to launch a freshly
+# built binary for the first time.
+wait_for_log "$LOG_DIR/node0.log" "node started" 10
 
 echo "Starting node1 on :9001, bootstrapping via node0..."
 "$BIN" --console=false --port 9001 --id-seed demo1 --bootstrap 127.0.0.1:9000 >"$LOG_DIR/node1.log" 2>&1 &

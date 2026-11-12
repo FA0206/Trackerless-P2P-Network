@@ -1,7 +1,9 @@
 package kademlia
 
 import (
+	"bytes"
 	"context"
+	"slices"
 	"sort"
 )
 
@@ -14,6 +16,11 @@ type LookupResult struct {
 	Rounds     int       // number of parallel alpha-wide RPC batches issued
 	RPCsSent   int
 	RPCsFailed int
+
+	// FIND_VALUE only (see FindValue in values.go):
+	Values         [][]byte  // distinct values returned; nil if none found
+	ValuesFrom     []Contact // which nodes returned them
+	FromLocalStore bool      // answered from this node's own store, no RPCs
 }
 
 // lookupCandidate tracks one contact's status within a single Lookup call.
@@ -53,6 +60,15 @@ type lookupCandidate struct {
 // lands. A dead contact therefore costs one full rpcTimeout per round.
 // See docs/05-iterative-parallel-lookup.md.
 func (n *Node) Lookup(ctx context.Context, target ID) (*LookupResult, error) {
+	return n.iterativeFind(ctx, target, false)
+}
+
+// iterativeFind is the lookup algorithm shared by FIND_NODE and FIND_VALUE
+// (paper Sec. 2.3: "value lookups use FIND_VALUE rather than FIND_NODE
+// RPCs. Moreover, the procedure halts immediately when any node returns
+// the value"). With findValue set, each RPC is a FIND_VALUE, and the
+// lookup stops after the first round in which any node returned values.
+func (n *Node) iterativeFind(ctx context.Context, target ID, findValue bool) (*LookupResult, error) {
 	result := &LookupResult{Target: target}
 
 	candidates := make(map[ID]*lookupCandidate)
@@ -82,6 +98,7 @@ func (n *Node) Lookup(ctx context.Context, target ID) (*LookupResult, error) {
 	type rpcOutcome struct {
 		candidate *lookupCandidate
 		contacts  []Contact
+		values    [][]byte
 		err       error
 	}
 
@@ -112,8 +129,13 @@ func (n *Node) Lookup(ctx context.Context, target ID) (*LookupResult, error) {
 			go func(c *lookupCandidate) {
 				rpcCtx, cancel := context.WithTimeout(ctx, n.rpcTimeout)
 				defer cancel()
-				contacts, err := n.FindNode(rpcCtx, c.contact, target)
-				outcomes <- rpcOutcome{candidate: c, contacts: contacts, err: err}
+				o := rpcOutcome{candidate: c}
+				if findValue {
+					o.values, o.contacts, o.err = n.findValueRPC(rpcCtx, c.contact, target)
+				} else {
+					o.contacts, o.err = n.FindNode(rpcCtx, c.contact, target)
+				}
+				outcomes <- o
 			}(c)
 		}
 
@@ -126,11 +148,14 @@ func (n *Node) Lookup(ctx context.Context, target ID) (*LookupResult, error) {
 				n.logger.Debug("lookup rpc failed", "target", target.String(), "contact", o.candidate.contact.String(), "error", o.err)
 				continue
 			}
+			if len(o.values) > 0 {
+				result.ValuesFrom = append(result.ValuesFrom, o.candidate.contact)
+				result.Values = appendDistinct(result.Values, o.values)
+			}
 			for _, c := range o.contacts {
 				addCandidate(c)
 			}
 		}
-
 		sortByDistance()
 		// Trim to the k closest: anything farther can't end up in the
 		// final answer and would only add bookkeeping to later rounds.
@@ -140,6 +165,13 @@ func (n *Node) Lookup(ctx context.Context, target ID) (*LookupResult, error) {
 			}
 			order = order[:n.k]
 		}
+
+		if len(result.Values) > 0 {
+			// FIND_VALUE found something: stop. Every reply in this round
+			// was already collected (rounds are synchronous), so values
+			// from several holders in the same round are merged.
+			break
+		}
 	}
 
 	for _, id := range order {
@@ -147,7 +179,22 @@ func (n *Node) Lookup(ctx context.Context, target ID) (*LookupResult, error) {
 			result.Closest = append(result.Closest, c.contact)
 		}
 	}
-	n.logger.Info("lookup converged", "target", target.String(), "rounds", result.Rounds,
-		"rpcs_sent", result.RPCsSent, "rpcs_failed", result.RPCsFailed, "closest_found", len(result.Closest))
+	if findValue {
+		n.logger.Info("find_value finished", "key", target.String(), "values_found", len(result.Values),
+			"rounds", result.Rounds, "rpcs_sent", result.RPCsSent, "rpcs_failed", result.RPCsFailed)
+	} else {
+		n.logger.Info("lookup converged", "target", target.String(), "rounds", result.Rounds,
+			"rpcs_sent", result.RPCsSent, "rpcs_failed", result.RPCsFailed, "closest_found", len(result.Closest))
+	}
 	return result, nil
+}
+
+// appendDistinct appends each value in add that isn't already in vals.
+func appendDistinct(vals, add [][]byte) [][]byte {
+	for _, a := range add {
+		if !slices.ContainsFunc(vals, func(v []byte) bool { return bytes.Equal(v, a) }) {
+			vals = append(vals, a)
+		}
+	}
+	return vals
 }

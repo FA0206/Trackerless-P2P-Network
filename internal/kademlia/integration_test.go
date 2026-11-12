@@ -18,7 +18,7 @@ func spinUpNode(t *testing.T, id ID) *Node {
 	if os.Getenv("KADEMLIA_TEST_LOGS") != "" {
 		logger = NewLogger(id, slog.LevelDebug)
 	}
-	n, err := NewNode(id, 0, DefaultK, DefaultAlpha, 500*time.Millisecond, logger)
+	n, err := NewNode(Config{ID: id, RPCTimeout: 500 * time.Millisecond, Logger: logger})
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
@@ -103,6 +103,38 @@ func TestBootstrapLearnsRealSeedID(t *testing.T) {
 	}
 	if result.RPCsSent != 2 {
 		t.Errorf("expected one FIND_NODE per real node (2), got %d", result.RPCsSent)
+	}
+}
+
+// A FIND_NODE reply must not spend one of its k slots on the requester.
+// With k=1 that would leave the requester learning nothing at all.
+func TestFindNodeReplyExcludesRequester(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	nodes := make([]*Node, 3)
+	for i := range nodes {
+		n, err := NewNode(Config{ID: HashID([]byte{'x', byte(i)}), K: 1, RPCTimeout: 500 * time.Millisecond,
+			Logger: slog.New(slog.DiscardHandler)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		n.Start()
+		t.Cleanup(func() { n.Close() })
+		nodes[i] = n
+	}
+	a, b, c := nodes[0], nodes[1], nodes[2]
+	if _, err := c.Bootstrap(ctx, b.Self().UDPAddr()); err != nil { // b now knows c
+		t.Fatal(err)
+	}
+
+	got, err := a.FindNode(ctx, b.Self(), a.ID) // b also records a before answering
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, contact := range got {
+		if contact.ID == a.ID {
+			t.Fatalf("reply to %s included %s itself: %v", shortID(a.ID), shortID(a.ID), got)
+		}
 	}
 }
 

@@ -44,8 +44,14 @@ payload bytes. Merkle trees are optional (see `docs/FAQ.md`).
 ```sh
 go build ./... && go vet ./... && gofmt -l .   # gofmt must print nothing
 go test ./... -race -count=1                    # must pass before claiming done
-bash scripts/demo.sh                            # 5-process demo; must print PASS
+bash scripts/demo.sh                            # join + lookup demo; must print PASS
+bash scripts/demo-transfer.sh                   # put/get + file transfer + killed seeder; must print PASS
 ```
+
+Packages: `internal/kademlia` (the DHT, opaque values), `internal/transfer`
+(files on top of the DHT's public API), `internal/framing` (shared
+`[length][body]` frames), `cmd/node` (CLI + console). Dependencies point
+only downward; see `docs/ARCHITECTURE.md`.
 
 ## Invariants that are easy to break (details: docs/ARCHITECTURE.md)
 
@@ -54,22 +60,28 @@ bash scripts/demo.sh                            # 5-process demo; must print PAS
 2. Only IDs confirmed by a received message enter the routing table —
    never secondhand contacts or placeholder IDs. That's why `Bootstrap`
    PINGs before its self-lookup.
-3. A node never stores or returns itself.
-4. `Bucket` (and `id.go`) do no I/O; the eviction ping lives in `Node`.
+3. A node never stores or returns itself, and replies never return the
+   requester (`closestExcluding`).
+4. `Bucket`, `valueStore`, `Manifest` (and `id.go`) do no network I/O;
+   the eviction ping lives in `Node`.
 5. Register `pending[rpcID]` before sending a request.
-6. A lookup's candidate state lives in one goroutine; per-RPC goroutines
-   only send on a channel.
-7. Each UDP message must fit in one datagram (`maxDatagramSize`, 8 KB).
-   Bulk data never goes over the DHT.
-8. `scripts/demo.sh` greps exact log messages (`"bootstrap complete"`,
-   `"TRIGGERED LOOKUP RESULT"`), and recomputes node IDs as
-   `shasum(seed)`. Keep both in sync with the Go code.
+6. A lookup's candidate state, and a download's `downloader` state, live
+   in one goroutine; worker goroutines only send on a channel.
+7. Each UDP message must fit in one datagram (`maxDatagramSize`, 8 KB),
+   hence `maxValueSize`/`maxValuesPerKey`. File data only travels over TCP.
+8. Nothing from a peer is trusted: provider records are validated,
+   manifests must hash to the content key, pieces must match their
+   SHA-256. Downloads only create new files (`O_EXCL`).
+9. The demo scripts grep exact log/console text (listed in
+   `docs/ARCHITECTURE.md`, "If you change X"), and `demo.sh` recomputes
+   node IDs as `shasum(seed)`. Keep them in sync with the Go code.
 
 ## Environment gotchas (macOS, zsh)
 
 - The default shell is zsh: unquoted `$VAR` holding several PIDs is **not**
   word-split. Run multi-process shell snippets with `bash -c '...'`.
 - Background node processes outlive a tool call. Before a demo, check
-  that ports are free (`lsof -nP -iUDP:9000`) and kill leftovers.
+  that ports are free (`lsof -nP -i :9000`; each node holds UDP *and* TCP
+  on its port number) and kill leftovers.
 - Background nodes need `--console=false`, or they read stdin.
 - macOS has no `timeout` command.
