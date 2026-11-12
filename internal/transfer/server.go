@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"kademlia-demo/internal/framing"
@@ -19,6 +20,13 @@ type server struct {
 	lib       *Library
 	logger    *slog.Logger
 	ioTimeout time.Duration
+
+	// DEBUG ONLY (--debug-serve-delay): sleep this many nanoseconds before
+	// answering each GET_PIECE. Localhost transfers finish in milliseconds,
+	// so without it a demo can't reliably kill a seeder mid-download. 0
+	// (the default) means no delay. Atomic because it can be set while
+	// connections are being served.
+	debugServeDelay atomic.Int64
 }
 
 // listen opens the TCP listening socket. port 0 lets the OS pick.
@@ -101,6 +109,9 @@ func (s *server) answer(req request) ([]byte, error) {
 		}
 		return e.manifestBytes, nil
 	case opGetPiece:
+		if d := time.Duration(s.debugServeDelay.Load()); d > 0 {
+			time.Sleep(d)
+		}
 		return s.lib.readPiece(req.Key, req.Index)
 	default:
 		return nil, fmt.Errorf("unknown op %q", req.Op)

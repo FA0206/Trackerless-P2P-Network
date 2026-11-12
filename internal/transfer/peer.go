@@ -41,6 +41,13 @@ func (p *Peer) Close() error {
 	return p.srv.close()
 }
 
+// SetDebugServeDelay is a DEBUG ONLY knob (CLI: --debug-serve-delay): the
+// file server waits d before answering each GET_PIECE, so demos can kill a
+// provider while downloads are still running. 0 turns it off.
+func (p *Peer) SetDebugServeDelay(d time.Duration) {
+	p.srv.debugServeDelay.Store(int64(d))
+}
+
 // TCPPort is the port the file server listens on.
 func (p *Peer) TCPPort() int {
 	return p.srv.port()

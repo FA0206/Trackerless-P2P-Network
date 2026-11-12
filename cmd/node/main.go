@@ -41,6 +41,7 @@ func run() error {
 	k := flag.Int("k", kademlia.DefaultK, "bucket size / replication parameter k")
 	alpha := flag.Int("alpha", kademlia.DefaultAlpha, "lookup concurrency parameter alpha")
 	rpcTimeout := flag.Duration("rpc-timeout", kademlia.DefaultRPCTimeout, "per-RPC timeout (raise this, e.g. to 5m, when pausing at breakpoints)")
+	debugServeDelay := flag.Duration("debug-serve-delay", 0, "DEBUG ONLY: wait this long before answering each piece request, so a demo can kill this node mid-transfer (0 = off)")
 	flag.Parse()
 
 	id, err := resolveID(*idSeed)
@@ -85,6 +86,10 @@ func run() error {
 		return err
 	}
 	defer peer.Close()
+	if *debugServeDelay > 0 {
+		peer.SetDebugServeDelay(*debugServeDelay)
+		logger.Warn("DEBUG: delaying every piece this node serves", "delay", debugServeDelay.String())
+	}
 
 	logger.Info("node started", "id", id.String(), "addr", n.Addr().String(), "tcp_port", peer.TCPPort())
 
