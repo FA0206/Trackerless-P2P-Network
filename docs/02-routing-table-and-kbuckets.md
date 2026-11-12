@@ -138,6 +138,88 @@ whole thing by XOR distance to the target. At this project's scale (at
 most `160 * k` contacts, a few thousand even at `k = 20`), that's fast
 enough, and it's a lot harder to get wrong than bucket-expansion logic.
 
+### The non-simplified way: visit buckets in XOR order
+
+The paper only hints at it (Sec. 2.3, on FIND_NODE replies): "These
+triples can come from a single k-bucket, or they may come from multiple
+k-buckets if the closest k-bucket is not full." The trick is that the
+**buckets themselves can be ranked by distance to the target**, without
+looking at the contacts inside them.
+
+Let `s` be our ID, `t` the target, and `i = BucketIndex(s, t)`, the
+highest bit where `s` and `t` differ. Take a contact `c` that lives in
+bucket `j`. Its distance to the target, `c ⊕ t`, works out like this:
+
+| Bucket of `c` | Why | Distance `c ⊕ t` lies in |
+|---|---|---|
+| `j = i` (the target's own bucket) | `c` and `t` both differ from `s` at bit `i`, so they agree there and above | `[0, 2^i)` — the closest group |
+| `j < i` (any lower bucket) | `c` agrees with `s` at bit `i`, `t` doesn't | `[2^i, 2^(i+1))` — all lower buckets share one range, so they must be sorted *together* |
+| `j > i` | `c` differs from `s` at bit `j`, `t` doesn't | `[2^j, 2^(j+1))` — each higher bucket is its own range, farther as `j` grows |
+
+So the exact visiting order is:
+
+1. bucket `i`;
+2. then all buckets below `i`, merged and sorted;
+3. then buckets `i+1, i+2, …` in increasing order.
+
+Stop as soon as you have `count` contacts. Only the group you stop in
+needs sorting. (If `t = s`, as in a self-lookup, every contact in bucket
+`j` is at distance `[2^j, 2^(j+1))`, so you simply walk buckets
+`0, 1, 2, …`.)
+
+Note that "expand outward, `i±1`, `i±2`, …" — the obvious guess — is
+**not** this order. A contact in bucket `i−5` is closer to the target
+than any contact in bucket `i+1`.
+
+libtorrent's `routing_table::find_node` walks its buckets this way:
+first from the target's bucket toward the buckets nearer itself, then
+back out toward the farthest. (Checked in libtorrent's
+`src/kademlia/routing_table.cpp`, branch `RC_2_0`. libtorrent numbers
+buckets by shared-prefix length, the reverse of our `BucketIndex`, so
+its "toward higher indexes" is our "toward lower".)
+
+**Cost.** Let `C` be the total number of contacts in the table:
+
+| | This project's `Closest` | Bucket-ordered walk |
+|---|---|---|
+| Contacts examined | all `C` | only those in the buckets actually taken (≈ `count`, plus one partially used group) |
+| Sorting | `O(C log C)` | `O(m log m)`, where `m` is the size of the groups taken (≈ `k`) |
+| Bucket headers scanned | 160 | up to 160 (it's a flat array either way) |
+
+A node in a network of `N` nodes holds roughly `k · log₂(N/k)`
+contacts, since only the top ~`log₂ N` buckets are non-empty (see the
+real tables in DRY-RUN part 1). Even for a million nodes that's a few
+hundred contacts, so the sort costs microseconds. The walk matters when
+a node answers thousands of `FIND_NODE`s per second, not for
+correctness.
+
+### Bucket splitting (paper Sec. 2.4) and what it changes
+
+The paper's table is a binary tree. It starts as a single bucket. A full
+bucket **splits only if its range contains our own ID**; a full bucket
+that doesn't simply drops newcomers (after the ping check). Each split
+peels off one "far half". The end result has about `log₂(N/k)` leaves,
+which is the same shape as the non-empty part of our 160-slot array. So
+for the basic rule, the flat array and the tree hold essentially the
+same contacts, and the walk above works on either.
+
+The splitting tree can do two things the flat array can't:
+
+- **The relaxed rule (Sec. 2.4, Fig. 5).** Also split buckets *not*
+  containing our ID, until we know every contact in the smallest subtree
+  around us with at least `k` nodes. In an unbalanced tree this lets a
+  node hold more than `k` contacts in one "distance band". Our array is
+  capped at `k` per index.
+- **Accelerated lookups (Sec. 4.2).** Split far buckets too, up to
+  `b − 1` extra levels. That gives about `2^b · log_{2^b} N` buckets, and
+  cuts lookups to about `log_{2^b} N` hops. The paper's implementation
+  used `b = 5`.
+
+Neither changes how `Closest` should walk the buckets. Both change *how
+many* contacts are worth walking. Implementing the tree means replacing
+`RoutingTable`'s array with leaves keyed by prefix, and making `Update`
+split. `Bucket` itself (the update rule) is unchanged.
+
 ## Where this lives in the code
 
 | Concept | Function | File |

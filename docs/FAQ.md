@@ -2,6 +2,10 @@
 
 Short answers, with pointers to the doc that has the long one.
 
+Claims about outside systems (BitTorrent BEPs, libtorrent, eMule's Kad,
+research papers) link to their sources. Anything we could not check
+against a primary source is marked **(not verified)**.
+
 ## Joining the network
 
 ### What exactly does a new node need to join? Is it an IP address, or something else?
@@ -52,7 +56,92 @@ doesn't detect this, so don't do it.
 
 No. It's distance in the ID space only. Two nodes "close" by XOR can be
 on different continents. Kademlia uses it to decide *who is responsible
-for what* and *who to ask next*, not *who is fast to reach*.
+for what* and *who to ask next*, not *who is fast to reach*. See the next
+answer for what real systems do about latency.
+
+### Do real implementations pick node IDs so that nearby IDs mean low latency? Does Kademlia even try?
+
+**No, and Kademlia deliberately doesn't.** IDs are random (paper
+Sec. 2.1: "Node IDs are currently just random 160-bit identifiers"; here,
+`RandomID` / `HashID` in `internal/kademlia/id.go`). That randomness is
+the point. Keys and nodes are spread uniformly, so every node is
+responsible for about the same share of keys whatever its location, and
+an attacker can't easily pick where they land. If IDs encoded location,
+all of one region's nodes would crowd one part of the ID space, and one
+region would end up responsible for a skewed share of keys.
+
+What Kademlia offers instead is **flexibility, which can be spent on
+latency**:
+
+- Any contact in the right bucket makes the same progress toward a target.
+  So among those equally good candidates you can prefer the fast ones. The
+  paper says this itself (Sec. 2.3): Kademlia "can route for lower latency
+  because it has the flexibility of choosing any one of k nodes", and
+  footnote 1: "Bucket entries and FIND replies could be augmented with
+  round trip time estimates for use in selecting the α nodes."
+- The literature names two techniques
+  ([Gummadi et al., SIGCOMM 2003](https://www.cs.yale.edu/homes/ramki/sigcomm03.pdf)):
+  **proximity neighbor selection (PNS)**, which fills routing-table slots
+  with low-latency nodes, and **proximity route selection (PRS)**, which
+  picks the low-latency next hop among candidates. The paper argues that
+  geometries with more freedom of choice (the ring, and by extension
+  XOR) make both more effective.
+
+What real systems do:
+
+- **libtorrent** (Mainline DHT) uses round-trip time as a tie-breaker when
+  maintaining its routing table. In `src/kademlia/routing_table.cpp`
+  (branch `RC_2_0`, read directly), `replace_node_impl` has a last-resort
+  rule: "if the node we found matching our bit prefix has higher RTT than
+  the new node, replace it". `fill_from_replacements` also promotes the
+  lowest-RTT replacement node. That's a mild form of PNS. Node IDs
+  themselves still don't encode location.
+- **Azureus/Vuze's DHT** computed **Vivaldi network coordinates**:
+  synthetic positions whose distances predict RTT. It used them to steer
+  DHT traversal toward nearby nodes. Source: summaries of
+  [Ledlie et al., NSDI 2007](https://static.usenix.org/events/nsdi07/tech/full_papers/ledlie/ledlie_html/index.html)
+  found via search, **(not verified)** against the paper's text.
+- Research prototypes add PNS to Kademlia's iterative lookup, e.g. by
+  preferring same-ISP peers
+  ([Kaune et al., P2P 2008](https://www.kom.tu-darmstadt.de/papers/KLKP08_1016.pdf);
+  summary from search, **(not verified)**).
+
+A subtlety for *iterative* lookups like ours: every RPC goes from the
+searcher straight to each queried node. So what matters is the
+searcher's RTT to each node, not node-to-node RTT along a path.
+
+**What does BEP 42 aim at, then?** Security, not latency.
+[BEP 42](https://www.bittorrent.org/beps/bep_0042.html) ties a node's ID
+to its external IP: the first 21 bits of the ID must match a CRC32C hash
+of the masked IP plus a random value `r` (0–7). The aim is to stop an
+attacker choosing IDs right next to a target infohash. Such an attacker
+could become the "k closest" nodes for it, to snoop or censor (a Sybil /
+eclipse attack). The BEP doesn't mention latency at all. And because the
+IP goes through a hash, neighboring IPs don't get neighboring IDs.
+Whether libtorrent enforces BEP 42 by default **(not verified)**: it's
+missing from Wikipedia's libtorrent BEP list, and we didn't find it in
+libtorrent's own docs.
+
+**In this codebase:** no RTT is recorded. Buckets keep the oldest live
+contacts (`bucket.go`), and `iterativeFind` (`lookup.go`) picks the α
+closest by XOR, whatever their latency. That matters for the planned
+"lookup latency vs. network size" graph.
+
+### What's the non-simplified way to find the k closest nodes in the routing table?
+
+`RoutingTable.Closest` (`internal/kademlia/routingtable.go`) collects
+every contact and sorts them all. The efficient way ranks *buckets* by
+distance to the target first, and only sorts what it takes:
+
+1. the target's own bucket;
+2. then every bucket below it, merged;
+3. then the buckets above it, in increasing order.
+
+libtorrent's `find_node` does this, and the paper's bucket-splitting
+tree changes how many contacts there are, not how to walk them. The
+derivation, the cost comparison (`O(C log C)` over all `C` contacts vs.
+roughly `O(k log k)`), and what splitting adds are in
+[02, "The non-simplified way"](02-routing-table-and-kbuckets.md#the-non-simplified-way-visit-buckets-in-xor-order).
 
 ### What's the difference between a node ID, an address, and a contact?
 
@@ -170,6 +259,87 @@ full `FIND_VALUE` reply inside one UDP datagram.
 
 ## File transfer (TCP)
 
+### How do I know which key to ask for? If I want an Ace Attorney file, what do I query?
+
+**Today: you can't find it by name. Someone has to give you the key.**
+Each file has exactly one key, its content key. That key is the first
+160 bits of SHA-256 over the file's manifest bytes (`ContentKey` in
+`internal/transfer/manifest.go`). It's computed in `Peer.Share`
+(`peer.go`) and printed by the console's `share` command
+(`content key: …`). The manifest includes the file name, size, piece
+size, and every piece hash. So the same bytes shared under a different
+file name get a *different* key.
+
+The DHT can answer "who stores values under key X?". It can't answer
+"which keys exist?" or "which key is Ace Attorney?". Values live only on
+the k nodes closest to their key, and nothing indexes keys. You get the
+key out of band: a chat message, a web page, a QR code. (The console's
+`put`/`get` *is* a name → value store, with key = SHA-1(name) in
+`consoleEnv.put`, `cmd/node/console.go`. But it stores text, not file
+keys, and anyone can write to any name.)
+
+**How real systems handle discovery:**
+
+- **Magnet links (still out of band).**
+  [BEP 9](https://www.bittorrent.org/beps/bep_0009.html):
+  `magnet:?xt=urn:btih:<infohash>&dn=<display name>`, where `xt` is the
+  only mandatory parameter. The link carries the key. The client finds
+  peers through the DHT, fetches the metadata from them, and checks it
+  hashes to the infohash. That's the same shape as our content key →
+  `FIND_VALUE` → `GET_MANIFEST` → `DecodeManifest`. What makes the
+  network trackerless is finding *peers*; finding *what to download*
+  still happens outside it, usually on websites that list magnet links.
+- **Keyword search inside a DHT.** eMule's Kad network publishes two kinds
+  of keys: a **source key** (hash of the file) pointing to peers that have
+  it, and a **keyword key** per word of the file name, pointing to source
+  keys. A search hashes a word and asks the nodes nearest that key. "Index
+  pollution" (bogus keyword entries) is a well-documented weakness.
+  Sources: academic descriptions, e.g.
+  [this Eurecom paper](https://eurecom.fr/publication/2309/download/ce-steinmo-070924.pdf)
+  and [this NCSU report](https://techrep.csc.ncsu.edu/2009/TR-2009-2.pdf).
+  **(Not verified against eMule's source code.)**
+- **Indexing by crawling.** [BEP 51](https://www.bittorrent.org/beps/bep_0051.html)
+  (Draft) adds `sample_infohashes`, so an indexer can list the infohashes
+  a DHT node stores, fetch their metadata, and build a search engine
+  outside the DHT.
+- **Names owned by a key.** [BEP 44](https://www.bittorrent.org/beps/bep_0044.html)
+  "mutable items" are stored under SHA-1(publisher's ed25519 public key +
+  optional salt). Each value is signed and carries an increasing sequence
+  number. That gives a stable, tamper-evident "name" whose content only
+  the key owner can change. You still have to learn the publisher's
+  public key out of band.
+
+**What a name → key layer could look like here (not implemented):**
+
+1. On `share`, also publish an index record for each normalized word of
+   the name. For example `Store(SHA-1("kw:" + word), record)`, where the
+   record is a JSON `{content_key, name, size, publisher}`. It must stay
+   under 256 bytes (`maxValueSize`), and at most 16 records fit per key
+   (`maxValuesPerKey`, `internal/kademlia/store.go`).
+2. `search ace attorney`: `FindValue` each word's key, intersect the
+   records by `content_key`, and show the candidates. The user picks one,
+   then `fetch`es its content key.
+
+Its trust problems, which are the hard part:
+
+- **Anyone can STORE anything under any key.** `Node.replyStore`
+  (`node.go`) checks only the size; it's labeled SIMPLIFICATION. Fake
+  "Ace Attorney" records pointing at junk are trivial to publish. Hash
+  checks don't help here: they prove you got *the file the key names*,
+  not that the key is the file you *wanted*.
+- **Flooding.** With 16 records per key and oldest-dropped, a spammer can
+  push real entries out. Common words overflow on their own.
+- **Sybil/eclipse.** Choose node IDs right next to `SHA-1("kw:ace")`, and
+  you *are* the k nodes that answer that search, free to censor or rewrite
+  it. That's exactly what BEP 42 makes harder for infohashes.
+- **Staleness.** Values never expire here, so records for deleted files
+  stay forever.
+
+Mitigations real systems use: signed records (BEP 44 style), trusted
+publisher lists or a web of trust, ranking by independent confirmations
+(cheap to fake with Sybils), and expiry with republishing. Each would be
+its own step.
+
 ### How does the output of the Kademlia algorithm tell us how to open a TCP connection?
 
 **Indirectly.** A plain lookup (`FIND_NODE`) returns the `k` nodes whose
@@ -251,6 +421,32 @@ of every piece. A downloader checks `hash(manifest) == key`
 for each piece (`VerifyPiece`). A peer can't send a fake piece without
 breaking a hash.
 
+### How does a leecher know what order the pieces go in when it rebuilds the file?
+
+From the **piece index**, never from arrival order. `PieceHashes[i]` in
+the manifest is the hash of the file's `i`-th chunk (`BuildManifest`).
+The downloader asks for piece `i` by index (`GET_PIECE`, sent from
+`providerConn.fetch` in `client.go`). The provider reads bytes
+`[i·PieceSize, …)` (`Library.readPiece`). The downloader checks them
+against `PieceHashes[i]` (`Manifest.VerifyPiece`) and writes them at
+`PieceOffset(i)` (`f.WriteAt` in `downloader.fetchPiecesInto`,
+`peer.go`). The step-by-step path, with file and line references, is in
+[07, "How the downloader knows where each piece goes"](07-file-transfer-over-tcp.md#how-the-downloader-knows-where-each-piece-goes).
+
+### Can this network handle pieces arriving out of order?
+
+On `main`: **the format can, the downloader never tries.**
+Positioning, verification, and `WriteAt` are all per-index, and a
+provider answers any index in any order. But `fetchPiecesInto` requests
+pieces strictly `0, 1, 2, …`, one at a time. And because replies don't
+carry the index, each connection must keep one request outstanding at a
+time. Details:
+[07, "Can pieces arrive out of order?"](07-file-transfer-over-tcp.md#can-pieces-arrive-out-of-order).
+
+Branch `feature/parallel-partial-seeding` changes this. It fetches out of
+order (rarest-first), concurrently over several connections, and lets
+peers serve pieces before they have the whole file.
+
 ### Why SHA-1 for node IDs but SHA-256 for files?
 
 Kademlia IDs and keys are 160 bits, SHA-1's output size, so node IDs use
@@ -282,3 +478,70 @@ later upgrade.
 The flat-list design keeps an easy upgrade path: replace "list of piece
 hashes" with "Merkle root", and add a proof to each piece response. It's
 a good stretch goal if you want a concrete thing to show.
+
+## Compared with BitTorrent / libtorrent
+
+### Is our wire protocol the same as libtorrent's? Could it be made the same easily?
+
+**No, it isn't the same.** The concepts line up closely, but every byte
+on the wire differs. libtorrent implements the BitTorrent BEPs: BEP 3
+(peer protocol), BEP 5 (DHT), BEP 9/10 (magnet metadata), BEP 44, BEP 51,
+BEP 52, and others (per
+[Wikipedia's libtorrent BEP table](https://en.wikipedia.org/wiki/Libtorrent)).
+The two layers compare separately.
+
+**DHT over UDP** — ours (`internal/kademlia`) vs.
+[BEP 5](https://www.bittorrent.org/beps/bep_0005.html):
+
+| | Ours | BEP 5 (Mainline DHT) |
+|---|---|---|
+| Encoding | JSON envelope inside a `[4-byte length]` frame | bencoded dictionary as the raw UDP payload, no length prefix |
+| Request/reply matching | `rpc_id`: 160-bit random | `t`: short transaction string (typically 2 bytes) |
+| Message kinds | `PING`, `FIND_NODE`, `STORE`, `FIND_VALUE` and `_RESP` types | `y` = `q`/`r`/`e`; queries `ping`, `find_node`, `get_peers`, `announce_peer` |
+| Contacts in replies | JSON `{id, ip, port}` | "compact node info": 26 bytes (20-byte ID + 4-byte IPv4 + 2-byte port) |
+| `k` | 20 | 8 |
+| Storing "I have X" | `STORE(key, any value ≤ 256 B)`; the IP comes from `--advertise-ip` | `announce_peer(info_hash, port, token)`: the storing node records the sender's **source IP**; it needs a `token` from an earlier `get_peers` |
+| Finding | `FIND_VALUE` → values or contacts | `get_peers` → `values` (6-byte compact peers) or `nodes`, plus a `token` |
+| Errors | `STORE_RESP {stored:false, reason}` only | `e` = `[code, message]`, codes 201–204 |
+| Routing table | flat 160 buckets, no refresh | splitting buckets, refresh after 15 min idle, good/questionable/bad nodes |
+
+Conceptually `FIND_VALUE` ≈ `get_peers`, and `STORE` of a provider
+record ≈ `announce_peer`. The routing table, bucket rule, and iterative
+lookup carry over almost unchanged.
+
+**Piece transfer over TCP** — ours (`internal/transfer`) vs.
+[BEP 3](https://www.bittorrent.org/beps/bep_0003.html):
+
+| | Ours | BEP 3 peer wire protocol |
+|---|---|---|
+| Start of a connection | no handshake | 68-byte handshake: `19`, `"BitTorrent protocol"`, 8 reserved bytes, 20-byte infohash, 20-byte peer ID |
+| Framing | `[4-byte length][JSON request]`; reply = header frame + raw data frame | `[4-byte length][1-byte message ID][payload]`; length 0 = keep-alive |
+| Unit of transfer | whole 64 KiB pieces | 16 KiB **blocks** (`request index, begin, length`) inside pieces (256 KiB typical) |
+| Flow control | none | `choke`/`unchoke`, `interested`/`not interested` |
+| Who has what | nothing on `main` (whole files only) | `bitfield` (high bit of byte 0 = piece 0) + `have` messages |
+| Pipelining | one request outstanding per connection | many outstanding requests per connection |
+| File description | manifest = JSON; key = SHA-256(manifest)[:20] | `info` dictionary, bencoded; v1 infohash = SHA-1(info); piece hashes = 20-byte SHA-1s concatenated |
+| Getting the description from peers | `GET_MANIFEST` | `ut_metadata` ([BEP 9](https://www.bittorrent.org/beps/bep_0009.html)) over the BEP 10 extension protocol, in 16 KiB blocks |
+
+One genuine match: both frame messages with a 4-byte big-endian length
+prefix. After BitTorrent's fixed-size handshake (which isn't framed),
+`framing.Read` would split a BitTorrent byte stream into the right
+messages. Only what's inside them differs.
+
+**Rough effort to become compatible.** This is our own estimate, not
+measured, for one student who already knows this codebase:
+
+- **DHT (to join the real Mainline DHT):** a bencode encoder/decoder (a
+  few hundred lines plus tests), the KRPC message mapping, compact
+  node/peer encodings, token generation and checking, `get_peers` /
+  `announce_peer` in place of `STORE`/`FIND_VALUE` for peer lists, error
+  replies, `k = 8`. Then testing against real nodes. Routing table and
+  lookup stay. **About 1–2 weeks.**
+- **Peer wire protocol (to swap pieces with real clients):** handshake,
+  the message codec, a minimal choke/interest state machine, bitfield and
+  `have`, block-level requests reassembled into pieces, pipelining,
+  bencoded `info` dictionaries with SHA-1 piece hashes, and BEP 9/10 for
+  magnet metadata. **About 2–4 weeks.**
+
+The protocols are well documented. Most of the time goes to edge cases
+real clients exercise. Not implemented, and out of scope for now.

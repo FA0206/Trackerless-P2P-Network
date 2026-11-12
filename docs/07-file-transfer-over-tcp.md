@@ -147,6 +147,68 @@ list of piece hashes). A Merkle tree would replace the list with one root
 hash; see [FAQ](FAQ.md#do-merkle-trees-make-sense-here) for why that's
 optional here.
 
+## How the downloader knows where each piece goes
+
+Arrival order never decides where a piece goes. Its **index**, and the
+manifest, do. The exact path through the code:
+
+1. **The order is fixed when the manifest is built.**
+   `BuildManifest` (`manifest.go`) reads the file front to back in
+   `PieceSize` chunks and appends each chunk's SHA-256 to
+   `PieceHashes` (line ~65). So `PieceHashes[i]` is the hash of the
+   `i`-th chunk, and the order is part of the content key, because the
+   key hashes the whole manifest.
+2. **The position of piece `i` is pure arithmetic** on the manifest:
+   `Manifest.PieceOffset(i)` = `i × PieceSize`, and
+   `Manifest.PieceLength(i)` is `PieceSize` except for a shorter last
+   piece (`manifest.go`, ~86–94).
+3. **The downloader asks for a piece by index.**
+   `downloader.fetchPiecesInto` (`peer.go`, ~266) loops `i` from `0` to
+   `NumPieces()-1`. It calls `downloader.fetch(i, opGetPiece, key, i, …)`,
+   which sends `{"op":"GET_PIECE","key":…,"index":i}` from
+   `providerConn.fetch` (`client.go`, ~41).
+4. **The provider reads exactly that range.** `server.answer`
+   (`server.go`, ~104) → `Library.readPiece(key, i)` (`library.go`, ~57)
+   → `ReadAt(buf, PieceOffset(i))` with `len(buf) = PieceLength(i)`.
+5. **The downloader checks the bytes really are piece `i`.**
+   `Manifest.VerifyPiece(i, data)` compares the length with
+   `PieceLength(i)` and the SHA-256 with `PieceHashes[i]`. A provider that
+   sends piece 3's bytes when asked for piece 7 fails this check.
+6. **…then writes them at piece `i`'s offset.**
+   `f.WriteAt(data, m.PieceOffset(i))` (`peer.go`, ~284). The file was
+   created empty (`O_EXCL`). Writing at an offset past the current end
+   simply extends the file, so pieces could be written in any order.
+
+The reply frame doesn't repeat the index. The downloader knows which
+piece it is because a connection carries **one request at a time**, so
+the next data frame on that connection must answer the request just sent
+(TCP delivers bytes in order).
+
+## Can pieces arrive out of order?
+
+**The format and the provider: yes.** Nothing above depends on order.
+A provider answers any index at any time, verification is per index, and
+`WriteAt` places each piece independently.
+
+**The downloader on `main`: it never asks out of order.** It requests
+`0, 1, 2, …` strictly one after another, each from a provider chosen
+round-robin. So pieces always arrive in index order, one at a time.
+
+Two constraints would matter if that changed:
+
+- **One outstanding request per connection.** Replies carry no index, so
+  sending a second request on the same connection before the first
+  answer arrives (pipelining) would need the index in the reply, or
+  strict first-in-first-out matching. Parallelism therefore has to come
+  from several connections.
+- **Partial files are deleted on failure.** Pieces that arrived — in any
+  order — are thrown away if the download fails (see DRY-RUN part 3).
+
+Branch `feature/parallel-partial-seeding` changes this. It fetches
+pieces out of order (rarest-first), concurrently over several
+connections, and lets partial downloaders serve the pieces they have
+(see that branch's `docs/08`).
+
 ## Seen in the demo
 
 `scripts/demo-transfer.sh`, `k = 3`, 1 MiB file = 16 pieces (full trace:
