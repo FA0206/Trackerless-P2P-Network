@@ -46,8 +46,9 @@ go build ./... && go vet ./... && gofmt -l .   # gofmt must print nothing
 go test ./... -race -count=1                    # must pass before claiming done
 bash scripts/demo.sh                            # join + lookup demo; must print PASS
 bash scripts/demo-transfer.sh                   # put/get + file transfer + killed seeder; must print PASS
-bash scripts/demo-seeder-death.sh               # seeder dies mid-download; on main PASS means the file was lost
+bash scripts/demo-seeder-death.sh               # seeder dies mid-download; PASS = file survives (on main: PASS = file lost)
 bash scripts/demo-big-network.sh                # 20 nodes, random joins, lookups vs brute force + transfer; must print PASS
+bash scripts/demo-parallel.sh                   # one download from 3 providers at once; must print PASS
 ```
 
 Packages: `internal/kademlia` (the DHT, opaque values), `internal/transfer`
@@ -64,16 +65,21 @@ only downward; see `docs/ARCHITECTURE.md`.
    PINGs before its self-lookup.
 3. A node never stores or returns itself, and replies never return the
    requester (`closestExcluding`).
-4. `Bucket`, `valueStore`, `Manifest` (and `id.go`) do no network I/O;
-   the eviction ping lives in `Node`.
+4. `Bucket`, `valueStore`, `Manifest`, `Bitfield`, `pickPiece` (and
+   `id.go`) do no network I/O; the eviction ping lives in `Node`.
 5. Register `pending[rpcID]` before sending a request.
-6. A lookup's candidate state, and a download's `downloader` state, live
-   in one goroutine; worker goroutines only send on a channel.
+6. A lookup's candidate state, and a download's `swarmDownload` state,
+   live in one goroutine (the download's event loop, `download.go`);
+   worker goroutines only send one event on a channel. A provider's
+   connection is lent to at most one worker at a time (one outstanding
+   request per provider).
 7. Each UDP message must fit in one datagram (`maxDatagramSize`, 8 KB),
    hence `maxValueSize`/`maxValuesPerKey`. File data only travels over TCP.
-8. Nothing from a peer is trusted: provider records are validated,
-   manifests must hash to the content key, pieces must match their
-   SHA-256. Downloads only create new files (`O_EXCL`).
+8. Nothing from a peer is trusted: provider records and bitfields are
+   validated, manifests must hash to the content key, pieces must match
+   their SHA-256. Downloads only create new files (`O_EXCL`). Write, then
+   publish: a piece is marked servable (`Library.markHave`) only after
+   its `WriteAt` completed.
 9. The demo scripts grep exact log/console text (listed in
    `docs/ARCHITECTURE.md`, "If you change X"), and `demo.sh` recomputes
    node IDs as `shasum(seed)`. Keep them in sync with the Go code.

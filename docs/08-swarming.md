@@ -32,7 +32,9 @@ download really can't finish.
 
 - **The original sharer** announces at `share`, as before.
 - **A downloader** announces as soon as it has **verified its first
-  piece**. Before that it has nothing to offer. Announcing once is enough:
+  piece** (in a worker, so the download doesn't wait for the DHT). A
+  finished download also waits for that announce to complete before
+  `Download` returns, so the next downloader is guaranteed to find it. Before that it has nothing to offer. Announcing once is enough:
   the provider record `{node_id, ip, tcp_port}` doesn't change as more
   pieces arrive, so the DHT side is untouched (same `STORE`, same value
   format).
@@ -92,9 +94,11 @@ BitTorrent clients do the same (rarest-first plus random first pieces).
 
 ### When a needed piece has no live holder
 
-The download is **stalled** when nothing is in flight (no piece, no
-bitfield request) and no needed piece can be assigned to an idle
-provider. Then:
+The download is **stalled** when no piece request is in flight and no
+live provider has — or, if its bitfield hasn't been fetched yet, might
+have — a piece we still need (`swarmDownload.canProgress`). Bitfield
+polling alone does *not* count as progress (see "What it took" below for
+why that matters). Then:
 
 1. immediately re-run provider discovery (if it isn't already running),
    and keep refreshing bitfields as they go stale;
@@ -193,4 +197,79 @@ re-checked against the real run (see "What it took" below).
 
 ## What it took to make the "after" demo work
 
-*(Filled in after implementation; see below.)*
+Nothing outside this design: no change to `internal/kademlia`, and none of
+the three known gaps had to be fixed. What the real runs did turn up:
+
+1. **A stall-detection bug, found by the demo.** The first version
+   counted the download as stalled only when *nothing at all* was in
+   flight. The periodic bitfield refreshes kept something in flight every
+   500 ms, so the stall timer reset forever. In the first branch run of
+   `demo-seeder-death.sh`, leechers stuck at 14/16 waited out the
+   script's 60 s instead of giving up after 15 s. Fixed by
+   `canProgress` (commit `cae73ad`), with a regression test,
+   `TestDownloadGivesUpWhenNoOneHasTheRest`.
+2. **The kill rule.** `main`'s script also kills when the leading leecher
+   is ¾ done. On the branch that fallback once fired with the leechers
+   holding only 14 of 16 pieces, and the file was lost: a correct
+   outcome, but not the scenario being tested. The branch script kills
+   only once the leechers together hold every piece.
+3. **`--max-inflight 1` for that demo.** With 4 requests in flight, the
+   leechers copied each other so fast that the union and the first
+   complete copy arrived almost together; 1 run in 6 had a leecher finish
+   before the kill. With one request each, rarest-first keeps every
+   leecher's request on a seeder-only piece, so the swarm runs well ahead
+   of each leecher: 8/8 runs passed, with leechers at roughly 11, 7, and
+   5 of 16 pieces when the seeder died. Concurrency itself is shown
+   separately by `scripts/demo-parallel.sh`.
+
+**The predictions, checked against the logs (DRY-RUN part 5):**
+
+- Synchronous rounds and no bucket refresh: as predicted, background
+  `FIND_VALUE`s that asked the dead seeder waited out the RPC timeout
+  (`rpcs_failed=1`). Because they run in workers, no piece request waited
+  on them, and no leecher stalled after the kill. They would matter if a
+  leecher's only other holders were still undiscovered at the kill.
+- Records never expiring: every rediscovery returned the dead seeder's
+  record again. It was already marked dead, so it cost nothing.
+- Announce waiting: on the branch, `demo-transfer.sh`'s final download
+  takes ~4 s instead of ~2 s. `Download` now waits for its announce,
+  whose lookup also asks the dead seeder.
+
+## Where this lives in the code
+
+| Concept | Function / type | File |
+|---|---|---|
+| Bitfield (BitTorrent layout), validation | `Bitfield`, `NewBitfield`, `FullBitfield`, `decodeBitfield` | `internal/transfer/bitfield.go` |
+| Rarest-first picker (pure) | `pickPiece`, `holderView` | `picker.go` |
+| Partial library entries, write-then-publish | `Library.addPartial`, `markHave`, `remove`, `bitfield`, `readPiece` | `library.go` |
+| `GET_BITFIELD`, closing open connections | `server.answer`, `server.close`, `server.track` | `server.go`, `protocol.go` |
+| The download event loop | `Peer.Download`, `swarmDownload.run`, `schedule`, `handle`, `canProgress` | `download.go` |
+| Workers | `startPiece`, `startBitfield`, `startDiscovery`, `startAnnounce`, `ensureConn` | `download.go` |
+| Limits and timers | `Config.MaxInFlight` (`--max-inflight`), `bitfieldMaxAge`, `rediscoverEvery`, `stallTimeout` | `peer.go`, `download.go`, `cmd/node/main.go` |
+
+## Tests
+
+- **Unit (no sockets):** `swarm_unit_test.go`. Bitfield layout matches
+  BEP 3; malformed bitfields rejected; the picker prefers the rarest
+  piece, skips busy holders and pieces not needed, and spreads ties
+  across downloaders.
+- **Integration (real UDP + TCP, `-race`):** `swarm_test.go`.
+  - `TestParallelDownloadFromThreeProviders`: 3 providers at 60 ms per
+    piece. It requires 3 requests in flight at once, pieces from all
+    three, and a duration under ¾ of the sequential time. Typical:
+    199 ms vs. ≥ 540 ms.
+  - `TestPartialSeedingSurvivesSeederDeath`: 4 leechers. The seeder is
+    closed the moment their union covers the file with none complete
+    (typically each holds 9–10 of 16), and every leecher must finish
+    with a byte-identical file.
+  - `TestDownloadGivesUpWhenNoOneHasTheRest`: the stall regression test.
+- The older `transfer_test.go` tests (seeder shutdown, corrupt provider,
+  two providers, unknown key) pass unchanged against the new downloader.
+
+## What's next
+
+Per-piece availability is done, so the remaining items before the
+end-goal measurements are the three known gaps (synchronous lookup
+rounds, bucket refresh, record expiry/republish). After those come
+instrumentation and the evaluation harness. See the README's
+simplifications table.

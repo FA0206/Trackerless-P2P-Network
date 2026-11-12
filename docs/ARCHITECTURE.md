@@ -1,6 +1,6 @@
 # Code architecture: what depends on what
 
-The concept docs (`01`–`07`) explain *ideas*. This document explains the
+The concept docs (`01`–`08`) explain *ideas*. This document explains the
 *code*: what each file is responsible for, which files depend on which,
 which goroutines exist, and what you have to touch when you change
 something.
@@ -63,11 +63,14 @@ Each file depends only on files in lower layers:
 ## `internal/transfer`
 
 ```
- peer.go ────── Peer: Share, Download (+ the per-download `downloader`), announce
+ peer.go ────── Peer, Config: Share, announce, decodeProviders
+ download.go ── Peer.Download: the swarm download (event loop + workers)
    │ uses
+   ├── picker.go     pickPiece: rarest-first, random ties                (pure)
+   ├── bitfield.go   Bitfield: which pieces a peer has (BEP 3 layout)    (pure)
    ├── manifest.go   Manifest, pieces, SHA-256 checks, ContentKey      (pure, no I/O except reading the source file)
    ├── provider.go   ProviderRecord: the DHT value format
-   ├── library.go    files this peer can serve; reads pieces from disk
+   ├── library.go    files this peer can serve, complete or partial; reads pieces from disk
    ├── server.go     TCP listener + per-connection handler     ─┐ both speak protocol.go
    ├── client.go     dial a provider, one request/response     ─┘ over internal/framing
    └── kademlia.Node  (Store, FindValue, Self, Logger)
@@ -78,10 +81,13 @@ Each file depends only on files in lower layers:
 | `manifest.go` | build/encode/decode/validate a manifest, verify a piece, content key | `kademlia.ID` only |
 | `provider.go` | encode/decode/validate provider records | `kademlia.ID` |
 | `protocol.go` | TCP request/response shapes, op names, frame size limits | `kademlia.ID` |
-| `library.go` | key → (manifest, file path); `readPiece` | `manifest.go` |
-| `server.go` | accept loop; `handleConn` request loop; `answer`; the DEBUG ONLY `debugServeDelay` (`--debug-serve-delay`) | `library.go`, `protocol.go`, framing |
+| `bitfield.go` | `Bitfield` (`Has`, `Set`, `Count`), `decodeBitfield` validation. **No I/O.** | — |
+| `picker.go` | `pickPiece`: rarest needed piece with an idle holder, random ties. **No I/O.** | `bitfield.go` |
+| `library.go` | key → (manifest, file path, `have` bitfield); `addComplete`/`addPartial`/`markHave`/`remove`; `readPiece` serves only pieces it has | `manifest.go`, `bitfield.go` |
+| `server.go` | accept loop; `handleConn` request loop; `answer` (`GET_MANIFEST`, `GET_BITFIELD`, `GET_PIECE`); tracks open connections so `close` ends them; the DEBUG ONLY `debugServeDelay` (`--debug-serve-delay`) | `library.go`, `protocol.go`, framing |
 | `client.go` | `dialProvider`; `providerConn.fetch` | `protocol.go`, framing |
-| `peer.go` | `Share`, `announce`, `Download`, provider failover | all of the above + `kademlia.Node` |
+| `peer.go` | `Config`, `NewPeer`, `Share`, `announce`, `decodeProviders` | `library.go`, `server.go`, `kademlia.Node` |
+| `download.go` | `Peer.Download`; `swarmDownload` (event loop `run`/`schedule`/`handle`/`canProgress`, workers `startPiece`/`startBitfield`/`startDiscovery`/`startAnnounce`) | all of the above + `kademlia.Node` |
 
 ## Public APIs
 
@@ -97,10 +103,12 @@ kademlia.NewNode(kademlia.Config{ID, Port, AdvertiseIP, K, Alpha, RPCTimeout, Lo
 (*Node).Addr(), Self(), Logger(), RoutingTableSize(), RoutingTableSnapshot(), StoredKeyCount()
 
 // internal/transfer
-transfer.NewPeer(node, tcpPort, ioTimeout) (*Peer, error)
+transfer.NewPeer(node, transfer.Config{TCPPort, IOTimeout, MaxInFlight}) (*Peer, error)
 (*Peer).Share(ctx, path) (contentKey kademlia.ID, error)
 (*Peer).Download(ctx, contentKey, outPath) (*DownloadResult, error)
-(*Peer).TCPPort(), Library().List(), Close()
+(*Peer).TCPPort(), Library().List(), Close()          // Close also ends open connections
+(*Peer).SetDebugServeDelay(d)                          // DEBUG ONLY (--debug-serve-delay)
+// DownloadResult: Pieces, PiecesFrom, FailedProviders, MaxInFlight, Duration, ...
 
 // internal/framing
 framing.Encode / Decode     // one frame = one datagram
@@ -128,15 +136,28 @@ framing.Write / Read        // frames on a stream
 ```
  console.go fetch
    ▼
- peer.go     Download ── kademlia FindValue(key) ── (DHT RPCs as above) ──► provider records
+ download.go Peer.Download ── kademlia FindValue(key) ──► provider records
+             swarmDownload.fetchManifest (one provider at a time) → DecodeManifest
+             openFile: O_EXCL + Library.addPartial        ← from here on, we serve what we have
    ▼
- peer.go     downloader.fetch ── client.go dialProvider ══ TCP handshake ══► server.go Accept → go handleConn
-             client.go providerConn.fetch: framing.Write(req) ───────────► framing.Read → answer → library.go
-                                           framing.Read(hdr, data) ◄──── writeData
+ download.go run (event loop, ONE goroutine owns all state)
+    schedule ─┬─ pickPiece (picker.go) → startPiece ──► worker: dial/fetch GET_PIECE → VerifyPiece ─┐
+              ├─ stale bitfield       → startBitfield ─► worker: fetch GET_BITFIELD → decodeBitfield ─┤
+              ├─ every 1 s            → startDiscovery ► worker: kademlia FindValue → records ───────┤ events
+              └─ after 1st piece      → startAnnounce ─► worker: Peer.announce (kademlia Store) ─────┤ channel
+    wait ◄──────────────────────────────────────────────────────────────────────────────────────┘
+    handle: WriteAt → have.Set → Library.markHave   (write, then publish)
+            or markDead (close conn) / add providers / note announce
    ▼
- manifest.go DecodeManifest / VerifyPiece   (reject → markDead → next provider)
-   ▼
- peer.go     WriteAt → Library.add → announce (kademlia Store)
+ complete: file.Close; Download returns once announced
+ stalled 15 s (canProgress false): Library.remove → close → delete file
+```
+
+Each worker talks to the provider's server like this:
+
+```
+ client.go providerConn.fetch: framing.Write(req) ══ TCP ══► server.go handleConn → answer → library.go
+                               framing.Read(hdr, data) ◄════ writeData
 ```
 
 [DRY-RUN.md](DRY-RUN.md) shows both with real log lines.
@@ -152,12 +173,18 @@ framing.Write / Read        // frames on a stream
 | store RPC | `Node.Store` | one RPC | sends one outcome on a channel |
 | eviction check | `Node.touchContact` | one ping | routing table (locked) |
 | TCP accept loop | `NewPeer` (`go srv.serve()`) | until `Peer.Close` | the listening socket |
-| TCP connection handler | `server.serve` | one connection | library (read-locked), the file on disk |
+| TCP connection handler | `server.serve` | one connection | library (read-locked), the file on disk, `server.conns` (locked) |
+| download event loop | `Peer.Download` (the caller's goroutine) | one download | **all** of `swarmDownload`: providers, bitfields, connections, pieces, the output file |
+| download workers | `startPiece` / `startBitfield` / `startDiscovery` / `startAnnounce` | one request | a connection *lent* to them; read-only copies of key/manifest; send exactly one `event` |
 | console | `cmd/node` | until stdin EOF | public `Node` / `Peer` API; runs downloads synchronously |
 
 Locks: `Bucket.mu`, `valueStore.mu`, `Node.pendingMu`, `Library.mu`
-(RW). A lookup's candidate state and a download's `downloader` state are
-unlocked; each is used by a single goroutine. Keep it that way.
+(RW; it also guards each entry's `have` bitfield), `server.connsMu`. A
+lookup's candidate state and a download's `swarmDownload` state are
+unlocked; each is used only by its own event-loop goroutine. A provider's
+connection belongs to the loop except while it is lent to exactly one
+worker; the per-provider limit of 1 request guarantees that. Keep it that
+way.
 
 `go test ./... -race` checks all of this.
 
@@ -170,20 +197,28 @@ unlocked; each is used by a single goroutine. Keep it that way.
    placeholder. That's why `Bootstrap` PINGs first.
 3. **A node never stores or returns itself, and replies never return the
    requester** (`closestExcluding`).
-4. **`Bucket`, `valueStore`, and `Manifest` do no network I/O.** Logic
-   that's easy to get wrong stays unit-testable.
+4. **`Bucket`, `valueStore`, `Manifest`, `Bitfield`, and `pickPiece` do
+   no network I/O.** Logic that's easy to get wrong stays unit-testable.
 5. **Register `pending[rpcID]` before sending.**
 6. **Every UDP message fits in one datagram** (`maxDatagramSize` = 8 KB).
    That's why values are capped (`maxValueSize`, `maxValuesPerKey`) and
    file data only travels over TCP. `TestLargestFindValueReplyFitsInDatagram`
    enforces it.
 7. **Nothing from another peer is trusted unchecked.** Provider records
-   are validated (`decodeProviderRecord`), manifests must hash to the
-   requested key (`DecodeManifest`), and every piece must match its hash
+   are validated (`decodeProviderRecord`), bitfields are validated
+   (`decodeBitfield`), manifests must hash to the requested key
+   (`DecodeManifest`), and every piece must match its hash
    (`VerifyPiece`) before it's written.
 8. **A download only ever creates a new file** (`O_EXCL`), and deletes it
-   on failure. It never overwrites an existing path.
-9. **A lookup's or download's own state lives in one goroutine.**
+   on failure (after removing it from the library). It never overwrites
+   an existing path.
+9. **Write, then publish.** A piece's bit is set in the library
+   (`markHave`) only after its `WriteAt` completes, so a peer never
+   serves a piece that isn't fully on disk.
+10. **A lookup's or download's own state lives in one goroutine.** For a
+    download that's its event loop: workers only send one `event` each,
+    and a provider has at most one request outstanding, so a lent
+    connection is never shared.
 
 ## If you change X, also touch Y
 
@@ -193,9 +228,11 @@ unlocked; each is used by a single goroutine. Keep it that way.
 | Change the bucket rule | `bucket.go`, `bucket_test.go`, `node.go` (`touchContact`/`resolveEviction`), doc `02` |
 | Change lookup termination / concurrency | `lookup.go`, `integration_test.go`, `values_test.go`, doc `05`, `DRY-RUN.md` numbers |
 | Change value limits or storage rules | `store.go`, `store_test.go`, doc `06` |
-| Change the TCP protocol | `protocol.go`, `server.go`, `client.go`, doc `07` |
+| Change the TCP protocol | `protocol.go`, `server.go`, `client.go`, doc `07` (and `08` for `GET_BITFIELD`) |
+| Change piece selection or concurrency | `picker.go` (+ `swarm_unit_test.go`), `download.go` `schedule`, `swarm_test.go`, doc `08`, `DRY-RUN.md` part 5, `scripts/demo-seeder-death.sh` (its kill-window reasoning depends on `--max-inflight 1`) |
+| Change stall/rediscovery/bitfield timers | `download.go` constants, `TestDownloadGivesUpWhenNoOneHasTheRest`, doc `08` |
 | Change how pieces/keys are hashed | `manifest.go`, `manifest_test.go`, doc `07`, FAQ |
 | Change the join procedure | `node.go` `Bootstrap`, `TestBootstrap*`, doc `04`, `DRY-RUN.md` |
-| Change log or console text | `scripts/demo.sh` greps `"bootstrap complete"` and `"TRIGGERED LOOKUP RESULT"`; `scripts/demo-transfer.sh` greps `"bootstrap complete"`, `"put greeting"`, `"get greeting:"`, `"content key:"`, `"fetch"`, `msg="piece received"`; `scripts/lib/nodes.sh` (used by the newer demos) greps `"node started"`, `"bootstrap complete"`, and `msg="piece received"` with an `index=N` field; `scripts/demo-seeder-death.sh` also greps console lines starting `fetch` / `fetched ` / `fetch failed`; `scripts/demo-big-network.sh` parses the console's `lookup <hex>: rounds=…` line and the numbered `   N. <id>@ip:port` lines after it, plus `content key:` and `^fetch` |
+| Change log or console text | `scripts/demo.sh` greps `"bootstrap complete"` and `"TRIGGERED LOOKUP RESULT"`; `scripts/demo-transfer.sh` greps `"bootstrap complete"`, `"put greeting"`, `"get greeting:"`, `"content key:"`, `"fetch"`, `msg="piece received"`; `scripts/lib/nodes.sh` (used by the newer demos) greps `"node started"`, `"bootstrap complete"`, and `msg="piece received"` with an `index=N` field; `scripts/demo-seeder-death.sh` also greps console lines starting `fetch` / `fetched ` / `fetch failed`; `scripts/demo-big-network.sh` parses the console's `lookup <hex>: rounds=…` line and the numbered `   N. <id>@ip:port` lines after it, plus `content key:` and `^fetch`; `scripts/demo-parallel.sh` parses `msg="piece requested"` / `msg="piece received"` (`index=`, `from=`, `inflight=`), `max_inflight=` in `msg="download complete"`, and the console's `N piece(s) from` lines |
 | Change how `--id-seed` maps to an ID | `scripts/demo.sh` recomputes IDs with `shasum` |
 | Add a CLI flag or console command | `cmd/node`, README, `DEBUGGING.md`, `.vscode/launch.json` if relevant |

@@ -32,19 +32,20 @@ evaluation includes performance graphs:
 | `STORE` / `FIND_VALUE` (the DHT holds "who has file X") | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/06](docs/06-store-and-find-value.md) |
 | File transfer over TCP: pieces, SHA-256 verification, content keys | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/07](docs/07-file-transfer-over-tcp.md) |
 | Share a file / download it from the CLI; transfer demo | ✅ Done | `share` / `fetch` console commands, `scripts/demo-transfer.sh` |
-| Download from several peers; survive the seeder being killed | 🟡 Basic version: pieces round-robin over providers, failover to the next provider; finished downloaders become providers | [docs/07](docs/07-file-transfer-over-tcp.md) |
-| Pieces spread so **no single node has the whole file** | ⬜ Not started — next step: per-piece availability | — |
+| Download from several peers **in parallel**; survive the seeder being killed | ✅ Done on branch `feature/parallel-partial-seeding`: rarest-first, one request per provider, up to `--max-inflight` in total, failover | [docs/08](docs/08-swarming.md), `scripts/demo-parallel.sh` |
+| Pieces spread so **no single node has the whole file** | ✅ Done on branch `feature/parallel-partial-seeding`: peers serve and announce pieces before they're complete; the seeder can die once the leechers *together* hold every piece | [docs/08](docs/08-swarming.md), `scripts/demo-seeder-death.sh` (`main` has the failing "before" version) |
 | Runs across multiple devices / Wi-Fi | ⬜ Not started — `--advertise-ip` exists; untested off localhost | — |
 | Sending messages (as opposed to files) | ⬜ Not started — `put`/`get` store short text, but there's no messaging feature | — |
 | Visual demo | ⬜ Not started | — |
 | Performance graphs (the four above) | ⬜ Not started | — |
 | Merkle trees | ⬜ Not started — optional; see [FAQ](docs/FAQ.md#do-merkle-trees-make-sense-here) | — |
 
-In short: nodes find each other and join; any node can store and find
-small values; and a file shared by one node can be downloaded by others
-over TCP, verified piece by piece. That still works after the original
-seeder is killed, as long as someone who finished downloading is still
-online.
+In short: nodes find each other and join, and any node can store and
+find small values. A file shared by one node is downloaded by others
+over TCP, verified piece by piece, from several providers at once. On
+this branch, a file also survives its seeder dying mid-download, as long
+as the leechers together hold every piece, even if none of them holds
+them all.
 
 ## Documentation
 
@@ -58,6 +59,7 @@ needed, and which function implements it.
 5. [05 — Iterative parallel lookup](docs/05-iterative-parallel-lookup.md)
 6. [06 — STORE and FIND_VALUE](docs/06-store-and-find-value.md)
 7. [07 — File transfer over TCP](docs/07-file-transfer-over-tcp.md)
+8. [08 — Swarming: parallel downloads and partial seeding](docs/08-swarming.md)
 
 **Reference:**
 
@@ -168,36 +170,61 @@ This starts 5 nodes with `k = 3`, so values live on 3 of the 5 nodes and
 PASS: three downloads completed and verified, the last one after the seeder was killed.
 ```
 
-Why 11/5, and where the 2 s go: [DRY-RUN.md](docs/DRY-RUN.md) part 2.
+Why 11/5, and where the 2 s go: [DRY-RUN.md](docs/DRY-RUN.md) part 2 (recorded on `main`; on this branch pieces arrive rarest-first and in parallel, so the split varies, and the last download takes ~4 s because `Download` now waits for its announce).
 
-### The seeder-death demo (the "before" picture)
+### The seeder-death demo ("after" on this branch; "before" on `main`)
 
 ```sh
-bash scripts/demo-seeder-death.sh        # env: BASE_PORT=9200 DELAY=150ms
+bash scripts/demo-seeder-death.sh        # env: BASE_PORT=9200 DELAY=150ms MAXINFLIGHT=1
 ```
 
 A seeder shares a 16-piece file. Three leechers start downloading one
 after another, and the seeder is killed (SIGKILL) while **none of them
-has finished**. On `main` the file is lost: downloaders only announce
-complete files, pieces are fetched in order (so the leechers' pieces
-overlap), and a failed download deletes its partial output. The demo
-**passes when that expected failure happens** and no partial file is
-left:
+has finished**: at the first moment the leechers together hold every
+piece. On this branch every leecher still completes the file from the
+others:
 
 ```
-=== What had spread when the seeder died (from the leechers' logs) ===
-  node2: 13/16 pieces  [0-12]
-  node3: 8/16 pieces  [0-7]
-  node4: 6/16 pieces  [0-5]
-  together: 13/16 pieces  [0-12]
+  kill moment: the leechers together hold all 16 pieces; none has finished ( node2:10/16 node3:6/16 node4:3/16 )
+  node2: fetched "original.bin" (1048576 bytes, 16 pieces) in 2.486s
+      11 piece(s) from 127.0.0.1:9201          ← the seeder, before it died
+      4 piece(s) from 127.0.0.1:9203
+      1 piece(s) from 127.0.0.1:9204
 ...
-PASS: the seeder died before any leecher finished, and the file was lost …
+PASS: the seeder died before any leecher finished and no node had the whole file, yet every leecher completed it from the others.
 ```
 
-It runs every node with the DEBUG ONLY `--debug-serve-delay`, so the kill
-can land mid-download (localhost is otherwise too fast). Walkthrough:
-[DRY-RUN.md](docs/DRY-RUN.md) part 3. Branch
-`feature/parallel-partial-seeding` makes the same scenario succeed.
+**The failing "before" version of this script is on `main`.** There,
+downloaders only announced complete files and fetched pieces in order, so
+the leechers' pieces overlapped and the file was lost. The script keeps
+its name here, so `git diff main feature/parallel-partial-seeding --
+scripts/demo-seeder-death.sh` shows exactly what changed: the kill rule
+and the verdict. This version runs with `--max-inflight 1` so the swarm
+stays ahead of each individual leecher (why: [DRY-RUN.md](docs/DRY-RUN.md)
+part 5). Every node uses the DEBUG ONLY `--debug-serve-delay` so the kill
+can land mid-download.
+
+### The parallel-download demo
+
+```sh
+bash scripts/demo-parallel.sh            # env: BASE_PORT=9400 DELAY=150ms
+```
+
+Three nodes hold a file, and a fourth downloads it. The script prints
+the downloader's timeline: three requests leave at once, one per
+provider, and each is replaced the moment its piece arrives.
+
+```
+  +    0ms  request  piece  2 -> 127.0.0.1:9402   in flight after: 1
+  +    0ms  request  piece 11 -> 127.0.0.1:9401   in flight after: 2
+  +    0ms  request  piece  6 -> 127.0.0.1:9403   in flight after: 3
+  +  152ms  received piece  2 <- 127.0.0.1:9402   in flight after: 2
+  +  152ms  request  piece 15 -> 127.0.0.1:9402   in flight after: 3
+...
+PASS: node4's copy is identical, built from 3 providers with up to 3 pieces in flight at once.
+```
+
+16 pieces in ~0.93 s, against ≥ 2.4 s one at a time.
 
 ### The big-network demo (20 nodes, random joins)
 
@@ -245,6 +272,7 @@ Then type console commands into a node's terminal:
 | `--port` | UDP port (default 9000) |
 | `--tcp-port` | TCP port for the file server (default: same number as `--port`) |
 | `--advertise-ip` | IP others should use to reach this node, put in provider records (default `127.0.0.1`) |
+| `--max-inflight <n>` | most piece requests a download keeps in flight at once (default 4; always at most 1 per provider) |
 | `--debug-serve-delay <dur>` | **DEBUG ONLY**, off by default: wait this long before answering each piece request, so a demo can kill a node mid-transfer |
 | `--id-seed <s>` | node ID = SHA-1(s); random if omitted |
 | `--bootstrap <host:port>` | join through this node |
@@ -270,6 +298,13 @@ go test ./... -race -count=1
 - `internal/framing/framing_test.go` — frames on datagrams and on a byte stream
 - `internal/transfer/manifest_test.go` — piece layout, corrupted pieces
   and tampered manifests rejected
+- `internal/transfer/swarm_unit_test.go` — bitfield layout and validation;
+  the rarest-first picker (prefers rare pieces, skips busy holders,
+  spreads ties)
+- `internal/transfer/swarm_test.go` — real UDP + TCP: a 3-provider
+  download that must overlap in time; the seeder dying after pieces have
+  spread, with every leecher still finishing; a download that must give
+  up when no one has the rest
 - `internal/transfer/transfer_test.go` — real UDP + TCP: one and two
   providers, seeder shut down mid-way, corrupt provider skipped, unknown key
 
@@ -301,11 +336,15 @@ internal/transfer/   file sharing on top of the DHT
   library.go         files this peer can serve
   server.go          TCP server
   client.go          TCP client side
-  peer.go            Share, Download (round-robin + failover), announce
+  peer.go            Config, Share, announce
+  download.go        Download: event loop + workers (parallel, rarest-first, partial seeding)
+  picker.go          rarest-first piece picker (pure)
+  bitfield.go        which pieces a peer has (BitTorrent's layout)
 scripts/demo.sh            5 processes: joining and lookup
 scripts/demo-transfer.sh   5 processes: put/get, share, downloads, killed seeder
 scripts/demo-seeder-death.sh  seeder killed mid-download: the file is lost on main
 scripts/demo-big-network.sh   20 nodes, random joins, lookups checked by brute force, transfer
+scripts/demo-parallel.sh   one download from 3 providers at once, with a timeline
 scripts/lib/nodes.sh       shared helper: start N nodes with console FIFOs (bash 3.2)
 docs/                concept docs 01-07 + reference docs
 .vscode/launch.json  debug configurations
@@ -328,20 +367,24 @@ Here is whether each one blocks the end goal:
 | No lookup early-exit heuristic ([05](docs/05-iterative-parallel-lookup.md)) | Slightly inflates RPC counts. | Optional, before the graphs. |
 | **Values never expire or get republished** ([06](docs/06-store-and-find-value.md)) | **Yes, for churn.** Dead providers' records linger (one wasted connection each), and records don't move to closer nodes that join later. | Before the seeder-kill and recovery experiments. |
 | No caching of found values ([06](docs/06-store-and-find-value.md)) | No. | Keep. |
-| **Providers must have the whole file** ([07](docs/07-file-transfer-over-tcp.md)) | **Yes:** "no single node has the whole file" needs per-piece availability. | Next feature step. |
-| Pieces fetched one at a time ([07](docs/07-file-transfer-over-tcp.md)) | Not for correctness; matters for the download-time graph. | Before the download-time graph. |
-| One failure drops a provider; no retries; no resume ([07](docs/07-file-transfer-over-tcp.md)) | Not yet. | Revisit with real networks / Wi-Fi. |
+| One failure drops a provider for the whole download; no retries; no resume ([07](docs/07-file-transfer-over-tcp.md), [08](docs/08-swarming.md)) | Not yet. | Revisit with real networks / Wi-Fi. |
+| One outstanding request per provider, no pipelining ([08](docs/08-swarming.md)) | No; limits one provider's throughput. | Before throughput/download-time graphs, if it shows. |
+| Bitfields polled every 500 ms instead of pushed `have` messages; providers rediscovered by polling `FIND_VALUE` every 1 s ([08](docs/08-swarming.md)) | No, but adds control traffic and some duplicate seeder uploads. | Count it in the control-bytes graph; push-based updates if it dominates. |
+| Fixed swarm timers: 500 ms / 1 s / 15 s stall ([08](docs/08-swarming.md)) | No. | Tune for Wi-Fi. |
+| Rarest-first uses only the downloader's own (possibly stale) view ([08](docs/08-swarming.md)) | No. | Keep. |
+| No choking, upload limits, or fairness ([08](docs/08-swarming.md)) | Not in the goal list. | Later, if ever. |
 | No security (ID spoofing, Sybil, rate limits) | Not in the goal list. | Later, if at all. |
 
-**Bottom line:** nothing here had to be undone before adding
-`STORE`/`FIND_VALUE` and TCP transfer, and it's all built now. Before the
-end goal, in roughly this order:
+**Bottom line:** per-piece availability, the first item that blocked the
+end goal, is done on this branch. Before the end-goal measurements, in
+roughly this order:
 
-1. **per-piece availability**, so pieces can be spread out with no
-   complete copy anywhere;
-2. **synchronous rounds, bucket refresh, and value expiry/republish**,
+1. **synchronous rounds, bucket refresh, and value expiry/republish**,
    so churn (killing the seeder) is handled the way the paper intends
-   before measuring recovery time;
+   before measuring recovery time. The swarm already hides them during
+   downloads (they run in workers), but they still cost seconds in
+   discovery after a death.
+2. **instrumentation** (bytes and timings) and the evaluation harness;
 3. **addresses on a real LAN**, for the multi-device demo.
 
 Each is a separate, testable step.
