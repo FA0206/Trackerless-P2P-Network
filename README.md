@@ -1,264 +1,206 @@
-# Kademlia DHT (from scratch, in Go)
+# Trackerless P2P Network (Kademlia DHT, from scratch in Go)
 
-A from-scratch, localhost-runnable implementation of the core of
-Kademlia — the peer-to-peer distributed hash table described in
-Maymounkov & Mazières, *"Kademlia: A Peer-to-peer Information System Based
-on the XOR Metric"* (the PDF alongside this repo). Built incrementally,
-for a networked-software course project, with an explicit scope: this pass
-implements node identity, the XOR metric, k-bucket routing, `PING` /
-`FIND_NODE` over UDP, bootstrap/join, and iterative parallel lookup. It
-does **not** implement `STORE`/`FIND_VALUE`, actual file/piece transfer, or
-any security hardening — see [What's next](#whats-next).
+A peer-to-peer file-sharing network with no central tracker. It's built
+step by step on a from-scratch implementation of Kademlia, the
+distributed hash table from Maymounkov & Mazières, *"Kademlia: A
+Peer-to-peer Information System Based on the XOR Metric"* (PDF in this
+repo). This is a networked-software course project. The goal is to
+understand every piece well enough to explain and extend it, so the
+documentation matters as much as the code.
 
-## How to read this project
+## Where the project stands
 
-If you're learning this for the first time, read the `docs/` folder in
-order — each file is short, explains one idea, says why it's needed, and
-points at the exact function/file that implements it:
+**The end goal:** peers share files (or messages) with no central
+server. Files are split into pieces spread across several nodes, so
+downloads keep working when the original seeder is killed. It should be
+demonstrable across real devices (not just localhost), with a visual
+demo and an evaluation that explains how each part was validated. That
+evaluation includes performance graphs:
 
-1. [docs/01-ids-and-xor-distance.md](docs/01-ids-and-xor-distance.md) —
-   160-bit IDs, the XOR distance metric, why XOR specifically.
-2. [docs/02-routing-table-and-kbuckets.md](docs/02-routing-table-and-kbuckets.md) —
-   the 160 k-buckets, the move-to-tail / ping-and-maybe-evict update rule.
-3. [docs/03-message-framing.md](docs/03-message-framing.md) — the wire
-   protocol: envelopes, RPC IDs, and length-prefixed JSON over UDP (and
-   the nuance of *why*, given that UDP already has message boundaries).
-4. [docs/04-bootstrap-and-join.md](docs/04-bootstrap-and-join.md) — how a
-   new node, given one contact, joins the network.
-5. [docs/05-iterative-parallel-lookup.md](docs/05-iterative-parallel-lookup.md) —
-   the α-concurrent lookup algorithm everything else is built on.
+1. lookup latency vs. network size
+2. download time vs. number of leechers, P2P vs. centralized
+3. time to recovery after the seeder is killed
+4. control bytes (DHT traffic) vs. payload bytes (file data)
 
-This README assumes you've read those, or will alongside it, and instead
-focuses on: the end-to-end walkthrough of what actually happens at
-runtime, the exact commands to run things, and what's deliberately not
-here yet.
+**Status against that goal:**
 
-## Project layout
+| Part of the goal | Status | Where |
+|---|---|---|
+| **Peer discovery (the DHT core):** 160-bit IDs, XOR metric, k-bucket routing table, `PING`/`FIND_NODE` over UDP, joining via one known node, iterative α-parallel lookup | ✅ Done | `main` — this README, [docs 01–05](#documentation) |
+| Unit + integration tests for the core, one runnable 5-process demo | ✅ Done | `internal/kademlia/*_test.go`, `scripts/demo.sh` |
+| Debugging tooling: logs, per-node console, VSCode debug configs | ✅ Done | [docs/DEBUGGING.md](docs/DEBUGGING.md) |
+| `STORE` / `FIND_VALUE` (the DHT can hold "who has file X") | 🚧 In progress | branch `feature/store-findvalue-tcp` |
+| File transfer over TCP (pieces, integrity checks) | 🚧 In progress | branch `feature/store-findvalue-tcp` |
+| Download from several peers; survive the seeder being killed | ⬜ Not started (the branch lays groundwork) | — |
+| Pieces spread so **no single node has the whole file** | ⬜ Not started | — |
+| Runs across multiple devices / Wi-Fi | ⬜ Not started — needs address handling (see simplifications) | — |
+| Visual demo | ⬜ Not started | — |
+| Performance graphs (the four above) | ⬜ Not started | — |
+| Merkle trees | ⬜ Not started — optional; see [FAQ](docs/FAQ.md#do-merkle-trees-make-sense-here) | — |
 
-```
-internal/kademlia/     the actual DHT implementation (see docs/ above)
-  id.go                160-bit IDs, XOR distance, bucket indexing
-  contact.go           (ID, IP, port) triple exchanged between nodes
-  bucket.go            one k-bucket: ordering + update rule
-  routingtable.go       160 k-buckets + "closest contacts" lookup
-  messages.go          envelope + PING/FIND_NODE request/response shapes
-  transport.go         UDP socket, length-prefixed framing
-  node.go              RPC orchestration: send/wait, handle incoming, bootstrap
-  lookup.go            the iterative alpha-concurrent lookup algorithm
-  logging.go           structured stdout logging (log/slog)
-  *_test.go            unit tests (id/xor, bucket update rule) +
-                       integration_test.go (real nodes over real UDP)
-cmd/node/main.go       CLI: run one node, optionally bootstrap, optionally
-                       trigger one lookup
-scripts/demo.sh        starts 5 node processes, bootstraps them, triggers
-                       a lookup, checks the result (the project's "evaluation")
-docs/                  one concept per file, in learning order (see above)
-```
+In short: nodes can find each other, join, and locate the nodes
+responsible for any ID. Nothing is stored or transferred yet on `main`.
 
-## End-to-end walkthrough: start, join, look up
+## Documentation
 
-This is what actually happens when you run the 5-node demo (next section),
-traced through the code.
+**Concepts, in learning order.** Each doc is short: what it is, why it's
+needed, and which function implements it.
 
-**1. A node starts.** `cmd/node/main.go` parses flags, picks a node ID
-(`--id-seed` hashed via SHA-1, or random — `resolveID`), constructs a
-`Node` (`kademlia.NewNode`), and calls `Node.Start()`, which launches
-`Transport.Listen` in a background goroutine (`transport.go`). At this
-point the node has an empty routing table (`RoutingTable`, 160 empty
-`Bucket`s — [docs/02](docs/02-routing-table-and-kbuckets.md)) and is just
-sitting there listening on a UDP port.
+1. [01 — IDs and XOR distance](docs/01-ids-and-xor-distance.md)
+2. [02 — Routing table and k-buckets](docs/02-routing-table-and-kbuckets.md)
+3. [03 — Messages and framing over UDP](docs/03-message-framing.md)
+4. [04 — Bootstrap and join: what a new node needs](docs/04-bootstrap-and-join.md)
+5. [05 — Iterative parallel lookup](docs/05-iterative-parallel-lookup.md)
 
-**2. A second node joins through it.** The new node is given
-`--bootstrap host:port`. `Node.Bootstrap` ([docs/04](docs/04-bootstrap-and-join.md))
-performs a lookup for *its own ID*, seeded with that one contact. That
-lookup ([docs/05](docs/05-iterative-parallel-lookup.md)) sends `FIND_NODE`
-RPCs ([docs/03](docs/03-message-framing.md)) to the seed, gets back
-whatever contacts it knows of, asks the closest of *those*, and so on,
-converging in `O(log n)` rounds. Every RPC the new node sends carries its
-own ID, so every node it talks to along the way learns about it too
-(`Node.handleMessage` → `touchContact` on the receiving end, applying the
-k-bucket update rule from [docs/02](docs/02-routing-table-and-kbuckets.md)).
-By the time `Bootstrap` returns, the new node has a populated routing
-table, and the rest of the network has started to learn about it.
+**Reference:**
 
-**3. More nodes join the same way**, each bootstrapping via any one
-already-joined node (not necessarily the same one every time — any
-contact works, since the lookup discovers the rest from there).
+- [DRY-RUN.md](docs/DRY-RUN.md) — `scripts/demo.sh` traced from start to
+  finish, with real logs, naming every function and file as it runs.
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — which file depends on which,
+  goroutines and locks, invariants, "if you change X also touch Y".
+- [DEBUGGING.md](docs/DEBUGGING.md) — logs, a live network in VSCode
+  terminals, breakpoints without timeouts, debugging tests, packet
+  capture, plus hands-on exercises (forcing an eviction, killing a node).
+- [FAQ.md](docs/FAQ.md) — common confusions, how Kademlia output leads
+  to a TCP connection, what a joining node needs, Merkle trees.
+- [CLAUDE.md](CLAUDE.md) — project scope and ground rules, for AI
+  assistants and new teammates alike.
 
-**4. A lookup is triggered.** Given a target ID, `Node.Lookup`
-([docs/05](docs/05-iterative-parallel-lookup.md)) runs the same procedure
-as step 2, but for an arbitrary target instead of the node's own ID: start
-from the closest known contacts, query up to α of them in parallel, merge
-what comes back, repeat until the k closest candidates have all been
-queried. The result (`LookupResult`) reports the contacts found, and —
-what the demo checks — how many rounds and RPCs it took.
+## End-to-end: what happens when a node starts, joins, and looks something up
 
-Every RPC sent and received, and every k-bucket update (including
-ping-then-evict decisions), is logged to stdout as a structured
-`key=value` line (`log/slog`, `logging.go`) — this is the debugging tool
-for this phase of the project, not a dashboard. Run any node with
-`--verbose` to also see bucket updates and RPC timeouts at debug level.
+(Function-by-function version with real logs: [DRY-RUN.md](docs/DRY-RUN.md).)
 
-## Running one node
+1. **Start.** `cmd/node/main.go` picks an ID (SHA-1 of `--id-seed`, or
+   random), creates a `Node` (UDP socket + 160 empty k-buckets), and
+   starts a background loop reading packets.
+2. **Join.** Given `--bootstrap host:port`, `Node.Bootstrap` PINGs that
+   address to learn who's there (the PONG carries its ID), then looks up
+   its *own* ID. The `FIND_NODE` replies fill its routing table. Every
+   node it queries records it as a sender, which is how the network
+   learns it exists ([04](docs/04-bootstrap-and-join.md)).
+3. **Look up.** `Node.Lookup(target)` asks the α = 3 closest known nodes
+   in parallel for *their* closest contacts. It merges the answers, keeps
+   the k = 20 closest, and repeats until all of those have been asked
+   ([05](docs/05-iterative-parallel-lookup.md)).
 
-```sh
-go run ./cmd/node --port 9000
-```
+Throughout, every received message updates the sender's k-bucket
+(move-to-tail, or ping-the-oldest-and-maybe-evict when full;
+[02](docs/02-routing-table-and-kbuckets.md)), and every RPC is logged.
 
-Useful flags (see `go run ./cmd/node --help` for the full list):
+## Running it
 
-- `--id-seed <string>` — deterministic node ID = `SHA-1(string)`, instead
-  of a random one. Useful for reproducible demos/tests (this is how
-  `scripts/demo.sh` gets predictable IDs to check against).
-- `--bootstrap <host:port>` — join through an existing node.
-- `--lookup <40-char-hex-id>` (with `--lookup-after <duration>`) — after
-  joining, wait a bit, then perform one extra lookup for that ID and log
-  the result. This is how the demo script triggers and reads back a
-  lookup from a plain CLI without needing any separate control channel.
-- `--verbose` — debug-level logging (bucket updates, RPC timeouts).
-- `--k`, `--alpha`, `--rpc-timeout` — protocol parameters, defaulting to
-  the paper's `k=20`, `alpha=3`, plus a `2s` RPC timeout.
-
-Two nodes, manually, in separate terminals:
-
-```sh
-# terminal 1
-go run ./cmd/node --port 9000 --id-seed nodeA
-
-# terminal 2
-go run ./cmd/node --port 9001 --id-seed nodeB --bootstrap 127.0.0.1:9000
-```
-
-Terminal 2's log will show the `FIND_NODE` round trip and then a
-`"bootstrap complete"` line once its self-lookup converges.
-
-## Running the 5-node demo
+### The 5-node demo
 
 ```sh
 bash scripts/demo.sh
 ```
 
-This is the project's entire "evaluation" for this pass — one scenario you
-can run and read, no graphs or sweeps. It:
-
-1. Builds the `node` binary.
-2. Starts 5 node processes on ports 9000–9004, with deterministic IDs
-   (`demo0`..`demo4`), each bootstrapping via the previous one, waiting
-   for each to log `"bootstrap complete"` before starting the next.
-3. Has node4 (the last one) trigger a lookup for node2's ID.
-4. Reads node4's log line for that lookup, extracts the round count, RPC
-   counts, and the set of contacts found.
-5. Compares that set against the 4 node IDs it independently expects
-   (every node except node4 itself, since a node never includes itself in
-   a lookup result), via `shasum -a 1` — the exact same `SHA-1(seed)` the
-   Go code uses for `--id-seed`.
-6. Prints `PASS` or `FAIL` plus the rounds/RPC counts, then stops all 5
-   processes.
-
-Example output:
+This starts 5 node processes on ports 9000–9004. Each joins via the
+previous one (node1 via node0, node2 via node1, …). node4 then looks up
+node2's ID. The script checks the result against IDs it computes
+independently with `shasum`, prints rounds and RPC counts, and shows
+that every node learned about every other.
 
 ```
-=== Triggered lookup, as logged by node4 ===
-time=... msg="TRIGGERED LOOKUP RESULT" ... rounds=2 rpcs_sent=4 rpcs_failed=0 closest_count=4 closest_ids=...
-
 Rounds:      2
 RPCs sent:   4
 RPCs failed: 0
 
+=== Who learned about whom (distinct peers each node received RPCs from) ===
+node0 heard directly from 4 of the other 4 nodes
+...
 PASS: node4's lookup found exactly the other 4 nodes (demo0, demo1, demo2, demo3).
 ```
 
-Full per-node logs are kept in a temp directory whose path is printed at
-the end of the run, if you want to look at the raw RPC/bucket-update
-traces behind the summary.
+**What the demo shows:** starting a first node, four nodes joining with
+only one address each, knowledge spreading as a side effect (node0 never
+sends a request yet learns everyone), and a correct parallel lookup.
+**What it doesn't:** eviction, failures, and `log n` scaling. With 5
+nodes and k = 20 those never come up. [DRY-RUN.md](docs/DRY-RUN.md)
+explains this, and [DEBUGGING.md](docs/DEBUGGING.md) has exercises that
+trigger each by hand.
 
-## Running the tests
+### One node at a time (e.g. in split VSCode terminals)
 
 ```sh
-go test ./...          # unit tests (ID/XOR math, bucket update rule) +
-                        # an in-process integration test (5 nodes, real UDP)
-go test ./... -race     # same, with the race detector (recommended —
-                        # there's real concurrency here: parallel lookup
-                        # RPCs, the background listen loop, eviction pings)
+go run ./cmd/node --port 9000 --id-seed nodeA
+go run ./cmd/node --port 9001 --id-seed nodeB --bootstrap 127.0.0.1:9000
 ```
 
-- `internal/kademlia/id_test.go` — XOR metric properties (identity,
-  symmetry, triangle inequality via 1000 random triples), ID ordering,
-  bucket-index edge cases.
-- `internal/kademlia/bucket_test.go` — every branch of the k-bucket update
-  rule in isolation: insert-until-full, re-seeing moves to tail,
-  `KeepAlive` vs. `ReplaceStale`, and that live nodes are never dropped
-  just because new contacts arrive.
-- `internal/kademlia/routingtable_test.go` — a node never stores itself;
-  `Closest` orders and caps correctly.
-- `internal/kademlia/integration_test.go` — the same 5-node
-  bootstrap-and-lookup scenario as `scripts/demo.sh`, but as real `Node`s
-  in-process over real loopback UDP sockets rather than separate OS
-  processes, which is what makes it fast enough to run as part of
-  `go test ./...`.
+Then type console commands into a node's terminal: `table`, `lookup self`,
+`lookup <hex-id>`, `ping 127.0.0.1:9000`, `help`.
 
-## Deliberate simplifications (and why)
+| Flag | Meaning |
+|---|---|
+| `--port` | UDP port (default 9000) |
+| `--id-seed <s>` | node ID = SHA-1(s); random if omitted |
+| `--bootstrap <host:port>` | join through this node |
+| `--lookup <hex>` `--lookup-after <dur>` | after joining, run one lookup and log it (used by the demo) |
+| `--verbose` / `--quiet` | debug-level / warnings-only logging |
+| `--console` | read console commands from stdin (default true; use `--console=false` for background processes) |
+| `--k`, `--alpha`, `--rpc-timeout` | protocol parameters (20, 3, 2s); raise `--rpc-timeout` when using breakpoints |
 
-These are called out in more detail in the relevant `docs/` file; summary:
+### Tests
 
-- **Flat 160-bucket routing table, no splitting** — the paper's routing
-  table starts as one bucket and splits as it fills (Sec. 2.4); this
-  project preallocates all 160 up front. Simpler, costs nothing at this
-  scale, loses the ability to remember more than `k` contacts near your
-  own ID in a huge network. See [docs/02](docs/02-routing-table-and-kbuckets.md).
-- **No post-join bucket refresh** — the paper has a freshly-joined node
-  additionally refresh buckets farther than its nearest neighbor
-  (Sec. 2.3); this project relies on the self-lookup alone. See
-  [docs/04](docs/04-bootstrap-and-join.md).
-- **Lookup always queries all k closest once, with no early-exit
-  heuristic** for "this round didn't improve, stop early" — same final
-  answer, slightly more RPCs in the fast-converging case. See
-  [docs/05](docs/05-iterative-parallel-lookup.md).
-- **Length-prefixed framing over UDP**, even though a UDP datagram is
-  already one atomic message — done for a cheap malformed-packet check
-  and so the framing logic could carry over unchanged to a TCP transport
-  later. See [docs/03](docs/03-message-framing.md).
-- **Loopback-only addressing** (`Contact.IP` hardcoded to `127.0.0.1` in
-  `Node.Self`) — no NAT traversal or external-IP discovery; fine for a
-  localhost demo, would need revisiting for real multi-machine
-  deployment.
+```sh
+go test ./... -race -count=1
+```
 
-## What's next
+- `id_test.go` — XOR metric properties, ordering, bucket indexes
+- `bucket_test.go` — every branch of the k-bucket update rule
+- `routingtable_test.go` — never stores self; `Closest` ordering
+- `integration_test.go` — real nodes over real loopback UDP: joins,
+  lookup, bootstrap failures, ping
 
-Deliberately out of scope for this pass, and roughly where each would
-plug in if you pick this project back up:
+`KADEMLIA_TEST_LOGS=1` shows the nodes' logs during tests.
 
-- **`STORE` / `FIND_VALUE` RPCs**, i.e. actually storing and retrieving
-  `(key, value)` pairs (paper Sec. 2.3, 2.5). This is the next natural
-  step: add `MsgStore`/`MsgFindValue` message types next to
-  `MsgFindNode` in `messages.go`, an in-memory `map[ID]Value` store on
-  `Node`, a `Node.Store` method that does a `Lookup` for the key then
-  sends `STORE` to the k closest nodes found, and a `Node.FindValue` that
-  behaves like `Lookup` but short-circuits the moment any queried node
-  returns the value directly instead of just contacts. The periodic
-  republish logic (paper Sec. 2.5) would be a background goroutine on
-  `Node`, started from `Start()`.
-- **TCP piece transfer** (actually moving file data, as opposed to
-  `(key,value)` metadata) — would live as a separate transport alongside
-  `Transport`, likely reusing the exact same length-prefix framing
-  function from `transport.go` (see [docs/03](docs/03-message-framing.md)'s
-  note on why that framing was chosen with this reuse in mind), with
-  `FIND_VALUE` results pointing at a peer and a piece ID, Kademlia used
-  purely for peer discovery.
-- **Security hardening** — the paper's basic DoS resistance (k-buckets
-  resisting flooding, Sec. 2.2) is already here as a side effect of the
-  update rule; not here: spoofed-sender validation beyond the RPC-ID
-  check already in place, rate limiting, Sybil resistance, or anything
-  resembling BitTorrent's tit-for-tat.
-- **The visualizer / performance graphs / multi-device demo** — explicitly
-  out of scope for this pass per the project brief; `scripts/demo.sh`'s
-  pass/fail-plus-counts output is the entire "evaluation" for now.
-- **Merkle trees** — not needed until there's actual chunked file content
-  to verify (i.e. after piece transfer exists).
+## Project layout
+
+```
+cmd/node/            the executable
+  main.go            flags, bootstrap, --lookup trigger, shutdown
+  console.go         interactive debug commands (table, lookup, ping)
+internal/kademlia/   the DHT (see docs/ARCHITECTURE.md for dependencies)
+  id.go              160-bit IDs, XOR distance, bucket index
+  contact.go         (ID, IP, UDP port)
+  bucket.go          one k-bucket and its update rule (no I/O)
+  routingtable.go    160 buckets, Closest()
+  messages.go        envelope + PING/FIND_NODE payloads
+  transport.go       UDP socket, [length][JSON] framing
+  node.go            RPC engine, receive path, eviction, Bootstrap
+  lookup.go          iterative alpha-parallel lookup
+  logging.go         structured stdout logs
+scripts/demo.sh      the 5-process demo
+docs/                concept docs 01-05 + reference docs
+.vscode/launch.json  debug configurations
+```
+
+## Simplifications: which must be undone for the end goal?
+
+Every simplification is called out in the code and in its concept doc.
+Here is whether each one blocks the end goal:
+
+| Simplification | Blocks the end goal? | When to fix |
+|---|---|---|
+| Flat 160-bucket table, no splitting ([02](docs/02-routing-table-and-kbuckets.md)) | No. Splitting only matters with millions of nodes. | Keep. |
+| `Closest()` sorts every known contact | No; at most a few thousand contacts. | Keep. |
+| Length-prefixed framing on UDP ([03](docs/03-message-framing.md)) | No — it gets reused for TCP. | Keep. |
+| JSON encoding | No, but it inflates the "control bytes" measurement. | Keep; say so in the evaluation. |
+| **Loopback addresses** (`Node.Self()` hardcodes `127.0.0.1`; demos bootstrap via `127.0.0.1`) | **Yes, for multi-device.** File-sharing also needs a node to advertise an address *others* can reach. | Partly on the feature branch (`--advertise-ip`); finish before the multi-device demo. |
+| **Synchronous lookup rounds** ([05](docs/05-iterative-parallel-lookup.md)) | **Yes, for the latency and recovery graphs.** A dead node stalls a round by a full RPC timeout, and the seeder-kill scenario is exactly that. | Before measuring latency or recovery time. |
+| **No bucket refresh** — neither the post-join refresh nor the paper's hourly refresh ([04](docs/04-bootstrap-and-join.md)) | **Yes, for churn.** Dead contacts linger until a full bucket triggers a ping. | Before the seeder-kill experiments. Refresh traffic also belongs in the control-bytes count. |
+| No lookup early-exit heuristic ([05](docs/05-iterative-parallel-lookup.md)) | Slightly inflates RPC counts. | Optional, before the graphs. |
+| No security (ID spoofing, Sybil, rate limits) | Not in the goal list. | Later, if at all. |
+
+**Bottom line:** none of these block the next step, `STORE`/`FIND_VALUE`
+plus TCP transfer. Addresses, synchronous rounds, and bucket refresh
+must be fixed before the multi-device demo and the performance
+measurements. They're fixed then rather than now, so each change can be
+tested and explained on its own.
 
 ## Paper reference
 
-`maymounkov-kademlia-lncs.pdf` (and duplicates) in this directory: Petar
-Maymounkov and David Mazières, *Kademlia: A Peer-to-peer Information
-System Based on the XOR Metric*, IPTPS 2002. Section numbers cited
-throughout the code comments and `docs/` refer to this paper.
+`maymounkov-kademlia-lncs.pdf`: Petar Maymounkov and David Mazières,
+*Kademlia: A Peer-to-peer Information System Based on the XOR Metric*,
+IPTPS 2002. Section numbers in code comments and docs refer to this
+paper.

@@ -6,8 +6,8 @@ Prerequisite: [02-routing-table-and-kbuckets.md](02-routing-table-and-kbuckets.m
 
 Kademlia is defined in terms of four RPCs (paper Sec. 2.3): `PING`,
 `STORE`, `FIND_NODE`, `FIND_VALUE`. This pass implements only `PING` and
-`FIND_NODE` (plus their replies) — see the top-level README's "what's
-next" for where `STORE`/`FIND_VALUE` would plug in.
+`FIND_NODE` (plus their replies) — see the top-level README's status
+table, and the [FAQ](FAQ.md) for how `STORE`/`FIND_VALUE` will be used.
 
 Every message, in both directions, is wrapped in an **envelope**
 (`Envelope` in

@@ -1,132 +1,171 @@
-# 4. Bootstrap and join
+# 4. Bootstrap and join: how a new node enters the network
 
 Prerequisite: [03-message-framing.md](03-message-framing.md). This doc
-also leans on ideas from [05](05-iterative-parallel-lookup.md) (the lookup
-procedure) — read that one alongside this if anything here is unclear; the
-two are tightly coupled, since bootstrap *is* a lookup.
+leans on [05](05-iterative-parallel-lookup.md) (the lookup procedure) —
+the two are tightly coupled, since joining mostly *is* a lookup.
 
-## What it is
+## What a new node needs before it can join
 
-A new node doesn't start with an empty routing table and no way to fill
-it — it needs **one** existing contact to get going. From that single
-contact, it needs to end up with a populated routing table and be
-discoverable by the rest of the network. The paper's recipe (Sec. 2.3,
-"To join the network..."):
+There is no server, no registration, and no "join" message in Kademlia.
+Here is the complete list of what a new node must have:
+
+| Requirement | Where it comes from | In this code |
+|---|---|---|
+| **Its own 160-bit node ID** | Picked by the node itself — random, or SHA-1 of something. Nobody assigns or approves it. | `--id-seed` (SHA-1 of a string) or `RandomID()`; `resolveID` in `cmd/node/main.go` |
+| **A UDP socket others can reach** | Bound locally on some port | `--port`; `NewTransport` in `transport.go` |
+| **The IP address and UDP port of any one node already in the network** (the *bootstrap node*) | Out of band: typed on the command line, a config file, a teammate telling you, a well-known hostname (BitTorrent's DHT uses `router.bittorrent.com:6881`) | `--bootstrap 127.0.0.1:9000` |
+| The same wire protocol | Same code / compatible version | `messages.go`, `transport.go` |
+
+And just as important, what it does **not** need:
+
+- **Not the bootstrap node's ID.** Only `IP:port`. The new node learns the
+  ID by asking (step 1 below).
+- **Not a list of nodes, nor the network's size.** One working address is
+  enough; the rest is discovered.
+- **Not a special bootstrap node.** Any node already in the network works,
+  and that node doesn't even know it's being used for bootstrapping — it
+  just answers `PING` and `FIND_NODE` like it would for anyone.
+- **Nothing from the rest of the network in advance.** Existing nodes do
+  nothing special to accept a newcomer.
+
+The one address you need is the only piece of "outside knowledge" in the
+whole system. It's needed once, at join time. After that the node relies
+only on its routing table, so the bootstrap node can leave the network
+without affecting it.
+
+The very **first** node is the exception: it starts with no
+`--bootstrap` and an empty routing table. It's "the network" until
+someone joins through it.
+
+## The join procedure, step by step
+
+The paper's recipe (Sec. 2.3, "To join the network..."):
 
 > To join the network, a node `u` must have a contact to an already
 > participating node `w`. `u` inserts `w` into the appropriate k-bucket.
 > `u` then performs a node lookup for its own node ID.
 
-That's it — the key insight is that **a lookup for your own ID is also,
-as a side effect, exactly the process that populates your routing table.**
-You don't need a separate "bootstrap protocol" distinct from the lookup
-machinery you already need for everything else.
+This project implements it in `Node.Bootstrap`
+([`node.go`](../internal/kademlia/node.go)) as two steps. Below is real
+log output from `scripts/demo.sh`, node4 (`3fb55a72…`, port 9004)
+joining via node3's address (port 9003). Timestamps are stripped; the
+full trace for every node is in [DRY-RUN.md](DRY-RUN.md).
 
-## Why looking yourself up populates your table — and announces you
+### Step 0 — start up
 
-Walk through what happens when node `u` calls `Lookup(u.ID)`, seeded with
-one contact `w`:
-
-1. `u` asks `w` (via `FIND_NODE`) for the contacts closest to `u.ID`.
-2. `w` replies with whatever it knows. `u` adds those to its own
-   candidate list and keeps asking the closest ones it hasn't asked yet
-   (this is the general lookup procedure — see
-   [05-iterative-parallel-lookup.md](05-iterative-parallel-lookup.md)).
-3. Every one of those `FIND_NODE` requests `u` sends carries `u`'s own ID
-   in the envelope (see [03](03-message-framing.md)). So every node `u`
-   talks to during this lookup learns about `u` and records it in *their*
-   routing table, via the same "every message updates the sender's bucket"
-   rule from [02](02-routing-table-and-kbuckets.md). This is how `u`
-   becomes discoverable by the rest of the network, without any separate
-   "announce myself" message.
-4. By the time the lookup converges, `u` has directly exchanged messages
-   with (roughly) `log(n)` nodes spread across the distance spectrum from
-   itself — which is exactly the shape a useful routing table needs: one
-   or more contacts in each relevant distance band. Looking up your *own*
-   ID specifically (rather than some arbitrary ID) is what guarantees the
-   discovered contacts are well-distributed relative to *you*, since the
-   lookup's whole process is "get closer and closer to the target," and
-   the target here is you.
-
-In this codebase, this is `Node.Bootstrap` in
-[`node.go`](../internal/kademlia/node.go):
-
-```go
-func (n *Node) Bootstrap(ctx context.Context, seed Contact) (*LookupResult, error) {
-    return n.lookup(ctx, n.ID, []Contact{seed})
-}
+```
+msg="node started" id=3fb55a726b74dfbe73ae5d6de38b36166212c007 addr=0.0.0.0:9004
+msg=bootstrapping via=127.0.0.1:9003
 ```
 
-## A subtlety: the seed contact's ID isn't known yet
+The routing table is empty, and nobody in the network knows node4 exists.
 
-When you run `node --bootstrap 127.0.0.1:9000`, the CLI only has a
-`host:port` — it has no idea what node ID is actually listening there
-(that's rather the point of asking). So `parseContact` in
-[`cmd/node/main.go`](../cmd/node/main.go) builds a `Contact` with a
-**placeholder zero ID** and the real address.
+### Step 1 — PING the address to find out who is there
 
-It would be a real bug to insert that placeholder straight into the
-routing table (`n.rt.Update(seed)`) before we've confirmed the real ID:
-that permanently corrupts one bucket slot with a real, reachable address
-filed under the wrong ID. This project avoids that by passing the seed
-contact only as a *lookup candidate*, never writing it to the routing
-table directly. `Lookup`'s internal implementation (`lookup`, in
-[`lookup.go`](../internal/kademlia/lookup.go)) takes an `extraSeeds`
-parameter for exactly this: candidates to start the search from that
-aren't necessarily already in the routing table.
+```
+msg="rpc sent"     type=PING to=0000000000000000000000000000000000000000@127.0.0.1:9003
+msg="rpc received" type=PONG from=94fab99d6ca8abab7d217af7e3c5532697bf1a7a@127.0.0.1:9003
+msg="bootstrap node identified" id=94fab99d6ca8abab7d217af7e3c5532697bf1a7a
+```
 
-The real ID gets recorded correctly anyway, with no extra code needed for
-it: the very first `FIND_NODE` reply from the seed arrives as a normal
-incoming packet, whose envelope carries the seed's *real* `SenderID`. The
-ordinary receive path (`Node.handleMessage` → `touchContact`) records that
-correctly, independent of whatever placeholder ID the lookup's internal
-bookkeeping was using to track that candidate. The placeholder only ever
-lives in the lookup's local, throwaway candidate map — it never touches
-the persistent routing table. See the comment on `Bootstrap` in `node.go`
-for the short version of this.
+The all-zero `to=` ID is honest: node4 doesn't yet know who's at 9003.
+The PONG's envelope carries the responder's real `SenderID`. Like every
+incoming message, it goes through `handleMessage → touchContact`, which
+files node3 in node4's routing table **under its real ID**. That's the
+"`u` inserts `w` into the appropriate k-bucket" step of the paper, done
+with an actual confirmed ID. Node3, in turn, has recorded node4 from the
+PING it received.
 
-(One minor, accepted loose end from this: if some *other* contact in the
-same lookup also happens to report the seed's real ID back to us before
-the seed's own reply arrives, the seed could briefly appear twice in the
-lookup's candidate list — once under the placeholder ID, once under its
-real one. This doesn't corrupt anything persistent and doesn't come up at
-this project's demo scale; it would be worth tidying up if you extend the
-lookup logic significantly.)
+If nobody answers, `Bootstrap` returns an error ("bootstrap node … did
+not answer PING") instead of carrying on with an empty table. If the
+address turns out to be the node itself, that's an error too.
+
+### Step 2 — look up your own ID
+
+```
+msg="rpc sent"     type=FIND_NODE to=94fab99d…@127.0.0.1:9003        ← round 1: the only node we know
+msg="rpc received" type=FIND_NODE_RESP from=94fab99d…@127.0.0.1:9003 ← node3 replies with nodes 0, 1, 2
+msg="rpc sent"     type=FIND_NODE to=db612776…@127.0.0.1:9002        ← round 2: alpha=3 in parallel
+msg="rpc sent"     type=FIND_NODE to=2b370ab7…@127.0.0.1:9000
+msg="rpc sent"     type=FIND_NODE to=10f71961…@127.0.0.1:9001
+msg="rpc received" type=FIND_NODE_RESP from=db612776…   (×3 replies)
+msg="lookup converged" rounds=2 rpcs_sent=4 rpcs_failed=0 closest_found=4
+msg="bootstrap complete" routing_table_size=4
+```
+
+The self-lookup has two effects:
+
+1. **It fills node4's routing table.** Every reply arrives as a message
+   from a real node, and each one is recorded via `touchContact`. That
+   happens to every responder, not just the ones that end up in
+   `Closest`.
+2. **It announces node4 to the network.** Every `FIND_NODE` node4 sends
+   carries `SenderID = node4`, and every receiver records the sender
+   ([02](02-routing-table-and-kbuckets.md)'s update rule). So everyone
+   node4 queried now has node4 in their routing table, without any
+   separate "announce" message.
+
+Why look up your *own* ID rather than a random one? The lookup walks
+toward the target. When the target is you, the nodes you meet are your
+nearest neighbors — exactly the nodes that most need to know about you.
+Those are the ones that would answer for keys near your ID. Along the way
+you also meet nodes in farther distance bands, which seed your far
+buckets.
+
+### Before and after
+
+| | Before | After |
+|---|---|---|
+| node4's routing table | empty | node0, node1, node2, node3 |
+| Who has node4 in their table | nobody | node3 (from the PING), then node0–3 (from the FIND_NODEs) |
+
+In a 5-node network with `k = 20`, "everyone" is reachable in two rounds.
+In a large network, a joining node meets roughly `log₂(n)` nodes — not
+everyone. The rest learn about it gradually, as their own lookups pass
+through nodes that already know it.
+
+## A bug the dry run caught
+
+The first version of `Bootstrap` skipped step 1. It passed the bootstrap
+address straight into the lookup as a candidate with a placeholder
+all-zero ID. That never corrupted the routing table, but the logs showed
+two real side effects on every join:
+
+- node2 sent `FIND_NODE` to node1 **twice**: once as `0000…@:9001`, and
+  again as `10f71961…@:9001` after another reply mentioned node1's real ID.
+- the result reported `closest_found=3` when only 2 other nodes existed,
+  because the placeholder counted as a "node".
+
+PINGing first removes the placeholder entirely. The lookup only ever
+sees real IDs. `TestBootstrapLearnsRealSeedID` in
+`internal/kademlia/integration_test.go` guards against regressions.
 
 ## SIMPLIFICATION we made here: no extra post-join bucket refresh
 
-The paper's full join procedure has one more step after the self-lookup
-(Sec. 2.3): "`u` refreshes all k-buckets further away than its closest
-neighbor." The idea is that a self-lookup alone only reaches nodes roughly
-*along the path toward you* — it doesn't necessarily populate buckets for
-distance ranges that happen to be sparse or empty from your own
-perspective but aren't actually empty in the network. The extra refresh
-pass (picking a random ID in each such bucket's range and doing a lookup
-for it) fills in those gaps.
+The paper's full join has one more step (Sec. 2.3): "`u` refreshes all
+k-buckets further away than its closest neighbor." A self-lookup mostly
+finds nodes near you. To fill a far bucket, you need to look up a
+random ID inside that bucket's range.
 
-This project skips that extra pass. For a handful to a few dozen nodes
-(this project's target scale), the self-lookup alone reaches essentially
-everyone anyway, so the gap this refresh exists to close rarely shows up
-in practice here. If you scale this up significantly, this is the next
-piece of the paper worth implementing — see the README's "what's next".
+This project skips that pass. At a few dozen nodes, the self-lookup
+reaches essentially everyone anyway. It matters once the network is much
+larger than `k` — see the README's simplifications table.
 
 ## Where this lives in the code
 
 | Concept | Function | File |
 |---|---|---|
-| Join entry point | `Node.Bootstrap` | `node.go` |
-| Lookup with extra starting candidates (what makes bootstrap safe before the seed's real ID is known) | `Node.lookup` (unexported, called by both `Lookup` and `Bootstrap`) | `lookup.go` |
-| CLI flag wiring (`--bootstrap host:port`) | `run`, `parseContact` | `cmd/node/main.go` |
+| Join: PING the address, then self-lookup | `Node.Bootstrap` | `node.go` |
+| The lookup itself | `Node.Lookup` | `lookup.go` |
+| Recording senders (how both sides learn about each other) | `Node.handleMessage`, `Node.touchContact` | `node.go` |
+| CLI flag `--bootstrap host:port` | `run` | `cmd/node/main.go` |
 
-Tested end-to-end (not as an isolated unit, since its entire job is to
-orchestrate the networked lookup) by
-`TestEndToEndBootstrapAndLookup` in
-`internal/kademlia/integration_test.go`: five real nodes, each bootstrapped
-against the previous one in a chain, then a lookup from the first node
-confirming it found all the others.
+Tests in `internal/kademlia/integration_test.go`:
+`TestEndToEndBootstrapAndLookup` (a chain of five joins, then a lookup),
+`TestBootstrapLearnsRealSeedID` (no placeholder leaks; one RPC per real
+node), and `TestBootstrapFailures` (unreachable address, own address).
 
 ## What's next
 
 [05-iterative-parallel-lookup.md](05-iterative-parallel-lookup.md): the
-actual lookup algorithm that both `Bootstrap` and ordinary "find the k
-closest nodes to X" calls are built on.
+lookup algorithm that step 2 runs.

@@ -22,9 +22,9 @@ Code: `Node.Lookup` / the unexported `Node.lookup` in
 
 Starting state: a **candidate list**, seeded from the `k` closest contacts
 this node already knows of (from its own routing table —
-`RoutingTable.Closest`), plus, for `Bootstrap`'s case, one extra seed
-contact not yet in the table (see
-[04](04-bootstrap-and-join.md)). Every candidate starts unqueried.
+`RoutingTable.Closest`). For a node that's just joining, that's the one
+bootstrap node it PINGed first (see [04](04-bootstrap-and-join.md)).
+Every candidate starts unqueried.
 
 Then, repeatedly:
 
@@ -48,10 +48,10 @@ The stopping condition is the paper's (Sec. 2.3): "the lookup terminates
 when the initiator has queried and gotten responses from the k closest
 nodes it has seen." A contact that fails to respond (RPC timeout) still
 counts as "queried" for this purpose — it's excluded from the final
-answer, but it doesn't block the lookup from terminating. This is what
-gives Kademlia its "asynchronous, parallel queries tolerate node failures
-without imposing timeout delays" property (paper abstract): a dead node
-along the path costs you one RPC timeout, not a stalled lookup.
+answer, but it doesn't block the lookup from terminating. So a dead node
+along the path costs one RPC timeout in this implementation, not a failed
+lookup. (The paper goes further, with *no* timeout delay at all; see the
+synchronous-rounds simplification below.)
 
 Why this converges in `O(log n)` rounds rather than needing some fixed
 iteration count: each round that finds anything closer than what's
@@ -66,14 +66,27 @@ If α were 1, this degenerates into something like Chord's lookup: ask the
 single best-known node, wait for its reply, ask the new best-known node,
 repeat. The paper is explicit about why α > 1 is better (Sec. 2.3,
 abstract): with several candidates equally good distance-wise, Kademlia
-can fire off requests to more than one of them *at once*, so one slow or
-dead contact doesn't stall the whole lookup waiting for its timeout before
-trying the next candidate — some other, faster reply in the same round
-likely already moved the search forward. Concretely in this project: if a
-timed-out contact were queried alone, the lookup would stall for a full
-`rpcTimeout` before trying anyone else; with 2 other candidates queried in
-the same round, the lookup likely already has somewhere useful to go the
-moment any one of the three replies.
+can fire off requests to more than one of them *at once*. In the paper's
+version, the lookup keeps going as replies arrive ("this recursion can
+begin before all α of the previous RPCs have returned"), so a dead
+contact never holds up the others.
+
+## SIMPLIFICATION we made here: rounds are synchronous
+
+This implementation has a **round barrier**. Each round sends up to α
+RPCs in parallel, then waits for *all* of them — replies or timeouts —
+before choosing the next batch (the `for i := 0; i < len(batch); i++`
+loop in `lookup.go`). Consequences:
+
+- α still helps: the round costs the slowest of its RPCs, not their sum.
+- A dead contact costs a full `rpcTimeout` for its round, even if the
+  other two replied in a millisecond.
+
+This was chosen because "collect a round, then merge" keeps all candidate
+bookkeeping in one goroutine and is easy to reason about and log. It's
+the first thing to change before measuring lookup latency or recovery
+time under churn. A barrier-free version would start a replacement RPC
+whenever any reply arrives, keeping up to α in flight at all times.
 
 ## Round and RPC accounting (what the demo reports)
 
@@ -150,10 +163,10 @@ its output.
 
 ## What's next
 
-You've now covered everything this pass implements. The top-level
-[README.md](../README.md) ties these five pieces into one end-to-end
-walkthrough (what happens when a node starts, joins, and does a lookup),
-gives the exact commands for the 5-node demo, and lists what was
-deliberately left out of this pass (`STORE`/`FIND_VALUE`, TCP piece
-transfer, security hardening, etc.) and roughly where each would plug into
-the code you've just read through.
+You've now covered everything on `main`. Next:
+
+- [DRY-RUN.md](DRY-RUN.md) — all five pieces in motion, traced function
+  by function through a real run of the demo.
+- [ARCHITECTURE.md](ARCHITECTURE.md) — how the files depend on each other.
+- The top-level [README.md](../README.md) — project status against the
+  end goal, and which simplifications must be undone before it.
