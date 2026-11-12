@@ -17,10 +17,13 @@ import (
 const (
 	bitfieldMaxAge  = 500 * time.Millisecond // re-ask an idle provider what it has after this
 	rediscoverEvery = 1 * time.Second        // re-run FIND_VALUE to find new providers
-	stallTimeout    = 15 * time.Second       // give up after this long with no way to progress
 	loopTick        = 100 * time.Millisecond // re-check timers at least this often
 	announceTimeout = 30 * time.Second
 )
+
+// stallTimeout: give up after this long with no way to progress. A var
+// only so tests can shorten it.
+var stallTimeout = 15 * time.Second
 
 // DownloadResult reports what a download did, for logs and the demos.
 type DownloadResult struct {
@@ -267,7 +270,7 @@ func (d *swarmDownload) run() error {
 	var stalledSince time.Time
 	for d.haveN < n {
 		d.schedule()
-		if len(d.inflight) == 0 && d.busyBF == 0 { // nothing in flight and nothing assignable
+		if !d.canProgress() {
 			if stalledSince.IsZero() {
 				stalledSince = time.Now()
 				d.lastDiscovery = time.Time{} // look for providers right away
@@ -337,6 +340,33 @@ func (d *swarmDownload) schedule() {
 	if !d.announced && !d.announcing && d.haveN > 0 && now.After(d.announceAfter) {
 		d.startAnnounce()
 	}
+}
+
+// canProgress reports whether a missing piece can still arrive from a
+// provider we know: one is in flight, or some live provider has (or, its
+// bitfield not fetched yet, might have) a piece we still need. Bitfield
+// polling alone doesn't count -- it would otherwise reset the stall timer
+// every 500 ms forever.
+func (d *swarmDownload) canProgress() bool {
+	if len(d.inflight) > 0 {
+		return true
+	}
+	need := d.needed()
+	n := d.manifest.NumPieces()
+	for _, ps := range d.providers {
+		if ps.dead {
+			continue
+		}
+		if ps.have == nil {
+			return true
+		}
+		for i := 0; i < n; i++ {
+			if need.Has(i) && ps.have.Has(i) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // needed: pieces we don't have and aren't already fetching.

@@ -3,6 +3,7 @@ package transfer
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -132,5 +133,52 @@ func TestPartialSeedingSurvivesSeederDeath(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatal("leechers didn't finish after the seeder died")
 		}
+	}
+}
+
+// If the only node holding the missing pieces dies, the download must give
+// up after stallTimeout -- not keep waiting because bitfield polling looks
+// like activity -- and leave no file behind.
+func TestDownloadGivesUpWhenNoOneHasTheRest(t *testing.T) {
+	old := stallTimeout
+	stallTimeout = time.Second
+	t.Cleanup(func() { stallTimeout = old })
+
+	peers := startNetwork(t, 3)
+	dir := t.TempDir()
+	src := writeRandomFile(t, dir, 8*DefaultPieceSize)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	key, err := peers[0].peer.Share(ctx, src)
+	if err != nil {
+		t.Fatalf("Share: %v", err)
+	}
+	peers[0].peer.SetDebugServeDelay(50 * time.Millisecond)
+
+	out := filepath.Join(dir, "out.bin")
+	errc := make(chan error, 1)
+	go func() { _, err := peers[1].peer.Download(ctx, key, out); errc <- err }()
+	for {
+		if have, ok := peers[1].peer.lib.bitfield(key); ok && have.Count(8) >= 2 {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	peers[0].stop()
+	start := time.Now()
+	select {
+	case err := <-errc:
+		if err == nil {
+			t.Fatal("download succeeded although nobody had the missing pieces")
+		}
+		if waited := time.Since(start); waited > 5*time.Second {
+			t.Errorf("gave up after %s; expected about stallTimeout (1s)", waited)
+		}
+		t.Logf("gave up after %s: %v", time.Since(start).Round(time.Millisecond), err)
+	case <-time.After(15 * time.Second):
+		t.Fatal("download never gave up")
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Error("a failed download left its partial file behind")
 	}
 }
