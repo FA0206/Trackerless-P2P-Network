@@ -164,6 +164,43 @@ connection, and piece arrive.
 fails with "did not answer PING" after `--rpc-timeout`. Bootstrapping a
 node against its own port fails immediately.
 
+### Slowing transfers down on purpose: `--debug-serve-delay`
+
+On localhost a 1 MiB file moves in ~20 ms, so you can't kill a seeder or
+set a breakpoint "mid-download" by hand. `--debug-serve-delay <duration>`
+is a **DEBUG ONLY** flag, **off (0) by default**. It makes this node's
+file server wait that long before answering each `GET_PIECE`
+(`server.answer`, `internal/transfer/server.go`; set through
+`Peer.SetDebugServeDelay`). The node logs a `WARN` at startup so you
+can't forget it's on:
+
+```
+WARN msg="DEBUG: delaying every piece this node serves" delay=150ms
+```
+
+Example: repeat exercise (d) with `--debug-serve-delay 300ms` on the
+seeder's pane. Now you have ~5 seconds to `Ctrl+C` it while pane 3's
+download is still running, and you'll see that download fail (the
+"before" behavior; see DRY-RUN part 3). Don't use it for timing
+measurements: it's an artificial delay.
+
+### Scripts with many nodes: `scripts/lib/nodes.sh`
+
+The newer demos source a small helper. `start_node i port boot [flags…]`
+starts node `i` with its stdin on a FIFO held open on file descriptor
+`10 + i`, and waits for `node started` (and `bootstrap complete`).
+`send i "command"` types into its console. `kill_node i` sends SIGKILL.
+`pieces_received i` lists the piece indexes in its log. Gotchas it
+handles:
+
+- **bash 3.2** (macOS's default): no associative arrays, no `{fd}>`
+  syntax. Per-node variables are `PID3` etc., read with
+  `eval echo \$PID$i`. Descriptors above 9 work fine in 3.2.
+- **Never `sleep` for readiness.** Wait for a log line (`wait_for_log`).
+  A freshly built binary can be slow to start on macOS.
+- **Job notices.** Killing a background job makes bash print
+  `Killed: 9`. `kill_node` reaps it with `wait` to keep output clean.
+
 ---
 
 ## 3. Breakpoints in VSCode

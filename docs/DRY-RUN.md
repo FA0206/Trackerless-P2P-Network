@@ -3,6 +3,9 @@
 - **Part 1** — `scripts/demo.sh`: joining and lookup (below).
 - **Part 2** — `scripts/demo-transfer.sh`: STORE/FIND_VALUE and TCP file
   transfer, including killing the seeder ([jump](#part-2--scriptsdemo-transfersh)).
+- **Part 3** — `scripts/demo-seeder-death.sh`: the seeder dies while
+  every leecher is mid-download, and the file is lost
+  ([jump](#part-3--scriptsdemo-seeder-deathsh-the-file-is-lost)).
 
 Each part traces one real run from the first shell line to the last
 process exiting, naming the file and function that runs at each step.
@@ -526,3 +529,141 @@ the script prints `PASS`. The `EXIT` trap kills the nodes. Everything
 - **Parallel downloading.** Pieces arrive one at a time, even from two
   providers.
 - **Other machines.** Everything is `127.0.0.1`.
+
+---
+
+# Part 3 — `scripts/demo-seeder-death.sh`: the file is lost
+
+Recorded on `main` at commit `57b06a9`. This is the "before" picture:
+branch `feature/parallel-partial-seeding` makes the same scenario
+succeed.
+
+Part 2 killed the seeder *after* other nodes had finished downloading,
+so complete copies survived. Here the seeder dies while **no one has
+finished**. Five nodes on ports 9200–9204, `k = 3`:
+
+| Node | Role |
+|---|---|
+| node0 | plain DHT node; everyone joins through it |
+| node1 | the seeder: shares a 16-piece (1 MiB) file |
+| node2, node3, node4 | leechers, started one after another |
+
+## Making "mid-download" reproducible
+
+On localhost a 1 MiB transfer takes ~20 ms, too fast to kill anything
+mid-way. So every node runs with **`--debug-serve-delay 150ms`**, a
+DEBUG ONLY flag that is off by default: the file server sleeps before
+answering each `GET_PIECE` (`server.answer` in
+`internal/transfer/server.go`). The script also never sleeps to guess
+timing. It watches the logs:
+
+1. `send 2 "fetch …"`; wait until node2 has logged 4 `piece received`.
+2. `send 3 "fetch …"`; wait until node3 has 2.
+3. `send 4 "fetch …"`; wait until node4 has 1.
+4. **Kill rule**: kill the seeder the first moment the leechers
+   *together* hold every piece, or the leading leecher holds ¾ of them
+   (12), whichever comes first. If anyone has finished by then, the demo
+   fails, because the timing assumption broke.
+
+The helper `scripts/lib/nodes.sh` starts each node with a console FIFO
+(same trick as part 2, on file descriptor `10 + i`) and kills with
+`SIGKILL`, an abrupt death with no goodbye.
+
+## The run
+
+```
+=== Waiting for the kill moment ===
+  kill moment: the leading leecher has 12 of 16 pieces
+
+=== Killing the seeder (node1, SIGKILL) ===
+  node2: fetch failed: transfer: piece 13: transfer: every provider failed
+  node3: fetch failed: transfer: piece 8: transfer: every provider failed
+  node4: fetch failed: transfer: piece 6: transfer: every provider failed
+
+=== What had spread when the seeder died (from the leechers' logs) ===
+  node2: 13/16 pieces  [0-12]
+  node3: 8/16 pieces  [0-7]
+  node4: 6/16 pieces  [0-5]
+  together: 13/16 pieces  [0-12]
+
+=== Verdict (main: the file is expected to be lost) ===
+  node2: download failed and left no partial file  (expected)
+  ...
+PASS: the seeder died before any leecher finished, and the file was lost …
+```
+
+## Why "together" is just node2's prefix
+
+On `main`, `downloader.fetchPiecesInto` (`internal/transfer/peer.go`)
+asks for pieces `0, 1, 2, …` in order. So every leecher holds a
+**prefix** of the file, and the prefixes nest: node4's `[0-5]` ⊂ node3's
+`[0-7]` ⊂ node2's `[0-12]`. Three leechers with 27 pieces between them
+cover only 13 distinct pieces. Pieces 13–15 existed only on the seeder.
+In four runs, the union was 12, 13, 14, and 13 pieces, always the leading
+leecher's prefix.
+
+The "together hold every piece" half of the kill rule therefore never
+fires on `main`: by the time the union is complete, the leading leecher
+is complete too. It's there for the branch, where pieces are fetched
+rarest-first and the union *can* be complete while nobody is.
+
+## The seeder's side: three connections, one piece every 150 ms each
+
+```
+04:45:09.839 WARN msg="DEBUG: delaying every piece this node serves" delay=150ms
+04:45:10.360 INFO msg="share complete" key=91883c4c… name=original.bin size=1048576 pieces=16
+04:45:10.507 INFO msg="tcp connection accepted" from=127.0.0.1:61125              ← node2
+04:45:10.661 INFO msg="tcp request served" to=127.0.0.1:61125 op=GET_PIECE index=0 bytes=65536
+04:45:11.309 INFO msg="tcp connection accepted" from=127.0.0.1:61126              ← node3
+04:45:11.721 INFO msg="tcp connection accepted" from=127.0.0.1:61127              ← node4
+   …
+04:45:12.610 INFO msg="tcp request served" to=127.0.0.1:61126 op=GET_PIECE index=7 bytes=65536
+04:45:12.610 INFO msg="tcp request served" to=127.0.0.1:61125 op=GET_PIECE index=12 bytes=65536
+04:45:12.709 INFO msg="tcp request served" to=127.0.0.1:61127 op=GET_PIECE index=5 bytes=65536
+                                                       ← SIGKILL: no further line, not even "shutting down"
+```
+
+Each connection is handled on its own goroutine (`server.handleConn`), so
+the three leechers are served in parallel. Each one, though, waits 150 ms
+per piece.
+
+## A leecher's side: how the failure unfolds
+
+```
+04:45:10.502 INFO msg="providers found" key=91883c4c… count=1              ← only the seeder
+04:45:10.504 INFO msg="tcp connected to provider" provider=127.0.0.1:9201
+04:45:10.663 INFO msg="piece received" index=0 of=16 from=127.0.0.1:9201 bytes=65536
+   …
+04:45:12.610 INFO msg="piece received" index=12 of=16 from=127.0.0.1:9201 bytes=65536
+04:45:12.717 WARN msg="provider failed, trying the next one" provider=127.0.0.1:9201 error="read response header: EOF"
+fetch failed: transfer: piece 13: transfer: every provider failed
+```
+
+Function by function, inside node2:
+
+```
+peer.go     Peer.Download → kademlia FindValue(key)            1 provider record: the seeder's
+            (no other leecher has announced: Peer.announce runs only after a complete download)
+peer.go     downloader.fetchPiecesInto: os.OpenFile(node2.bin, O_CREATE|O_EXCL)
+              i = 13: downloader.fetch → providerConn.fetch (client.go)
+                framing.Read(header) → EOF        the kernel closed the dead seeder's socket
+              downloader.markDead(seeder) → candidates(13) is now empty
+              → "transfer: every provider failed"
+peer.go     fetchPiecesInto's deferred cleanup: f.Close(); os.Remove(node2.bin)
+            Library.add and announce never run
+console.go  consoleEnv.fetch prints "fetch failed: …"
+```
+
+Three rules combine to lose the file:
+
+1. **Only complete files are announced and served.** `Peer.announce` and
+   `Library.add` run after the last piece (`Peer.Download`). node2's 13
+   verified pieces were never offered to node3 or node4, which needed
+   exactly those.
+2. **Pieces are fetched in order**, so the leechers' pieces overlap
+   instead of covering the file.
+3. **A failed download deletes its output** (`fetchPiecesInto`). With no
+   resume, the 27 pieces received are simply gone.
+
+The branch removes 1 and 2. Rule 3 stays, but it only bites if a
+download really fails.

@@ -433,6 +433,28 @@ against `PieceHashes[i]` (`Manifest.VerifyPiece`) and writes them at
 `peer.go`). The step-by-step path, with file and line references, is in
 [07, "How the downloader knows where each piece goes"](07-file-transfer-over-tcp.md#how-the-downloader-knows-where-each-piece-goes).
 
+### Why can't leechers finish when pieces were already sent?
+
+Because on `main`, pieces a leecher holds are invisible and, if the
+download fails, deleted. `scripts/demo-seeder-death.sh` shows it: three
+leechers hold 13, 8, and 6 pieces when the seeder dies, and all three
+fail. The reasons, all in `internal/transfer/peer.go`:
+
+1. **Only complete files are announced or served.** `Peer.announce` and
+   `Library.add` run at the end of `Peer.Download`. Until then, no other
+   leecher can learn that this one has anything, or fetch from it.
+2. **Pieces are fetched in order (`0, 1, 2, …`).** Every leecher holds a
+   prefix, and the prefixes overlap. In the demo, 27 pieces held between
+   three leechers cover only pieces 0–12. Pieces 13–15 lived only on the
+   seeder.
+3. **A failed download deletes its output** (`fetchPiecesInto`'s cleanup),
+   since there's no resume.
+
+So after the seeder dies, the only provider record anyone has points at
+a dead node: "every provider failed". Full trace:
+[DRY-RUN part 3](DRY-RUN.md#part-3--scriptsdemo-seeder-deathsh-the-file-is-lost).
+Branch `feature/parallel-partial-seeding` fixes 1 and 2.
+
 ### Can this network handle pieces arriving out of order?
 
 On `main`: **the format can, the downloader never tries.**

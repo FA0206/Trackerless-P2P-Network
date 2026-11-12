@@ -170,6 +170,35 @@ PASS: three downloads completed and verified, the last one after the seeder was 
 
 Why 11/5, and where the 2 s go: [DRY-RUN.md](docs/DRY-RUN.md) part 2.
 
+### The seeder-death demo (the "before" picture)
+
+```sh
+bash scripts/demo-seeder-death.sh        # env: BASE_PORT=9200 DELAY=150ms
+```
+
+A seeder shares a 16-piece file. Three leechers start downloading one
+after another, and the seeder is killed (SIGKILL) while **none of them
+has finished**. On `main` the file is lost: downloaders only announce
+complete files, pieces are fetched in order (so the leechers' pieces
+overlap), and a failed download deletes its partial output. The demo
+**passes when that expected failure happens** and no partial file is
+left:
+
+```
+=== What had spread when the seeder died (from the leechers' logs) ===
+  node2: 13/16 pieces  [0-12]
+  node3: 8/16 pieces  [0-7]
+  node4: 6/16 pieces  [0-5]
+  together: 13/16 pieces  [0-12]
+...
+PASS: the seeder died before any leecher finished, and the file was lost …
+```
+
+It runs every node with the DEBUG ONLY `--debug-serve-delay`, so the kill
+can land mid-download (localhost is otherwise too fast). Walkthrough:
+[DRY-RUN.md](docs/DRY-RUN.md) part 3. Branch
+`feature/parallel-partial-seeding` makes the same scenario succeed.
+
 ### One node at a time (e.g. in split VSCode terminals)
 
 ```sh
@@ -191,6 +220,7 @@ Then type console commands into a node's terminal:
 | `--port` | UDP port (default 9000) |
 | `--tcp-port` | TCP port for the file server (default: same number as `--port`) |
 | `--advertise-ip` | IP others should use to reach this node, put in provider records (default `127.0.0.1`) |
+| `--debug-serve-delay <dur>` | **DEBUG ONLY**, off by default: wait this long before answering each piece request, so a demo can kill a node mid-transfer |
 | `--id-seed <s>` | node ID = SHA-1(s); random if omitted |
 | `--bootstrap <host:port>` | join through this node |
 | `--lookup <hex>` `--lookup-after <dur>` | after joining, run one lookup and log it (used by the demo) |
@@ -249,6 +279,8 @@ internal/transfer/   file sharing on top of the DHT
   peer.go            Share, Download (round-robin + failover), announce
 scripts/demo.sh            5 processes: joining and lookup
 scripts/demo-transfer.sh   5 processes: put/get, share, downloads, killed seeder
+scripts/demo-seeder-death.sh  seeder killed mid-download: the file is lost on main
+scripts/lib/nodes.sh       shared helper: start N nodes with console FIFOs (bash 3.2)
 docs/                concept docs 01-07 + reference docs
 .vscode/launch.json  debug configurations
 ```
