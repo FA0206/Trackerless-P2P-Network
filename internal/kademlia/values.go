@@ -1,0 +1,107 @@
+package kademlia
+
+import (
+	"context"
+	"errors"
+	"fmt"
+)
+
+// StoreResult reports where a value ended up.
+type StoreResult struct {
+	Key           ID
+	StoredAt      []Contact     // remote nodes that acknowledged the STORE
+	StoredLocally bool          // this node is itself one of the k closest
+	Failed        int           // STORE RPCs that timed out or were refused
+	Lookup        *LookupResult // the lookup that chose the k closest nodes
+}
+
+// Store publishes (key, value) on the k nodes closest to key (paper
+// Sec. 2.3: "To store a (key,value) pair, a participant locates the k
+// closest nodes to the key and sends them STORE RPCs"). If this node is
+// itself among the k closest, it keeps a copy too: the lookup never
+// returns ourselves, so we have to check that separately.
+//
+// SIMPLIFICATION: no republishing. The paper has every holder re-publish
+// hourly and the original publisher every 24 h (Sec. 2.5), which keeps
+// values alive as holders leave and moves them onto closer nodes that join
+// later. Here a value lives exactly on the nodes chosen at publish time.
+func (n *Node) Store(ctx context.Context, key ID, value []byte) (*StoreResult, error) {
+	if len(value) > maxValueSize {
+		return nil, fmt.Errorf("kademlia: value is %d bytes, limit is %d", len(value), maxValueSize)
+	}
+	lookup, err := n.Lookup(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	result := &StoreResult{Key: key, Lookup: lookup}
+
+	targets := lookup.Closest
+	if selfAmongClosest(n.ID, key, targets, n.k) {
+		n.store.put(key, value)
+		result.StoredLocally = true
+		if len(targets) == n.k {
+			targets = targets[:n.k-1] // keep the total number of copies at k
+		}
+	}
+
+	type outcome struct {
+		contact Contact
+		err     error
+	}
+	outcomes := make(chan outcome, len(targets))
+	for _, c := range targets {
+		go func(c Contact) {
+			rpcCtx, cancel := context.WithTimeout(ctx, n.rpcTimeout)
+			defer cancel()
+			outcomes <- outcome{c, n.storeRPC(rpcCtx, c, key, value)}
+		}(c)
+	}
+	for range targets {
+		o := <-outcomes
+		if o.err != nil {
+			result.Failed++
+			n.logger.Debug("store rpc failed", "key", key.String(), "contact", o.contact.String(), "error", o.err)
+			continue
+		}
+		result.StoredAt = append(result.StoredAt, o.contact)
+	}
+
+	n.logger.Info("store complete", "key", key.String(), "stored_at", len(result.StoredAt),
+		"stored_locally", result.StoredLocally, "failed", result.Failed)
+	if len(result.StoredAt) == 0 && !result.StoredLocally {
+		return result, errors.New("kademlia: no node stored the value")
+	}
+	return result, nil
+}
+
+// selfAmongClosest reports whether self would be one of the k closest
+// nodes to key, given the k closest *other* nodes a lookup found.
+func selfAmongClosest(self, key ID, closest []Contact, k int) bool {
+	if len(closest) < k {
+		return true
+	}
+	return Less(Xor(self, key), Xor(closest[len(closest)-1].ID, key))
+}
+
+// FindValue retrieves every value stored under key (paper Sec. 2.3: a
+// lookup using FIND_VALUE that "halts immediately when any node returns
+// the value"). It checks this node's own store first; otherwise it runs
+// the iterative lookup in FIND_VALUE mode. A result with no Values means
+// no node on the lookup path held the key.
+//
+// SIMPLIFICATION: no caching. The paper has the searcher store the value
+// at the closest node on the path that didn't have it, so popular keys
+// spread toward where lookups come from. We skip that.
+func (n *Node) FindValue(ctx context.Context, key ID) (*LookupResult, error) {
+	if local := n.store.get(key); len(local) > 0 {
+		n.logger.Info("find_value answered from local store", "key", key.String(), "values_found", len(local))
+		return &LookupResult{Target: key, Values: local, ValuesFrom: []Contact{n.Self()}, FromLocalStore: true}, nil
+	}
+	return n.iterativeFind(ctx, key, true)
+}
+
+// StoredKeyCount returns how many distinct keys this node holds values
+// for on behalf of the network.
+func (n *Node) StoredKeyCount() int {
+	return n.store.keyCount()
+}

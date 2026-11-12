@@ -28,6 +28,7 @@ func main() {
 
 func run() error {
 	port := flag.Int("port", 9000, "UDP port to listen on")
+	advertiseIP := flag.String("advertise-ip", "127.0.0.1", "IP other nodes should use to reach this one (set to your LAN IP for multi-device use)")
 	idSeed := flag.String("id-seed", "", "deterministic node ID = SHA-1(id-seed); if empty, a random ID is used")
 	bootstrap := flag.String("bootstrap", "", "host:port of an existing node to join through (optional)")
 	lookupTarget := flag.String("lookup", "", "after joining, perform one extra lookup for this ID (40-char hex), log the result, and keep running")
@@ -59,7 +60,15 @@ func run() error {
 	// debugging session would still leave bootstrap dying after a fixed 10s.
 	opTimeout := max(10*time.Second, 5**rpcTimeout)
 
-	n, err := kademlia.NewNode(id, *port, *k, *alpha, *rpcTimeout, logger)
+	n, err := kademlia.NewNode(kademlia.Config{
+		ID:          id,
+		Port:        *port,
+		AdvertiseIP: *advertiseIP,
+		K:           *k,
+		Alpha:       *alpha,
+		RPCTimeout:  *rpcTimeout,
+		Logger:      logger,
+	})
 	if err != nil {
 		return err
 	}

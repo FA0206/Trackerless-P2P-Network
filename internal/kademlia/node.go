@@ -24,37 +24,71 @@ const (
 // replies to requests. This is the type cmd/node wires up and the type
 // lookup.go's iterative lookup is a method of.
 type Node struct {
-	ID         ID
-	rt         *RoutingTable
-	transport  *Transport
-	logger     *slog.Logger
-	k          int
-	alpha      int
-	rpcTimeout time.Duration
+	ID          ID
+	rt          *RoutingTable
+	store       *valueStore
+	transport   *Transport
+	logger      *slog.Logger
+	advertiseIP string
+	k           int
+	alpha       int
+	rpcTimeout  time.Duration
 
 	pendingMu sync.Mutex
 	pending   map[ID]chan Envelope // rpc id -> channel the waiting caller reads from
 }
 
-// NewNode creates a node listening on the given UDP port. Pass logger=nil
-// to get a default stdout logger (see logging.go).
-func NewNode(id ID, port, k, alpha int, rpcTimeout time.Duration, logger *slog.Logger) (*Node, error) {
-	if logger == nil {
-		logger = NewLogger(id, slog.LevelInfo)
+// Config holds everything needed to create a Node. Zero values get
+// defaults, so tests can fill in only what they care about.
+type Config struct {
+	ID   ID
+	Port int // UDP port; 0 lets the OS pick a free one
+	// AdvertiseIP is the address other nodes should use to reach this one,
+	// e.g. in provider records for file sharing. Default "127.0.0.1".
+	//
+	// SIMPLIFICATION: it's configured by hand. There's no discovery of
+	// our own external address and no NAT traversal, so for a
+	// multi-device demo every node must be given its LAN IP here.
+	AdvertiseIP string
+	K           int           // default DefaultK
+	Alpha       int           // default DefaultAlpha
+	RPCTimeout  time.Duration // default DefaultRPCTimeout
+	Logger      *slog.Logger  // default NewLogger(ID, Info)
+}
+
+// NewNode creates a node listening on cfg.Port. Call Start to begin
+// handling packets.
+func NewNode(cfg Config) (*Node, error) {
+	if cfg.AdvertiseIP == "" {
+		cfg.AdvertiseIP = "127.0.0.1"
 	}
-	transport, err := NewTransport(port, logger)
+	if cfg.K == 0 {
+		cfg.K = DefaultK
+	}
+	if cfg.Alpha == 0 {
+		cfg.Alpha = DefaultAlpha
+	}
+	if cfg.RPCTimeout == 0 {
+		cfg.RPCTimeout = DefaultRPCTimeout
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = NewLogger(cfg.ID, slog.LevelInfo)
+	}
+	transport, err := NewTransport(cfg.Port, cfg.Logger)
 	if err != nil {
 		return nil, err
 	}
 	return &Node{
-		ID:         id,
-		rt:         NewRoutingTable(id, k),
-		transport:  transport,
-		logger:     logger,
-		k:          k,
-		alpha:      alpha,
-		rpcTimeout: rpcTimeout,
-		pending:    make(map[ID]chan Envelope),
+		ID:          cfg.ID,
+		rt:          NewRoutingTable(cfg.ID, cfg.K),
+		store:       newValueStore(),
+		transport:   transport,
+		logger:      cfg.Logger,
+		advertiseIP: cfg.AdvertiseIP,
+		k:           cfg.K,
+		alpha:       cfg.Alpha,
+		rpcTimeout:  cfg.RPCTimeout,
+		pending:     make(map[ID]chan Envelope),
 	}, nil
 }
 
@@ -63,13 +97,16 @@ func (n *Node) Addr() *net.UDPAddr {
 	return n.transport.LocalAddr()
 }
 
-// Self returns this node's own contact info, as other nodes would need to
-// reach it. We hardcode the loopback address: this project targets a
-// localhost demo (multiple processes on one machine, see the README), and
-// has no NAT traversal or external-address discovery, which is out of
-// scope.
+// Self returns this node's own contact info as other nodes should use it:
+// the configured advertise IP plus the bound UDP port.
 func (n *Node) Self() Contact {
-	return Contact{ID: n.ID, IP: "127.0.0.1", Port: n.Addr().Port}
+	return Contact{ID: n.ID, IP: n.advertiseIP, Port: n.Addr().Port}
+}
+
+// Logger returns the node's logger, so layers built on top of the DHT
+// (e.g. file transfer) log with the same node tag.
+func (n *Node) Logger() *slog.Logger {
+	return n.logger
 }
 
 // Start launches the background read loop that receives and handles
@@ -114,7 +151,11 @@ func (n *Node) handleMessage(from *net.UDPAddr, env Envelope) {
 		n.replyPong(from, env)
 	case MsgFindNode:
 		n.replyFindNode(from, env)
-	case MsgPong, MsgFindNodeResp:
+	case MsgStore:
+		n.replyStore(from, env)
+	case MsgFindValue:
+		n.replyFindValue(from, env)
+	case MsgPong, MsgFindNodeResp, MsgStoreResp, MsgFindValueResp:
 		n.deliverResponse(env)
 	default:
 		n.logger.Warn("unknown message type", "type", string(env.Type), "from", sender.String())
@@ -251,6 +292,81 @@ func (n *Node) replyFindNode(from *net.UDPAddr, req Envelope) {
 	}
 	if err := n.transport.Send(from, resp); err != nil {
 		n.logger.Warn("failed to send FIND_NODE_RESP", "to", from.String(), "error", err)
+	}
+}
+
+// storeRPC sends one STORE RPC (paper Sec. 2.3) and reports whether the
+// target kept the value. Node.Store (values.go) calls it for each of the k
+// closest nodes.
+func (n *Node) storeRPC(ctx context.Context, target Contact, key ID, value []byte) error {
+	resp, err := n.sendAndWait(ctx, target, MsgStore, StoreRequest{Key: key, Value: value})
+	if err != nil {
+		return err
+	}
+	var payload StoreResponse
+	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
+		return fmt.Errorf("kademlia: decode store response from %s: %w", target, err)
+	}
+	if !payload.Stored {
+		return fmt.Errorf("kademlia: %s refused STORE: %s", target, payload.Reason)
+	}
+	return nil
+}
+
+// SIMPLIFICATION: any node may STORE anything under any key. There's no
+// check that the value is legitimate or that the sender owns it -- the
+// same openness as the paper, with none of the hardening a public network
+// would need.
+func (n *Node) replyStore(from *net.UDPAddr, req Envelope) {
+	var payload StoreRequest
+	if err := json.Unmarshal(req.Payload, &payload); err != nil {
+		n.logger.Warn("malformed STORE request", "from", from.String(), "error", err)
+		return
+	}
+	resp := StoreResponse{Stored: true}
+	if len(payload.Value) > maxValueSize {
+		resp = StoreResponse{Reason: fmt.Sprintf("value is %d bytes, limit is %d", len(payload.Value), maxValueSize)}
+	} else {
+		n.store.put(payload.Key, payload.Value)
+		n.logger.Info("value stored", "key", payload.Key.String(), "bytes", len(payload.Value))
+	}
+	n.reply(from, req, MsgStoreResp, resp)
+}
+
+// findValueRPC sends one FIND_VALUE RPC. The reply carries either values
+// (the target holds the key) or the target's closest contacts.
+func (n *Node) findValueRPC(ctx context.Context, target Contact, key ID) (values [][]byte, contacts []Contact, err error) {
+	resp, err := n.sendAndWait(ctx, target, MsgFindValue, FindValueRequest{Key: key})
+	if err != nil {
+		return nil, nil, err
+	}
+	var payload FindValueResponse
+	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
+		return nil, nil, fmt.Errorf("kademlia: decode find_value response from %s: %w", target, err)
+	}
+	return payload.Values, payload.Contacts, nil
+}
+
+func (n *Node) replyFindValue(from *net.UDPAddr, req Envelope) {
+	var payload FindValueRequest
+	if err := json.Unmarshal(req.Payload, &payload); err != nil {
+		n.logger.Warn("malformed FIND_VALUE request", "from", from.String(), "error", err)
+		return
+	}
+	var resp FindValueResponse
+	if values := n.store.get(payload.Key); len(values) > 0 {
+		resp.Values = values
+	} else {
+		resp.Contacts = n.rt.Closest(payload.Key, n.k)
+	}
+	n.reply(from, req, MsgFindValueResp, resp)
+}
+
+// reply sends a response envelope that echoes the request's RPC ID.
+func (n *Node) reply(to *net.UDPAddr, req Envelope, msgType MessageType, payload any) {
+	resp := Envelope{Type: msgType, RPCID: req.RPCID, SenderID: n.ID, Payload: mustMarshal(payload)}
+	if err := n.transport.Send(to, resp); err != nil {
+		n.logger.Warn("failed to send reply", "type", string(msgType), "to", to.String(), "error", err)
 	}
 }
 

@@ -18,7 +18,7 @@ func spinUpNode(t *testing.T, id ID) *Node {
 	if os.Getenv("KADEMLIA_TEST_LOGS") != "" {
 		logger = NewLogger(id, slog.LevelDebug)
 	}
-	n, err := NewNode(id, 0, DefaultK, DefaultAlpha, 500*time.Millisecond, logger)
+	n, err := NewNode(Config{ID: id, RPCTimeout: 500 * time.Millisecond, Logger: logger})
 	if err != nil {
 		t.Fatalf("NewNode: %v", err)
 	}
