@@ -1,12 +1,13 @@
 package kademlia
 
 import (
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+
+	"kademlia-demo/internal/framing"
 )
 
 // maxDatagramSize bounds how much we'll ever read from a single UDP
@@ -14,32 +15,21 @@ import (
 // under 2KB; 8KB leaves generous headroom without risking IP
 // fragmentation (the common safe UDP payload ceiling is ~1472 bytes on an
 // Ethernet-MTU path, but on localhost -- all this project targets -- much
-// larger packets go through unfragmented).
+// larger packets go through unfragmented). Every message type must fit:
+// see maxValueSize/maxValuesPerKey in store.go for the largest one.
 const maxDatagramSize = 8192
-
-// lengthPrefixSize is the size, in bytes, of the length header described
-// in docs/03-message-framing.md.
-const lengthPrefixSize = 4
 
 // Transport owns the raw UDP socket and the wire framing: turning an
 // Envelope into bytes on the way out, and bytes back into an Envelope (or
 // an error) on the way in. It knows nothing about RPC matching, routing
 // tables, or retries -- that's Node's job (node.go).
 //
-// Framing: each packet we send is [4-byte big-endian length][JSON body].
-// A single UDP datagram is already one atomic unit as far as the kernel
-// is concerned -- unlike a TCP stream, recvfrom() returns exactly the
-// bytes one sendto() call wrote, never a partial message or two messages
-// glued together. So, strictly, a length prefix isn't *required* to find
-// message boundaries over UDP the way it would be over TCP. We still add
-// one because it gives us a cheap sanity check against truncated/garbled
-// packets (if the declared length doesn't match what arrived, something's
-// wrong and we drop the packet instead of trying to coerce json.Unmarshal
-// into making sense of junk), and because it means the exact same framing
-// function could be reused unchanged if this transport were ever swapped
-// for TCP (relevant if/when piece transfer is added on a separate TCP
-// connection -- see the README's status table). See
-// docs/03-message-framing.md for the full reasoning.
+// Framing: each packet is [4-byte big-endian length][JSON body], built by
+// the shared internal/framing package that the TCP file transfer also
+// uses. A UDP datagram already arrives whole, so here the prefix is a
+// sanity check: a datagram that was truncated (e.g. bigger than our read
+// buffer) or isn't ours fails the length check and is dropped before we
+// try to parse it. See docs/03-message-framing.md.
 type Transport struct {
 	conn   *net.UDPConn
 	logger *slog.Logger
@@ -73,14 +63,11 @@ func (t *Transport) Send(addr *net.UDPAddr, env Envelope) error {
 	if err != nil {
 		return fmt.Errorf("kademlia: marshal envelope: %w", err)
 	}
-	if len(body) > maxDatagramSize-lengthPrefixSize {
+	if len(body) > maxDatagramSize-framing.PrefixSize {
 		return fmt.Errorf("kademlia: envelope too large (%d bytes)", len(body))
 	}
 
-	packet := make([]byte, lengthPrefixSize+len(body))
-	binary.BigEndian.PutUint32(packet, uint32(len(body)))
-	copy(packet[lengthPrefixSize:], body)
-
+	packet := framing.Encode(body)
 	n, err := t.conn.WriteToUDP(packet, addr)
 	if err != nil {
 		return fmt.Errorf("kademlia: write udp to %s: %w", addr, err)
@@ -124,13 +111,9 @@ func (t *Transport) Listen(handler Handler) error {
 
 func decodeEnvelope(packet []byte) (Envelope, error) {
 	var env Envelope
-	if len(packet) < lengthPrefixSize {
-		return env, fmt.Errorf("packet too short for length prefix: %d bytes", len(packet))
-	}
-	declaredLen := binary.BigEndian.Uint32(packet[:lengthPrefixSize])
-	body := packet[lengthPrefixSize:]
-	if int(declaredLen) != len(body) {
-		return env, fmt.Errorf("length prefix says %d bytes, packet has %d", declaredLen, len(body))
+	body, err := framing.Decode(packet)
+	if err != nil {
+		return env, err
 	}
 	if err := json.Unmarshal(body, &env); err != nil {
 		return env, fmt.Errorf("unmarshal envelope: %w", err)
