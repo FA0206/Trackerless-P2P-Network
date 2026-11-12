@@ -82,7 +82,7 @@ go build -o "$BIN" ./cmd/node
 
 echo "Starting 5 nodes (k=$K), each joining via the previous one..."
 start_node 0
-sleep 0.3
+wait_for_log "$WORK/node0.log" "node started" 10 # a PING sent before node0 binds is lost
 for i in 1 2 3 4; do
 	start_node "$i" $((9000 + i - 1))
 	wait_for_log "$WORK/node$i.log" "bootstrap complete" 10
