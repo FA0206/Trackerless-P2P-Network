@@ -8,7 +8,6 @@
 package nodeapi
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,7 +15,6 @@ import (
 	"net/http"
 	"sort"
 	"time"
-	"unicode/utf8"
 
 	"kademlia-demo/internal/kademlia"
 	"kademlia-demo/internal/transfer"
@@ -37,6 +35,15 @@ type Config struct {
 	// wraps the node's logger (cmd/node sets both up). Nil: no event
 	// stream, and /api/events is 404.
 	Events *Events
+
+	// Control registers the POST endpoints (control.go) that make the
+	// node act: lookup, ping, put, get, share, fetch. Off: they're 404.
+	Control bool
+	// OpTimeout bounds one DHT operation (lookup, put, get, share; a ping
+	// gets one RPCTimeout) and TransferTimeout a whole fetch. Zero: the
+	// console's defaults, max(10s, 5*RPCTimeout) and 10*OpTimeout.
+	OpTimeout       time.Duration
+	TransferTimeout time.Duration
 }
 
 // Server answers HTTP requests about one node.
@@ -48,6 +55,9 @@ type Server struct {
 
 // New builds the API for one node. Serve its Handler with net/http.
 func New(cfg Config) *Server {
+	if cfg.RPCTimeout == 0 {
+		cfg.RPCTimeout = kademlia.DefaultRPCTimeout // what kademlia.NewNode uses for 0, too
+	}
 	s := &Server{cfg: cfg, started: time.Now(), mux: http.NewServeMux()}
 	s.mux.HandleFunc("GET /api/node", s.handleNode)
 	s.mux.HandleFunc("GET /api/table", s.handleTable)
@@ -55,6 +65,9 @@ func New(cfg Config) *Server {
 	s.mux.HandleFunc("GET /api/files", s.handleFiles)
 	if cfg.Events != nil {
 		s.mux.HandleFunc("GET /api/events", s.handleEvents)
+	}
+	if cfg.Control {
+		s.registerControl()
 	}
 	return s
 }
@@ -133,6 +146,9 @@ func writeEvent(w io.Writer, ev Event, dropped uint64) error {
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if s.cfg.Control && allowPreflight(w, r) {
+			return
+		}
 		s.mux.ServeHTTP(w, r)
 	})
 }
@@ -236,11 +252,7 @@ func (s *Server) handleStore(w http.ResponseWriter, r *http.Request) {
 	for key, vals := range values {
 		sk := StoredKey{Key: key, Values: make([]StoredValue, len(vals))}
 		for i, v := range vals {
-			sk.Values[i] = StoredValue{Base64: base64.StdEncoding.EncodeToString(v)}
-			if utf8.Valid(v) {
-				text := string(v)
-				sk.Values[i].Text = &text
-			}
+			sk.Values[i] = storedValue(v)
 		}
 		out.Keys = append(out.Keys, sk)
 	}

@@ -188,7 +188,18 @@ timeouts even if the node runs without `--verbose`:
 ```sh
 curl -sN 127.0.0.1:8000/api/events               # every RPC in/out, value stored, piece received
 curl -sN '127.0.0.1:8000/api/events?level=debug' | grep -E 'timed out|evicted'
-``` Pick API ports away from the node
+```
+
+With `--api-control` too, any node takes console commands over HTTP, so
+one terminal can drive the whole network:
+
+```sh
+curl -s -X POST -H 'Content-Type: application/json' -d '{"target":"self"}' 127.0.0.1:8001/api/lookup
+curl -s -X POST -H 'Content-Type: application/json' -d '{"name":"greeting","text":"hi"}' 127.0.0.1:8000/api/put
+```
+
+Don't forget `-H 'Content-Type: application/json'`: without it the
+answer is `415` (on purpose; NODE-API.md, "Safety"). Pick API ports away from the node
 ports (8000s for APIs, 9000s for nodes): a node's UDP and TCP ports
 already use its own number.
 

@@ -2,15 +2,17 @@
 
 Every node can serve its own state as JSON over HTTP: who it is, its
 routing table, the values it holds for the network, and the files it can
-serve. It's built for the **visual demo**: a browser page polls each
-node's API and draws the network. It also works from `curl`, which makes
-it a debugging tool too.
+serve. It also streams what it does as it happens, and, if you allow it,
+takes commands. It's built for the **visual demo**: a browser page
+reads each node's API, draws the network, and lets you click to make
+nodes act. It also works from `curl`, which makes it a debugging tool
+too.
 
-**Status:** increments 1 and 2 of 3 are done: the snapshot endpoints,
-and the live event stream (`GET /api/events`: every RPC, stored value
-and received piece, as it happens). Next: **3.** control endpoints (POST
-`lookup`, `ping`, `put`, `get`, `share`, `fetch`, the same as the
-console).
+| Part | Endpoints | Flag |
+|---|---|---|
+| [Snapshots](#snapshots) | `GET /api/node`, `/api/table`, `/api/store`, `/api/files` | `--api` |
+| [Live events](#get-apievents-what-happens-as-it-happens) | `GET /api/events` (Server-Sent Events) | `--api` |
+| [Control](#control-endpoints-make-the-node-act) | `POST /api/lookup`, `/ping`, `/put`, `/get`, `/share`, `/fetch` | `--api` **and** `--api-control` |
 
 ## Turning it on
 
@@ -18,6 +20,7 @@ The API is **off by default**. Start a node with `--api host:port`:
 
 ```sh
 go run ./cmd/node --port 9000 --id-seed demo0 --api 127.0.0.1:8000
+go run ./cmd/node --port 9001 --id-seed demo1 --bootstrap 127.0.0.1:9000 --api 127.0.0.1:8001 --api-control
 ```
 
 ```
@@ -26,14 +29,16 @@ level=INFO msg="api listening" node=2b370ab7 addr=127.0.0.1:8000
 
 Without `--api`, a node opens no HTTP socket, starts no extra goroutine,
 and prints exactly the same output as before the API existed.
+`--api-control` without `--api` is refused (`error: -api-control needs
+-api`).
 
 **Use `127.0.0.1`.** The API has no authentication, and every response
 carries `Access-Control-Allow-Origin: *` so a visualizer page from any
 origin can read it. That's fine on localhost. Binding it to a LAN
-address would let anyone on the network read the node's state (and, once
-increment 3 lands, control it).
+address would let anyone on the network read the node's state (and, with
+`--api-control`, control it).
 
-## Endpoints
+## Snapshots
 
 All are `GET` (any other method gets `405 Method Not Allowed`) and
 return `Content-Type: application/json`, indented for reading with
@@ -296,6 +301,198 @@ Renaming a log message or attribute changes the event a visualizer
 sees, just as it already breaks the demo scripts that grep it.
 ARCHITECTURE.md's "If you change X" table lists both.
 
+## Control endpoints: make the node act
+
+With `--api-control` as well as `--api`, a node also takes six commands.
+Each one does what the **console command of the same name** does
+(`cmd/node/console.go`), through the same `Node` / `Peer` method, with
+the same timeouts. It answers with the result as JSON instead of printed
+text.
+
+| Endpoint | Body | Does | Console | Method called |
+|---|---|---|---|---|
+| `POST /api/lookup` | `{"target": "<40 hex>"}` or `{"target": "self"}` | iterative FIND_NODE lookup | `lookup` | `Node.Lookup` |
+| `POST /api/ping` | `{"addr": "ip:port"}` (UDP) | one PING | `ping` | `Node.Ping` |
+| `POST /api/put` | `{"name": "…", "text": "…"}` | STORE text under SHA-1(name) | `put` | `Node.Store` |
+| `POST /api/get` | `{"name": "…"}` | FIND_VALUE for SHA-1(name) | `get` | `Node.FindValue` |
+| `POST /api/share` | `{"path": "…"}` | publish a local file | `share` | `Peer.Share` |
+| `POST /api/fetch` | `{"key": "<40 hex>", "out": "…"}` | download a file | `fetch` | `Peer.Download` |
+
+**Requests** must send `Content-Type: application/json` (otherwise
+**415**; why is under "Safety" below). Unknown fields are rejected, so a
+typo like `{"targt": …}` is a **400**, not silently ignored. Paths
+(`share`'s `path`, `fetch`'s `out`) are on the node's machine. Relative
+ones are relative to the node's working directory.
+
+**Responses:**
+- **200** with the result;
+- **400** `{"error": …}` when the request itself is wrong (bad hex, missing field);
+- **500** `{"error": "<command> failed: …"}` when the node tried and failed (timeout, no providers, a value over 256 bytes, an existing `out` file).
+
+The request blocks until the operation finishes, just as the console
+command does. If the client hangs up, the operation is cancelled (the
+request's context).
+
+Real output below: four nodes with `k = 3`. node0 (UDP 9720, API 8720),
+node1 (9721/8721) and node2 (9722/8722) run with `--api-control`. node3
+(9723/8723) runs with `--api` only.
+
+### `POST /api/lookup`
+
+```
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"target":"self"}' 127.0.0.1:8722/api/lookup
+{
+  "target": "db61277694fea41b42a8ac82cbb678baac683990",
+  "rounds": 1,
+  "rpcs_sent": 3,
+  "rpcs_failed": 0,
+  "closest": [
+    {
+      "id": "94fab99d6ca8abab7d217af7e3c5532697bf1a7a",
+      "ip": "127.0.0.1",
+      "port": 9723,
+      "distance": "4f9b9eebf8560fb03f89d67528732b9c3bd723ea"
+    },
+    {
+      "id": "10f71961bd11dd33c1c95c771b98cf0e09d57b7c",
+      "ip": "127.0.0.1",
+      "port": 9721,
+      "distance": "cb963e1729ef79288361f0f5d02eb7b4a5bd42ec"
+    },
+    {
+      "id": "2b370ab73e042befc2c56a925ab511b5116aec98",
+      "ip": "127.0.0.1",
+      "port": 9720,
+      "distance": "f0562dc1aafa8ff4806dc6109103690fbd02d508"
+    }
+  ]
+}
+```
+
+`closest` is nearest first, and each `distance` is **to the target**
+(here node2's own ID). In `/api/table`, by contrast, `distance` is to
+the node being asked.
+
+### `POST /api/ping`
+
+```
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"addr":"127.0.0.1:9721"}' 127.0.0.1:8720/api/ping
+{
+  "addr": "127.0.0.1:9721",
+  "alive": true,
+  "id": "10f71961bd11dd33c1c95c771b98cf0e09d57b7c",
+  "rtt_ms": 0.895
+}
+```
+
+Like the console's `ping`, it knows only an address. The PONG reveals
+who's there, and `id` is read back from the routing table, where the
+PONG put it. A silent address gives `{"addr": …, "alive": false}` after
+one `--rpc-timeout`, and a status of **200**: "not alive" is an answer,
+not an error.
+
+### `POST /api/put` and `POST /api/get`
+
+```
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"name":"greeting","text":"hello over http"}' 127.0.0.1:8720/api/put
+{
+  "key": "a0f7e779f9247566c84036f07f7bdf4a40a869bd",
+  "stored_at": [
+    { "id": "db61277694fea41b42a8ac82cbb678baac683990", "ip": "127.0.0.1", "port": 9722, "distance": "7b96c00f…" },
+    { "id": "94fab99d6ca8abab7d217af7e3c5532697bf1a7a", "ip": "127.0.0.1", "port": 9723, "distance": "340d5ee4…" }
+  ],
+  "stored_locally": true,
+  "failed": 0
+}
+
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"name":"greeting"}' 127.0.0.1:8722/api/get
+{
+  "key": "a0f7e779f9247566c84036f07f7bdf4a40a869bd",
+  "values": [
+    { "text": "hello over http", "base64": "aGVsbG8gb3ZlciBodHRw" }
+  ],
+  "from": [
+    { "id": "db61277694fea41b42a8ac82cbb678baac683990", "ip": "127.0.0.1", "port": 9722, "distance": "7b96c00f…" }
+  ],
+  "from_local_store": true,
+  "rounds": 0,
+  "rpcs_sent": 0,
+  "rpcs_failed": 0
+}
+```
+
+(Contacts shortened to one line each here; the real output is indented
+like the lookup above.) The value went to 3 nodes, the k closest to
+SHA-1("greeting"): node2, node3, and node0 itself (`stored_locally`).
+So node2's `get` was answered **from its own store**: `from` is node2
+itself, and no RPCs were sent. From a node that doesn't hold it, `get`
+runs a FIND_VALUE lookup, and `from` lists the nodes that returned the
+value. A key nobody holds gives `"values": []` with status 200.
+
+### `POST /api/share` and `POST /api/fetch`
+
+```
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"path":"/tmp/…/photo.bin"}' 127.0.0.1:8721/api/share
+{
+  "key": "f0fef057b96c598a7183c88bb2cebd774c5b6fe5",
+  "name": "photo.bin",
+  "size": 200000,
+  "pieces": 4,
+  "path": "/tmp/…/photo.bin"
+}
+
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"key":"f0fef057…","out":"/tmp/…/copy.bin"}' 127.0.0.1:8722/api/fetch
+{
+  "key": "f0fef057b96c598a7183c88bb2cebd774c5b6fe5",
+  "name": "photo.bin",
+  "size": 200000,
+  "pieces": 4,
+  "out": "/tmp/…/copy.bin",
+  "providers_found": 1,
+  "pieces_from": {
+    "127.0.0.1:9721": 4
+  },
+  "failed_providers": [],
+  "duration_ms": 6
+}
+```
+
+`share` answers with the same shape as an `/api/files` entry. `fetch`'s
+`pieces_from` is keyed by each provider's TCP address. The copy was
+byte-for-byte identical. Running the same `fetch` again fails, because
+**downloads never overwrite** (`O_EXCL`, [07](07-file-transfer-over-tcp.md)):
+
+```
+{
+  "error": "fetch failed: open /tmp/…/copy.bin: file exists"
+}
+```
+
+### Safety: what `--api-control` exposes
+
+The control endpoints make the node do things on your machine and on the
+network: `share` publishes any file the node's process can read, and
+`fetch` creates new files wherever it can write. So:
+
+1. **They are off unless `--api-control` is given.** Without it the POST
+   routes don't exist (**404**), and node3 above answered `404` to the
+   same lookup. A CORS preflight isn't approved either.
+2. **They demand `Content-Type: application/json`.** A web page on
+   another origin can make your browser send a plain form POST to
+   `127.0.0.1` without asking anyone. It can't send a JSON one without a
+   CORS **preflight** (an `OPTIONS` request first), and those plain
+   requests get **415**. Real run: `415` for a `text/plain` body.
+3. **But the preflight is approved** (`Access-Control-Allow-Origin: *`),
+   so the visualizer page can work from any origin. That means any web
+   page open in your browser while a node runs with `--api-control`
+   could make it act. Use the flag for demos on your own machine, and
+   not on a node holding files you care about.
+
+Restricting `share` / `fetch` to one directory, or adding a token, would
+close that gap. Neither is needed for a localhost demo, so neither is
+built. If the API ever listens on a LAN address for the multi-device
+demo, revisit this first.
+
 ## How it's built
 
 ```
@@ -312,10 +509,19 @@ cmd/node  ──(--api)──►  internal/nodeapi  ──►  internal/transfer
 - **`cmd/node/api.go`**: `startAPI` opens the listener and serves in a
   goroutine. `main.go` calls it only when `--api` is set, after `node
   started` and before bootstrapping, so a viewer can watch the join.
+- **`internal/nodeapi/control.go`**: the six POST handlers, registered
+  only with `Config.Control`. Each decodes and validates the body, calls
+  the one `Node` / `Peer` method its console command calls, under the
+  console's timeout (`OpTimeout`, `TransferTimeout`, passed in by
+  `cmd/node`), and converts the result. The CORS preflight answer lives
+  here too.
 - **Nothing in `internal/kademlia` or `internal/transfer` knows the API
-  exists.** The handlers only read, through the same locked accessors
-  the console's `table` and `files` use. A slow HTTP client therefore
-  can't block packet handling.
+  exists.** Snapshot handlers only read, through the same locked
+  accessors the console's `table` and `files` use. Control handlers call
+  the same methods the console calls, and those were already safe to run
+  concurrently: each lookup and each download keeps its own state
+  (ARCHITECTURE.md invariant 9). A slow HTTP client can't block packet
+  handling.
 
 ### The event stream: a tap on the logger
 
@@ -356,14 +562,25 @@ viewers left, rule 2 applies again.
 
 ### Tests
 
-`internal/nodeapi/api_test.go` and `events_test.go` start real nodes on
-loopback (like `transfer_test.go`), wired the same way `cmd/node` does.
-They check every endpoint against the node's own state:
+`internal/nodeapi/api_test.go`, `events_test.go` and `control_test.go`
+start real nodes on loopback (like `transfer_test.go`), wired the same
+way `cmd/node` does. They check every endpoint against the node's own
+state:
 - table contacts in the right buckets, with the right distances;
 - values on exactly the nodes a `Store` reached;
 - binary values without `text`;
 - a real PING appearing on the receiver's stream, with the right sender;
 - no DEBUG events on an INFO stream, and DEBUG ones with `?level=debug`;
+- a control `lookup` returning exactly what `Node.Lookup` returns;
+- `put` on one node, `get` on another;
+- `share` on one node, `fetch` on another, with the file compared byte
+  for byte, and a second fetch refused without touching the existing
+  file;
+- `ping` of a live and a dead address;
+- the safety rules: 404 without `Control`, 415, an unknown field, a
+  preflight approved only with `Control`;
+- 16 concurrent control requests on one node, under `-race`;
+- a control action showing up on the event stream;
 - CORS, 400, 404 and 405.
 
 `TestValueStoreSnapshotIsACompleteCopy` (in `internal/kademlia`) checks

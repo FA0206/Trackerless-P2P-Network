@@ -44,7 +44,11 @@ func run() error {
 	rpcTimeout := flag.Duration("rpc-timeout", kademlia.DefaultRPCTimeout, "per-RPC timeout (raise this, e.g. to 5m, when pausing at breakpoints)")
 	debugServeDelay := flag.Duration("debug-serve-delay", 0, "DEBUG ONLY: wait this long before answering each piece request, so a demo can kill this node mid-transfer (0 = off)")
 	apiAddr := flag.String("api", "", "serve this node's state as JSON over HTTP on host:port, e.g. 127.0.0.1:8000 (off if empty; see docs/NODE-API.md)")
+	apiControl := flag.Bool("api-control", false, "with -api: also accept POST lookup/ping/put/get/share/fetch, so a page can make this node act (any website open in your browser could too; demo use only)")
 	flag.Parse()
+	if *apiControl && *apiAddr == "" {
+		return fmt.Errorf("-api-control needs -api")
+	}
 
 	id, err := resolveID(*idSeed)
 	if err != nil {
@@ -105,7 +109,8 @@ func run() error {
 
 	// Started before bootstrapping, so a viewer can watch the join itself.
 	if *apiAddr != "" {
-		stopAPI, err := startAPI(*apiAddr, nodeapi.Config{Node: n, Peer: peer, K: *k, Alpha: *alpha, RPCTimeout: *rpcTimeout, Events: events}, logger)
+		stopAPI, err := startAPI(*apiAddr, nodeapi.Config{Node: n, Peer: peer, K: *k, Alpha: *alpha, RPCTimeout: *rpcTimeout, Events: events,
+			Control: *apiControl, OpTimeout: opTimeout, TransferTimeout: 10 * opTimeout}, logger)
 		if err != nil {
 			return fmt.Errorf("starting -api: %w", err)
 		}

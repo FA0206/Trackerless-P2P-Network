@@ -49,7 +49,7 @@ func startNodes(t *testing.T, n int) []testNode {
 		}
 		t.Cleanup(func() { peer.Close() })
 		api := httptest.NewServer(New(Config{Node: node, Peer: peer, K: 3, Alpha: 3,
-			RPCTimeout: 500 * time.Millisecond, Events: events}).Handler())
+			RPCTimeout: 500 * time.Millisecond, Events: events, Control: true}).Handler())
 		t.Cleanup(api.Close)
 		nodes[i] = testNode{node, peer, api, events}
 		if i > 0 {

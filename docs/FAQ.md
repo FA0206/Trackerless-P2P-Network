@@ -256,6 +256,12 @@ copies through the node's public methods. The event stream is a tap on
 the node's logger that never waits for a viewer, so it can't change or
 slow the DHT.
 
+Add `--api-control` and a program can also make the node act: POST
+`lookup`, `ping`, `put`, `get`, `share` or `fetch`, the console's
+commands. That's how the visual demo will let you click a node to make
+it look something up. Leave it off when you don't need it: any web page
+open in your browser could send those commands too.
+
 ## Wire protocol
 
 ### Doesn't UDP lack message boundaries? Isn't that why we length-prefix?

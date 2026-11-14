@@ -57,8 +57,9 @@ EDGE-CASES.md section in the same change, as `demo-seeder-death.sh` does.
 
 Packages: `internal/kademlia` (the DHT, opaque values), `internal/transfer`
 (files on top of the DHT's public API), `internal/framing` (shared
-`[length][body]` frames), `internal/nodeapi` (optional per-node HTTP API,
-`--api`; read-only over the public APIs), `cmd/node` (CLI + console). Dependencies point
+`[length][body]` frames), `internal/nodeapi` (optional per-node HTTP API:
+`--api` for snapshots and the event stream, `--api-control` for console-style
+commands; public APIs only), `cmd/node` (CLI + console). Dependencies point
 only downward; see `docs/ARCHITECTURE.md`.
 
 ## Invariants that are easy to break (details: docs/ARCHITECTURE.md)

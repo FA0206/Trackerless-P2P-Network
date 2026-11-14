@@ -37,7 +37,7 @@ evaluation includes performance graphs:
 | Pieces spread so **no single node has the whole file** | ⬜ Not started — next step: per-piece availability | — |
 | Runs across multiple devices / Wi-Fi | ⬜ Not started — `--advertise-ip` exists; untested off localhost | — |
 | Sending messages (as opposed to files) | ⬜ Not started — `put`/`get` store short text, but there's no messaging feature | — |
-| Per-node HTTP API (for the visual demo) | 🟡 Increments 1–2 of 3 done: `--api` serves node info, routing table, stored values, files as JSON, plus a live event stream (SSE) of every RPC, stored value and piece. Next: control endpoints | `internal/nodeapi`, [docs/NODE-API.md](docs/NODE-API.md) |
+| Per-node HTTP API (for the visual demo) | ✅ Done: `--api` serves node info, routing table, stored values, files as JSON, plus a live event stream (SSE) of every RPC, stored value and piece; `--api-control` adds POST lookup/ping/put/get/share/fetch | `internal/nodeapi`, [docs/NODE-API.md](docs/NODE-API.md) |
 | Visual demo | ⬜ Not started | — |
 | Performance graphs (the four above) | ⬜ Not started | — |
 | Merkle trees | ⬜ Not started — optional; see [FAQ](docs/FAQ.md#do-merkle-trees-make-sense-here) | — |
@@ -313,7 +313,8 @@ Then type console commands into a node's terminal:
 | `--port` | UDP port (default 9000) |
 | `--tcp-port` | TCP port for the file server (default: same number as `--port`) |
 | `--advertise-ip` | IP others should use to reach this node, put in provider records (default `127.0.0.1`) |
-| `--api <host:port>` | serve this node's state as JSON over HTTP, e.g. `127.0.0.1:8000`; off by default ([NODE-API.md](docs/NODE-API.md)) |
+| `--api <host:port>` | serve this node's state as JSON over HTTP, e.g. `127.0.0.1:8000`, plus a live event stream; off by default ([NODE-API.md](docs/NODE-API.md)) |
+| `--api-control` | with `--api`: also accept POST commands (lookup, ping, put, get, share, fetch). Any web page in your browser could use them too: demo use only |
 | `--debug-serve-delay <dur>` | **DEBUG ONLY**, off by default: wait this long before answering each piece request, so a demo can kill a node mid-transfer |
 | `--id-seed <s>` | node ID = SHA-1(s); random if omitted |
 | `--bootstrap <host:port>` | join through this node |
@@ -347,6 +348,10 @@ go test ./... -race -count=1
 - `internal/nodeapi/events_test.go` — the log tap leaves printed output
   byte-identical, costs nothing without viewers, never blocks on a slow
   viewer; real RPCs on the stream; levels; unsubscribe on disconnect
+- `internal/nodeapi/control_test.go` — each command against the node's
+  own methods; put/get and share/fetch across nodes; no overwriting;
+  the safety rules (404 without the flag, 415, unknown fields);
+  concurrent requests
 
 `KADEMLIA_TEST_LOGS=1` shows the nodes' logs during tests.
 
@@ -381,6 +386,7 @@ internal/transfer/   file sharing on top of the DHT
 internal/nodeapi/    the optional per-node HTTP API (docs/NODE-API.md)
   api.go             JSON snapshot endpoints, the SSE endpoint
   events.go          log tap (TeeHandler) + non-blocking event fan-out to viewers
+  control.go         POST endpoints mirroring the console (only with --api-control)
 scripts/demo.sh            5 processes: joining and lookup
 scripts/demo-transfer.sh   5 processes: put/get, share, downloads, killed seeder
 scripts/demo-seeder-death.sh  seeder killed mid-download: the file is lost on main
