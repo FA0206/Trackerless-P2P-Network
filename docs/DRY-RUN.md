@@ -172,14 +172,14 @@ node.go       sendAndWait returns the PONG envelope  → Bootstrap reads pong.Se
 
 ```
 lookup.go     Lookup(ctx, target = node1's own ID)
-routingtable.go  Closest(target, 20)                → [node0]  (the only contact)
+routingtable.go  Closest(target, rt.Size() = 1)     → [node0]  (the whole table: one contact)
 lookup.go       round 1: batch = [node0]
 lookup.go         go FindNode(node0, target)        node.go → sendAndWait(MsgFindNode, {Target})
                   ── on node0: handleMessage → touchContact(node1) (moves it to tail)
                   ──           → replyFindNode → Closest(node1's ID, 20) = [node1]
                   ──           → FIND_NODE_RESP {contacts: [node1]}
 lookup.go         addCandidate(node1) → skipped: that's ourselves
-lookup.go       sort, trim to k; round 2: nothing unqueried → break
+lookup.go       sort; round 2: nothing unqueried in the working set → break
 ```
 
 Result: 1 round, 1 RPC, closest = [node0]. With only two nodes, there's

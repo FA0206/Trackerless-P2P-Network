@@ -24,7 +24,7 @@ Each case is a script in `scripts/edge/`. Every script:
   their console, using `scripts/lib/nodes.sh` plus `scripts/lib/edge.sh`.
 
 ```sh
-bash scripts/edge/run-all.sh                   # every case, one verdict line each (~1.5 min)
+bash scripts/edge/run-all.sh                   # every case, one verdict line each (~2 min)
 
 bash scripts/edge/a2-thundering-herd.sh        # env: N=20 K=4 QUERIERS=4 TARGETS=3 BASE_PORT=9425 SEED=1 RACE=1
 bash scripts/edge/a3-bridge-between-islands.sh # env: BASE_PORT=9450 (nothing random, no SEED)
@@ -34,15 +34,16 @@ bash scripts/edge/b2-record-holders-die.sh     # env: N=8 BASE_PORT=9525 SEED=1
 bash scripts/edge/b3-late-joiners-hide-a-value.sh  # env: N=8 LATE=4 BASE_PORT=9550 SEED=1
 ```
 
-`run-all.sh` on the current code:
+`run-all.sh` on the current code (with the lookup fix; B1 and B2's
+predictions changed with it, see their sections):
 
 ```
 a2-thundering-herd                  6s  PASS: 19 nodes joined through one node at once; lookups were correct and no data race was reported.
-a3-bridge-between-islands          22s  PASS: an unused bridge's death split the network for good; a bridge that had carried one lookup each way could die harmlessly.
+a3-bridge-between-islands          23s  PASS: an unused bridge's death split the network for good; a bridge that had carried one lookup each way could die harmlessly.
 a4-tiny-buckets                    14s  PASS: with nothing dead, k=4 lookups were all correct and k=1 lookups were not.
-b1-half-the-network-dies           25s  PASS: after half the network died, lookups paid an RPC timeout per dead contact, paid it again on the repeat, and returned short answers.
-b2-record-holders-die              11s  PASS: with every record holder dead the file could not be found, though 2 providers were online, and re-sharing did not bring it back.
-b3-late-joiners-hide-a-value        9s  PASS: newcomers closer to the key missed a value whose holders were alive; re-putting moved it to them.
+b1-half-the-network-dies           58s  PASS: after half the network died, no lookup came back short, but each paid an RPC timeout per dead contact, and paid it again on the repeat.
+b2-record-holders-die              16s  PASS: with every record holder dead the file could not be found, though 2 providers were online, until the seeder shared it again.
+b3-late-joiners-hide-a-value        6s  PASS: newcomers closer to the key missed a value whose holders were alive; re-putting moved it to them.
 ```
 
 The cases were written before swarming ([08](08-swarming.md)) was merged
@@ -52,21 +53,26 @@ still fails at once with the same message, so B2's file case is unchanged.
 
 ## Results at a glance
 
-| Case | Holds up or breaks? | Headline number | Root cause | Fix (core code, not made here) |
+| Case | Holds up or breaks? | Headline number | Root cause | Fix |
 |---|---|---|---|---|
 | A2 thundering herd | **holds up** | 19/19 joins, 12/12 lookups correct, 0 data races in 20 race-detector processes | — | — |
 | A3 bridge between islands | **breaks if quiet** | quiet: 0 of 5 found across, forever; used: 5 of 5 | no bucket refresh | bucket refresh (Sec. 2.3) |
 | A4 tiny buckets | **breaks at k = 1** | k=1: 9–14 of 20 correct; k=4: 20 of 20 | thin routing tables: no post-join refresh | post-join bucket refresh (Sec. 2.3) |
-| B1 half the network dies | **breaks** | 133 ms → 10.35 s for 4 lookups; every answer short; repeat no better | dead contacts kept in tables and lookup shortlists | drop failed candidates; evict on repeated failure (Sec. 2.3, 4.1) |
-| B2 record holders die | **breaks** | file unfindable with 2 providers online; re-share doesn't help | no republish + B1's lookup problem | lookup fix first, then republish (Sec. 2.5) |
+| B1 half the network dies | **slow; was wrong** | was: every answer short. Now: none short, but 2–8 s per lookup (185 ms before the kill), 3 of 8 over 10 s with SEED=1; repeat no better | dead contacts kept in routing tables (shortlists fixed) | **done:** drop failed candidates (Sec. 2.3). Next: evict on repeated failure (Sec. 4.1) |
+| B2 record holders die | **breaks until re-shared** | file unfindable with 2 providers online; a manual re-share brings it back (it didn't before the lookup fix) | no republish | republish (Sec. 2.5); the lookup fix it needed is done |
 | B3 late joiners | **breaks** | 13 of 16 newcomer `get`s miss; holders alive | values never move to closer nodes | republish / hand over on join (Sec. 2.5) |
 
 **The main finding** (B1 and B2 both show it): a lookup only
-ever starts from the k closest contacts in the routing table, a contact
-that times out is never removed, and failed candidates keep their slots
-in the lookup's k-closest list. So once nodes die, lookups return
+ever started from the k closest contacts in the routing table, a contact
+that times out is never removed, and failed candidates kept their slots
+in the lookup's k-closest list. So once nodes died, lookups returned
 **short answers** (live nodes missing), and in the worst case **nothing
-at all**, even though live nodes are known. Nothing improves on its own.
+at all**, even though live nodes were known. **The lookup half is fixed
+on `feature/edge-case-fixes`**: no answer is short any more, and
+re-sharing a lost file works. The other half isn't: dead contacts stay
+in routing tables. Lookups keep paying a 2 s timeout for each of them,
+some run out of time, and dead contacts in replies can hide a live node
+(B1, SEED=4). Nothing improves on its own.
 
 **The second finding** (A3, A4 and B3): nothing maintains the network in
 the background. Contacts spread only as a side effect of traffic, and
@@ -88,7 +94,7 @@ and by how much else depends on fixing it first.
 
 | Rank | Case | Problem | Why this rank | Fix | Where |
 |---|---|---|---|---|---|
-| 1 | **B1** | Lookups around dead nodes are wrong (short answers) and slow, and don't improve | The root cause underneath B2. Every churn experiment runs into it, including the seeder-kill and time-to-recovery graph, and the answers are *wrong*, not just slow. A small change in one function | Drop failed candidates from the k-closest list so the lookup continues to live nodes; remove a contact after repeated RPC failures. For the latency graph: keep α RPCs in flight instead of synchronous rounds | `lookup.go`, `node.go`, `bucket.go` |
+| 1 | **B1** | Lookups around dead nodes are wrong (short answers) and slow, and don't improve. **Short answers: fixed.** Slow, not improving: open | The root cause underneath B2. Every churn experiment runs into it, including the seeder-kill and time-to-recovery graph, and the answers are *wrong*, not just slow. A small change in one function | Drop failed candidates from the k-closest list so the lookup continues to live nodes; remove a contact after repeated RPC failures. For the latency graph: keep α RPCs in flight instead of synchronous rounds | `lookup.go`, `node.go`, `bucket.go` |
 | 2 | **B2** | A file becomes unfindable when its record holders die, even with providers online | Directly the end goal ("downloads keep working when nodes leave") and the recovery graph. Needs fix 1 first, or the republish lookup stalls on the same dead contacts | Republish values hourly; expire them after 24 h (Sec. 2.5) | `store.go`, `values.go` |
 | 3 | **B3** | Newcomers near a key can't see its value | Same family as B2, but nothing is lost: the holders are alive. Hourly republishing from fix 2 resolves it over time | Fix 2, plus: when a node meets a newcomer closer to a key it holds, it STOREs the value there (Sec. 2.5) | `node.go` (`touchContact`) |
 | 4 | **A3** | A quiet group cut off by one node's death never reconnects | Matters for the multi-device demo (two LANs started separately) and for long-idle networks. Busy networks connect themselves through traffic, so it rarely bites today | Bucket refresh: a lookup for a random ID in every bucket not used for a while (Sec. 2.3) | `node.go` |
@@ -98,6 +104,13 @@ and by how much else depends on fixing it first.
 **Three code changes cover all five.** In order: **(a)** lookup failure
 handling (fixes B1, unblocks B2); **(b)** republish and hand-over
 (B2, B3); **(c)** bucket refresh, periodic and after joining (A3, A4).
+
+**Progress on `feature/edge-case-fixes`:**
+- **(a), part 1, done:** failed candidates give up their places in a
+  lookup, and lookups are seeded from the whole routing table. B1's
+  "short" prediction and B2's step 4 flipped, and both scripts were
+  updated with them.
+- **(a), part 2, next:** remove a contact after repeated RPC failures.
 Each will flip some of these scripts to FAIL. Then update that script's
 prediction and its section here in the same change, as
 `demo-seeder-death.sh` did when swarming (parallel downloads and partial
@@ -116,8 +129,8 @@ code.
 | A3 | Two islands joined by one bridge node; the bridge is killed | If nobody used the bridge: split for good. If one lookup crossed it: no harm | [section](#a3--two-islands-and-one-bridge) |
 | A4 | Tiny buckets (k = 1, 2, 4) on the same 20 nodes | k = 1 returns wrong nodes with nothing dead; k = 4 doesn't | [section](#a4--tiny-buckets) |
 | **B. Churn** | | | |
-| B1 | Kill half the nodes, then repeat the same lookups | +1 RPC timeout per round with a dead contact, the repeat is just as slow, and answers come back **short** | [section](#b1--half-the-network-dies-at-once) |
-| B2 | Every node holding a file's provider record dies; the seeder stays up | The file can't be found, and **re-sharing doesn't fix it** | [section](#b2--the-provider-record-holders-all-die) |
+| B1 | Kill half the nodes, then repeat the same lookups | +1 RPC timeout per round with a dead contact, and the repeat is just as slow. No answer is **short** (they were before the lookup fix) | [section](#b1--half-the-network-dies-at-once) |
+| B2 | Every node holding a file's provider record dies; the seeder stays up | The file can't be found until the seeder **shares it again** (which didn't help before the lookup fix) | [section](#b2--the-provider-record-holders-all-die) |
 | B3 | Late joiners with IDs closer to a key than its holders | Newcomers' `get`s miss it, though the holders are alive; a re-`put` moves it to them | [section](#b3--late-joiners-closer-to-a-key) |
 
 **Ports.** Each case has its own block so they can run side by side with
@@ -434,9 +447,69 @@ lookup is timed on the monotonic clock (`now_ms` in `edge.sh`).
 | 1 | correct, 0 failed RPCs, milliseconds | nothing's dead |
 | 2 | failed RPCs; ≥ 2 s for every lookup that meets a dead contact | rounds are synchronous: a round waits for its slowest RPC, and a dead one takes the full `--rpc-timeout` (2 s) ([05](05-iterative-parallel-lookup.md)) |
 | 3 | the **same** dead contacts asked again; just as slow | a timeout never removes a contact from the routing table ([02](02-routing-table-and-kbuckets.md)), so nothing is learned |
-| 2, 3 | answers **short**: right nodes, right order, but live ones missing | failed candidates keep their k-closest slots (see below). **Learned from the first runs**, not predicted up front |
+| 2, 3 | **no answer is short**: every lookup that finishes returns k live nodes | a failed candidate gives up its place to the next-closest one (the lookup fix, [05](05-iterative-parallel-lookup.md)). Before it, every answer here came back short (see below) |
+| 2, 3 | *reported only:* an answer can miss a live node, and a lookup can run out of the console's 10 s | dead contacts crowd live ones out of replies; many dead contacts mean many 2 s rounds (see below) |
 
 ### Real output (`SEED=1`)
+
+With the lookup fix:
+
+```
+  querier: node10;  to be killed: node5 node7 node9 node11 node12 node13 node14 node15
+
+=== Pass 1: node10 looks up 4 targets, everyone alive ===
+  pass 1  6da4c727…  rounds=2  rpcs=4   failed=0     21ms  ok
+  pass 1  d4183492…  rounds=3  rpcs=7   failed=0    124ms  ok
+  pass 1  64416b78…  rounds=2  rpcs=4   failed=0     24ms  ok
+  pass 1  e66a18d1…  rounds=2  rpcs=4   failed=0     16ms  ok
+  pass 1  total: 0 failed RPCs, 185ms for 4 lookups, 0 wrong answer(s), 0 of them short, 0 ran out of time
+
+=== Killing 8 of 16 nodes at once (SIGKILL) ===
+  killed: node5 node7 node9 node11 node12 node13 node14 node15
+  alive:  node0 node1 node2 node3 node4 node6 node8 node10
+  node10's routing table: 10 contacts in 4 non-empty buckets, 5 of them now dead
+
+=== Pass 2: the same lookups, right after the kill ===
+  pass 2  6da4c727…  rounds=4  rpcs=8   failed=4    4.08s  ok
+  pass 2  d4183492…  rounds=6  rpcs=13  failed=7    8.05s  ok
+  pass 2  64416b78…  rounds=4  rpcs=8   failed=4    4.27s  ok
+  pass 2  e66a18d1…  lookup failed: lookup failed: context deadline exceeded
+  pass 2  total: 15 failed RPCs, 26.45s for 4 lookups, 0 wrong answer(s), 0 of them short, 1 ran out of time
+
+=== Pass 3: the same lookups once more ===
+  pass 3  6da4c727…  rounds=4  rpcs=8   failed=4    4.04s  ok
+  pass 3  d4183492…  lookup failed: lookup failed: context deadline exceeded
+  pass 3  64416b78…  rounds=4  rpcs=8   failed=4    4.08s  ok
+  pass 3  e66a18d1…  lookup failed: lookup failed: context deadline exceeded
+  pass 3  total: 8 failed RPCs, 28.31s for 4 lookups, 0 wrong answer(s), 0 of them short, 2 ran out of time
+
+=== Verdict ===
+  as predicted: pass 1 had 0 failed RPCs and 0 wrong answers (185ms in total)
+  as predicted: pass 2: 4 of 4 lookups hit dead nodes, 15 failed RPCs, 26.45s in total (at least one 2000ms timeout each)
+  as predicted: pass 3: 4 of those 4 hit dead nodes again (8 failed RPCs, 28.31s): nothing was learned
+  as predicted: no answer was short: every lookup that finished returned 4 live nodes
+  reported, not asserted: 0 answer(s) missed a live node no survivor mentioned; 3 of 8 lookups ran out of the console's time
+
+PASS: after half the network died, no lookup came back short, but each paid an RPC timeout per dead contact, and paid it again on the repeat.
+```
+
+**Seeds 1–4 with the fix** (64 lookups after the kill):
+
+| SEED | pass 2 | pass 3 | short | missed a live node | ran out of time |
+|---|---|---|---|---|---|
+| 1 | 26.45 s, 15 failed | 28.31 s, 8 failed | 0 | 0 | 3 of 8 |
+| 2 | 16.43 s, 14 failed | 16.28 s, 14 failed | 0 | 0 | 0 |
+| 3 | 20.76 s, 15 failed | 22.11 s, 15 failed | 0 | 0 | 0 |
+| 4 | 22.50 s, 17 failed | 22.59 s, 17 failed | 0 | 6 of 8 | 0 |
+
+So the lookup fix made the answers **right** but not **fast**. Before it,
+lookups after the kill gave up quickly with short answers. Now they keep
+going past every dead contact they meet, at 2 s per round, and take
+2–8 s. Three of SEED=1's lookups needed more than the console's 10 s.
+
+### Before the lookup fix (`SEED=1`)
+
+The output this case was built on, with the original `lookup.go`:
 
 ```
   querier: node10;  to be killed: node5 node7 node9 node11 node12 node13 node14 node15
@@ -473,7 +546,7 @@ PASS: after half the network died, lookups paid an RPC timeout per dead contact,
 true 4 closest live nodes are node0, node3, node6, node8. In node index
 terms, `got` is always the start of `want`.
 
-**Seeds 1–4 (64 lookups after the kill) all give the same picture:**
+**Seeds 1–4 (64 lookups after the kill) all gave the same picture:**
 
 | SEED | pass 1 | pass 2 | pass 3 | short answers (pass 2 / 3) |
 |---|---|---|---|---|
@@ -487,9 +560,9 @@ Seed 4 includes `SHORT: got [] want [2 1 7 12]`: a lookup that found
 exactly from pass 2 to pass 3. The time can differ: it depends on whether
 a lookup's dead contacts land in one round (one 2 s wait) or two.
 
-### Why the answers are short: one lookup, round by round
+### Why the answers were short: one lookup, round by round
 
-One lookup from `SEED=2` (querier node5, target `62433a6b…`), pass 2,
+On the original code, one lookup from `SEED=2` (querier node5, target `62433a6b…`), pass 2,
 from node5's log (timestamps kept, IDs shortened):
 
 ```
@@ -514,26 +587,49 @@ The paper's rule is the opposite: nodes that fail to respond "are
 removed from consideration until and unless they do respond" (Sec. 2.3).
 The lookup should keep going until it has heard back from k live nodes.
 
+**The fix** does exactly that (`iterativeFind`, `lookup.go`;
+[05](05-iterative-parallel-lookup.md)). Candidates are no longer
+trimmed. The *working set* is the k closest candidates that haven't
+failed, and a failed one gives up its place to the next-closest. The
+lookup is also seeded with the whole routing table rather than its k
+closest contacts, so it has somewhere to go when those are all dead.
+`TestLookupAfterHalfTheNetworkDies` (`lookup_test.go`) is this case in
+Go: on the original code it fails with answers of 0–3 nodes, and now it
+passes.
+
+### Why SEED=4 misses a live node
+
+With the fix, three of SEED=4's lookups return 4 live nodes, but not
+the right 4: `got [2 1 12 11] want [2 1 7 12]`. Nobody ever tells the
+querier about node7. A survivor's `table` after the run shows why. node1
+and node2 know node7, but their contacts closest to target `f0bbace9…`
+are dead. node2's nearest are node5, node8, node14 and node15, all
+killed. A `FIND_NODE` reply carries only the k = 4 closest contacts, so
+node2's reply is 4 dead nodes, and node7 is never mentioned.
+
+The lookup did its job: it returned the closest live nodes it could hear
+of. What's wrong is the network's knowledge. Nodes keep handing out
+contacts that are dead, because nothing removes them. That's the next
+fix ("no learning" below), with bucket refresh after it.
+
 ### What it shows, and what would fix it
 
-After churn, the network is **slow**: about 2 s per round that meets a
-dead contact, against ~10 ms before. It **doesn't recover**: pass 3 asks
-the same dead nodes. And it's **wrong**: every lookup after the kill
-returned fewer than the k closest live nodes. Since `Store` and
-`FindValue` are built on the same lookup, B2's lost file is the same
-problem one level up.
+After churn the network is **slow**: about 2 s per round that meets a
+dead contact, against ~10 ms before, and with the fix a lookup meets
+more of them. It **doesn't recover**: pass 3 asks the same dead nodes.
+It used to be **wrong** too, with every answer short. Now no answer is
+short, but one can still miss a live node that dead contacts crowd out
+of replies.
 
-Fixes, none made here (they change core code):
+| Problem | Fix | Status | Where | Paper |
+|---|---|---|---|---|
+| short answers | failed candidates give up their places; seed from the whole table | **done** | `lookup.go` | Sec. 2.3 |
+| no learning; dead contacts crowd live ones out of replies | remove a contact after repeated RPC failures | next | `node.go`, `bucket.go` | Sec. 4.1 |
+| 2 s per round, so lookups can run out of time | keep α RPCs in flight instead of synchronous rounds | later | `lookup.go` | Sec. 2.3 |
 
-| Problem | Fix | Where | Paper |
-|---|---|---|---|
-| short answers | drop failed candidates from the k-closest list, so the lookup keeps going until k live nodes answered | `lookup.go` | Sec. 2.3 |
-| 2 s per round | keep α RPCs in flight instead of synchronous rounds | `lookup.go` | Sec. 2.3 |
-| no learning | remove a contact after repeated RPC failures | `node.go`, `bucket.go` | Sec. 4.1 |
-
-The first fix also turns this script's "short" assertion into a FAIL.
-At that point, flip the prediction, the way `demo-seeder-death.sh` was
-flipped when swarming landed.
+When the "no learning" fix lands, pass 3 should stop hitting the same
+dead nodes, and this script's "nothing was learned" check will FAIL.
+Flip that prediction then, as this change flipped "short".
 
 ---
 
@@ -571,7 +667,7 @@ file instead` line that appears with some seeds.
 | 1 | node2 downloads (control) | works, and node2 becomes a provider |
 | 2 | kill the 3 holders; ping node1 and node2 | both providers answer |
 | 3 | node4 downloads | **fails: "no providers found"**, with 2 providers online |
-| 4 | node1 shares the file again, then node5 downloads | **still fails** (see below) |
+| 4 | node1 shares the file again, then node5 downloads | **works**: the record reaches the 3 closest live nodes (this flipped with the lookup fix; see below) |
 
 ### Real output (`SEED=1`)
 
@@ -582,7 +678,7 @@ file instead` line that appears with some seeds.
   holders (from logs):    node0 node3 node6  (nodes that logged "value stored")
 
 === Step 1 (control): node2 downloads while the holders are alive ===
-  node2: fetched "shared-1-1.bin" (262144 bytes, 4 pieces) in 10ms
+  node2: fetched "shared-1-1.bin" (262144 bytes, 4 pieces) in 9ms
   node2's copy is identical; node2 is now a provider too
 
 === Step 2: kill the 3 record holders (SIGKILL) ===
@@ -590,26 +686,29 @@ file instead` line that appears with some seeds.
   killed node6
   killed node3
   providers still online, pinged from node4:
-    PONG from 127.0.0.1:9526 in 1.272ms
-    PONG from 127.0.0.1:9527 in 873µs
+    PONG from 127.0.0.1:9526 in 966µs
+    PONG from 127.0.0.1:9527 in 870µs
 
 === Step 3: node4 tries to download (predicted: no record found) ===
   node4: fetch failed: transfer: no providers found for 93accc525bce78b07f7868ba330d890537216c3d
-  its FIND_VALUE: values_found=0 rounds=2 rpcs_sent=4 rpcs_failed=3
+  its FIND_VALUE: values_found=0 rounds=3 rpcs_sent=6 rpcs_failed=3
   as predicted: the file is online on 2 nodes, but nobody can find them
 
-=== Step 4: node1 shares the file again (predicted: this doesn't help) ===
-  node1's re-announce lookup: rounds=1 rpcs_sent=3 rpcs_failed=3 closest_found=0
-  node1's store:              stored_at=0 stored_locally=true failed=0
-  as predicted: every contact it started from was a dead holder, so the record stayed on node1 alone
-  node5: fetch failed: transfer: no providers found for 93accc525bce78b07f7868ba330d890537216c3d
-  as predicted: node5's lookup also stops at the dead holders and never reaches node1
+=== Step 4: node1 shares the file again (predicted: this brings it back) ===
+  node1's re-announce lookup: rounds=2 rpcs_sent=6 rpcs_failed=3 closest_found=3
+  node1's store:              stored_at=2 stored_locally=true failed=0
+  as predicted: the lookup skipped the dead holders and the record went to the 3 closest live nodes
+  node5: fetched "shared-1-1.bin" (262144 bytes, 4 pieces) in 6.017s
+  as predicted: node5 found the new record and its copy is identical
 
-PASS: with every record holder dead the file could not be found, though 2 providers were online, and re-sharing did not bring it back.
+PASS: with every record holder dead the file could not be found, though 2 providers were online, until the seeder shared it again.
 ```
 
-`SEED=2` and `SEED=3` (both of which needed a renamed file) give the same
-verdict with different keys.
+The 3 closest live nodes include node1 itself, so the record went to two
+others plus node1's own store (`stored_at=2 stored_locally=true`).
+node5's download took 6 s, not milliseconds: its lookups still ask the
+dead holders first and wait 2 s for each round that includes one (its
+`FIND_VALUE` logged `rpcs_failed=2`).
 
 ### Step 3: why the file can't be found
 
@@ -622,7 +721,11 @@ get republished"). In the paper, every holder republishes hourly
 (Sec. 2.5), which keeps the record on the k closest *live* nodes as
 holders die.
 
-### Step 4: why re-sharing doesn't help (the prediction we got wrong)
+### Step 4: re-sharing didn't help before the lookup fix
+
+Step 4 has flipped twice. The first version of this script predicted
+that re-sharing would work, and on the original code it didn't. The fix
+for B1 then made it work. Here is what the original code did.
 
 The first version of this script predicted that re-sharing would work:
 `Share` calls `Store`, which runs a fresh lookup and should find the 3
@@ -659,35 +762,37 @@ round), **failed candidates still take up slots**. A live node that is
 slightly farther away gets trimmed even though a dead one is kept. The
 paper says nodes that fail to respond "are removed from consideration
 until and unless they do respond" (Sec. 2.3). [B1](#b1--half-the-network-dies-at-once)
-shows this across a whole network: every lookup after the kill came
+showed this across a whole network: every lookup after the kill came
 back short.
+
+**The fix** (`lookup.go`, [05](05-iterative-parallel-lookup.md)) deals
+with point 1 and with the trimming: a lookup is seeded with the whole
+routing table, and a failed candidate gives up its place to the
+next-closest one. node1's re-announce lookup now reads `rounds=2 rpcs_sent=6
+rpcs_failed=3 closest_found=3`: the 3 dead holders fail, and the next 3
+contacts, all alive, take their places. Point 2 (dead contacts stay in
+the table) is still true, which is why node5's download takes 6 s.
 
 ### What it shows, and what would fix it
 
-The file is online on two nodes but invisible, and the obvious manual
-fix doesn't work. Churn among the few nodes near a key is enough to lose
-a file, even if the seeder never leaves.
+A file is online on two nodes but invisible as soon as the few nodes
+near its key die together. Churn there is enough to lose a file, even if
+the seeder never leaves. Sharing it again brings it back, now that the
+lookup gets past the dead holders.
 
-These fixes are **not made here**: this step only measures. Each one is
-a change to core code, for a later, separate step:
+| Fix | Status | Where | Paper |
+|---|---|---|---|
+| Drop failed candidates from a lookup's shortlist, so live nodes farther out move up | **done** | `lookup.go` (`iterativeFind`) | Sec. 2.3 |
+| Seed a lookup from the whole routing table | **done** | `lookup.go` | Sec. 2.3 |
+| Republish values hourly; expire after 24 h. That makes step 4 automatic | not yet | `store.go`, `values.go` | Sec. 2.5 |
+| Remove a contact after repeated RPC failures, not only on a full-bucket ping. That makes node5's download fast again | not yet | `node.go`, `bucket.go` | Sec. 4.1 (stale after 5 failures) |
+| Bucket refresh, so a node learns live replacements for the dead | not yet | `node.go` | Sec. 2.3, 2.5 |
 
-| Fix | Where | Paper |
-|---|---|---|
-| Republish values hourly; expire after 24 h | `store.go`, `values.go` | Sec. 2.5 |
-| Drop failed candidates from a lookup's shortlist, so live nodes farther out move up | `lookup.go` (`iterativeFind`) | Sec. 2.3 |
-| Seed a lookup from more of the routing table, or refill when every candidate fails | `lookup.go` | Sec. 2.3 |
-| Remove a contact after repeated RPC failures, not only on a full-bucket ping | `node.go`, `bucket.go` | Sec. 4.1 (stale after 5 failures) |
-| Bucket refresh, so a node learns live replacements for the dead | `node.go` | Sec. 2.3, 2.5 |
-
-**Republish alone wouldn't save this run.** The 3 holders died at the
+**Republish needed the lookup fix first.** The 3 holders died at the
 same moment, so none of them could republish. The publisher's own
-republish goes through `Store`, the same lookup as step 4, and stops at
-the same dead contacts. What's missing is the lookup carrying on past
-them: node1's routing table *does* know live nodes (node2, node4, …),
-but the lookup only ever starts from its 3 closest contacts. So the
-third fix (refill from the routing table when candidates fail) has to
-come first, and republish then keeps records alive as holders die one
-by one.
+republish goes through `Store`, the same lookup as step 4, and before
+the fix it stopped at the same dead contacts. With the lookup carrying
+on past them, republish can now keep records alive as holders die.
 
 ---
 

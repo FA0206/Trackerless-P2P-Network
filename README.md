@@ -29,7 +29,7 @@ evaluation includes performance graphs:
 | **Peer discovery (the DHT core):** 160-bit IDs, XOR metric, k-bucket routing table, `PING`/`FIND_NODE` over UDP, joining via one known node, iterative α-parallel lookup | ✅ Done | `main` — this README, [docs 01–05](#documentation) |
 | Unit + integration tests for the core; runnable demos (5-process chain, 20-node random joins with brute-force-checked lookups) | ✅ Done | `internal/kademlia/*_test.go`, `scripts/demo.sh`, `scripts/demo-big-network.sh` |
 | Debugging tooling: logs, per-node console, VSCode debug configs | ✅ Done | [docs/DEBUGGING.md](docs/DEBUGGING.md) |
-| Edge-case stress tests: node setups chosen to find what breaks | ✅ Done: 6 cases (A2 thundering herd, A3 bridge between islands, A4 tiny buckets, B1 half the network dies, B2 record holders die, B3 late joiners), ranked by fix priority. `scripts/edge/run-all.sh` runs them all | `scripts/edge/`, [docs/EDGE-CASES.md](docs/EDGE-CASES.md) |
+| Edge-case stress tests: node setups chosen to find what breaks | ✅ Done: 6 cases (A2 thundering herd, A3 bridge between islands, A4 tiny buckets, B1 half the network dies, B2 record holders die, B3 late joiners), ranked by fix priority. `scripts/edge/run-all.sh` runs them all. Fixing them, on `feature/edge-case-fixes`: lookups no longer come back short after deaths (B1, B2) | `scripts/edge/`, [docs/EDGE-CASES.md](docs/EDGE-CASES.md) |
 | `STORE` / `FIND_VALUE` (the DHT holds "who has file X") | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/06](docs/06-store-and-find-value.md) |
 | File transfer over TCP: pieces, SHA-256 verification, content keys | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/07](docs/07-file-transfer-over-tcp.md) |
 | Share a file / download it from the CLI; transfer demo | ✅ Done | `share` / `fetch` console commands, `scripts/demo-transfer.sh` |
@@ -262,7 +262,7 @@ repeat the same joins and targets. Walkthrough of a 3-round lookup:
 ### Edge cases (what breaks)
 
 ```sh
-bash scripts/edge/run-all.sh                   # all six, one verdict line each (~1.5 min)
+bash scripts/edge/run-all.sh                   # all six, one verdict line each (~2 min)
 bash scripts/edge/a2-thundering-herd.sh        # env: N=20 K=4 BASE_PORT=9425 SEED=1 RACE=1
 bash scripts/edge/a3-bridge-between-islands.sh # env: BASE_PORT=9450
 bash scripts/edge/a4-tiny-buckets.sh           # env: N=20 BASE_PORT=9475 SEED=1
@@ -288,23 +288,29 @@ islands through one bridge node and kills it. If nobody had looked
 anything up across the bridge, the islands are cut apart for good (0 of
 5 found, every time). If one lookup had crossed it, the islands survive.
 
-B1 kills 8 of 16 nodes. The same 4 lookups go from 133 ms to ~10 s,
-don't get faster when repeated, and every one returns fewer than the k
-closest live nodes:
+B1 kills 8 of 16 nodes. On the original code, every lookup afterwards
+returned fewer than the k closest live nodes. With the lookup fix
+(failed candidates give up their places), none is short. But lookups
+are slow (2–8 s, from ~20 ms) and don't get faster when repeated,
+because dead contacts stay in routing tables:
 
 ```
-  pass 1  6da4c727…  rounds=2  rpcs=4   failed=0    111ms  ok
+before the fix:
   pass 2  6da4c727…  rounds=2  rpcs=4   failed=3    2.06s  SHORT: got [0] want [0 3 6 8]
-  pass 3  6da4c727…  rounds=2  rpcs=4   failed=3    2.08s  SHORT: got [0] want [0 3 6 8]
+with it:
+  pass 1  6da4c727…  rounds=2  rpcs=4   failed=0     21ms  ok
+  pass 2  6da4c727…  rounds=4  rpcs=8   failed=4    4.08s  ok
+  pass 3  6da4c727…  rounds=4  rpcs=8   failed=4    4.04s  ok
 ```
 
 B2 kills the 3 nodes holding a file's provider record while the seeder
-stays up. The file can't be found, and re-sharing doesn't bring it back:
+stays up. The file can't be found. Before the lookup fix, re-sharing
+didn't bring it back either. Now it does:
 
 ```
   node4: fetch failed: transfer: no providers found for 93accc52…
-  node1's re-announce lookup: rounds=1 rpcs_sent=3 rpcs_failed=3 closest_found=0
-PASS: with every record holder dead the file could not be found, though 2 providers were online, and re-sharing did not bring it back.
+  node1's re-announce lookup: rounds=2 rpcs_sent=6 rpcs_failed=3 closest_found=3
+PASS: with every record holder dead the file could not be found, though 2 providers were online, until the seeder shared it again.
 ```
 
 B3 adds 4 nodes whose IDs are closer to a stored value's key than its
@@ -463,17 +469,17 @@ Here is whether each one blocks the end goal:
 | No choking, upload limits, or fairness ([08](docs/08-swarming.md)) | Not in the goal list. | Later, if ever. |
 | No security (ID spoofing, Sybil, rate limits) | Not in the goal list. | Later, if at all. |
 
-**Found by the edge cases, not (yet) a labeled simplification:** a
-lookup starts from only the k closest contacts in the routing table, and
-a contact that times out stays there, and failed candidates keep their
-slots in the lookup's k-closest list. After nodes die, lookups return
-short answers, or nothing, even though the node knows live nodes farther
-away. Edge case B1 shows every lookup coming back short after half the
-network dies ([EDGE-CASES.md](docs/EDGE-CASES.md#b1--half-the-network-dies-at-once)).
-B2 shows it losing a file whose seeder is still online
-([EDGE-CASES.md](docs/EDGE-CASES.md#b2--the-provider-record-holders-all-die)).
-It blocks the churn and recovery experiments. Fix it in `lookup.go`
-together with republishing, before measuring recovery.
+**Found by the edge cases, and fixed:** lookups used to come back short
+after nodes died, because failed candidates kept their places among the
+k closest. A failed candidate now gives up its place to the next-closest
+one ([05](docs/05-iterative-parallel-lookup.md), edge cases
+[B1 and B2](docs/EDGE-CASES.md#fix-priority)).
+
+**Found by the edge cases, not fixed yet:** a contact that times out
+stays in the routing table. Lookups keep paying a timeout for it, and
+nodes keep handing it out in replies, where it can crowd out a live node
+(B1). Fix: remove a contact after repeated failures (paper Sec. 4.1),
+next on the fix branch.
 
 **Bottom line:** per-piece availability, the first item that blocked the
 end goal, is done on this branch. Before the end-goal measurements, in

@@ -318,14 +318,17 @@ full `FIND_VALUE` reply inside one UDP datagram.
 
 ### What if the k nodes holding a value all die? Can I just store it again?
 
-The value is gone: nothing republishes it. And on the current code,
-storing it again from a node that had stored it before **doesn't work
-either**. That node's routing table still lists the dead holders as its
-closest contacts to the key. A lookup starts from only those k contacts,
-they all time out, and the lookup ends with nothing. `Store` then keeps
-the value only locally, where nobody else's lookup will look.
+The value is gone: nothing republishes it. Storing it again does work.
+The node's routing table still lists the dead holders as its closest
+contacts to the key, so its lookup times out on them first. But a failed
+contact gives up its place to the next-closest one
+([05](05-iterative-parallel-lookup.md)), and the value lands on the k
+closest live nodes. It costs a few seconds of timeouts.
 [EDGE-CASES.md, case B2](EDGE-CASES.md#b2--the-provider-record-holders-all-die)
-shows this with real output and lists the fixes.
+shows both halves with real output. (Before the lookup fix, the re-store
+failed too: the lookup gave up after the dead holders and kept the value
+only locally.) Doing that re-store automatically is the paper's
+republish (Sec. 2.5), which isn't built yet.
 
 ### A node joins with an ID closer to a key than the nodes holding it. Does it get the value?
 

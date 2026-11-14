@@ -20,38 +20,64 @@ Code: `Node.Lookup` / the unexported `Node.lookup` in
 
 ## The algorithm, step by step
 
-Starting state: a **candidate list**, seeded from the `k` closest contacts
-this node already knows of (from its own routing table —
-`RoutingTable.Closest`). For a node that's just joining, that's the one
+Starting state: a **candidate list**, seeded with every contact in this
+node's routing table, nearest to the target first
+(`RoutingTable.Closest`). For a node that's just joining, that's the one
 bootstrap node it PINGed first (see [04](04-bootstrap-and-join.md)).
 Every candidate starts unqueried.
 
+The **working set** is the `k` closest candidates that haven't failed.
+Only the working set is ever queried, so the farther seeds cost nothing
+unless closer ones fail.
+
 Then, repeatedly:
 
-1. From the candidate list, take up to **α ("alpha")** candidates that are
-   closest to the target *and haven't been queried yet*. α is a
-   concurrency parameter (paper Sec. 2.3; this project defaults it to 3,
-   same as the paper's example) — it controls how many `FIND_NODE` RPCs
-   are in flight at once during one round, independent of `k`.
+1. From the working set, take up to **α ("alpha")** candidates that
+   *haven't been queried yet*, closest first. α is a concurrency
+   parameter (paper Sec. 2.3; this project defaults it to 3, same as the
+   paper's example). It controls how many `FIND_NODE` RPCs are in flight
+   at once during one round, independent of `k`.
 2. Send `FIND_NODE` to all of them **in parallel**, mark each as queried
    immediately (so a slow reply doesn't cause it to be re-queried next
    round), and wait for the round to finish.
-3. For every contact any of those replies returned, add it to the
-   candidate list if it's new.
-4. Re-sort the whole candidate list by distance to the target, and trim it
-   down to the closest `k` — anything farther out can never end up in the
-   final answer anyway, so there's no reason to keep tracking it.
-5. If every one of the (now up to `k`) closest candidates has already been
-   queried, stop. Otherwise, go back to step 1.
+3. A candidate whose RPC failed (timed out) is marked **failed**. It
+   leaves the working set, and the next-closest candidate moves in.
+4. For every contact any of the replies returned, add it to the
+   candidate list if it's new, and re-sort the list by distance to the
+   target. Nothing is thrown away. A candidate that's farther than the
+   k closest today may be needed tomorrow, if closer ones fail.
+5. If every candidate in the working set has been queried (and so has
+   answered), stop. Otherwise, go back to step 1.
+
+The answer is the working set: the `k` closest nodes that answered.
 
 The stopping condition is the paper's (Sec. 2.3): "the lookup terminates
 when the initiator has queried and gotten responses from the k closest
-nodes it has seen." A contact that fails to respond (RPC timeout) still
-counts as "queried" for this purpose — it's excluded from the final
-answer, but it doesn't block the lookup from terminating. So a dead node
-along the path costs one RPC timeout in this implementation, not a failed
-lookup. (The paper goes further, with *no* timeout delay at all; see the
-synchronous-rounds simplification below.)
+nodes it has seen." Nodes that fail to respond "are removed from
+consideration until and unless they do respond". A failed candidate stays
+in the candidate list, marked failed, so a later reply that mentions it
+again can't bring it back for a second timeout. A dead node along the path
+therefore costs one RPC timeout, and the lookup still returns `k` live
+nodes if it can hear of that many. (The paper goes further, with *no*
+timeout delay at all; see the synchronous-rounds simplification below.)
+
+**This used to be different, and it was wrong under churn.** The first
+version seeded only the `k` closest table contacts and trimmed the list
+to the `k` closest after every round, failed candidates included. A dead
+candidate kept its place, and the live node that should have replaced it
+had already been trimmed away. After half the network died, every lookup
+came back short, some with nobody at all. Edge case B1 found it
+([EDGE-CASES.md](EDGE-CASES.md#b1--half-the-network-dies-at-once)), and
+`TestLookupAfterHalfTheNetworkDies` (`lookup_test.go`) guards the fix.
+
+**What the fix can't do on its own:** a lookup only learns of nodes
+someone mentions. A reply carries the replier's `k` closest contacts,
+dead ones included, because nothing removes dead contacts from routing
+tables yet. With many deaths, those can crowd out a live node, which the
+lookup then never hears of. B1 with `SEED=4` shows answers that are
+complete (`k` live nodes) but miss one closer live node this way.
+Removing contacts that keep failing (paper Sec. 4.1) and refreshing
+buckets (Sec. 2.3) are the fixes for that.
 
 Why this converges in `O(log n)` rounds rather than needing some fixed
 iteration count: each round that finds anything closer than what's
@@ -81,6 +107,10 @@ loop in `lookup.go`). Consequences:
 - α still helps: the round costs the slowest of its RPCs, not their sum.
 - A dead contact costs a full `rpcTimeout` for its round, even if the
   other two replied in a millisecond.
+- Since the lookup now keeps going past failures (above), a lookup that
+  meets many dead contacts pays for many rounds. In edge case B1, after
+  half the network died, lookups took 2–8 s, and a few ran out of the
+  console's 10 s limit.
 
 This was chosen because "collect a round, then merge" keeps all candidate
 bookkeeping in one goroutine and is easy to reason about and log. It's
@@ -118,7 +148,7 @@ candidates rather than immediately committing to exhausting the full `k`
 closest list.
 
 This implementation doesn't special-case that: it always queries every one
-of the (up to) `k` closest candidates exactly once, whether or not a given
+of the (up to) `k` closest live candidates exactly once, whether or not a given
 round improved on the best distance seen. The final answer is identical
 either way (the stopping condition — all `k` closest queried — is the
 same), and this is simpler to implement and reason about than tracking
@@ -149,14 +179,16 @@ inside `RoutingTable`/`Bucket` for the routing-table side of things.
 
 | Concept | Function | File |
 |---|---|---|
-| The lookup algorithm itself | `Node.Lookup`, `Node.lookup` | `lookup.go` |
+| The lookup algorithm itself | `Node.Lookup`, `Node.iterativeFind` (with its `workingSet`) | `lookup.go` |
 | Per-RPC send/receive this builds on | `Node.FindNode`, `Node.sendAndWait` | `node.go` |
 | Result type / what the demo reports | `LookupResult` | `lookup.go` |
 
 Tested end-to-end in `internal/kademlia/integration_test.go`
 (`TestEndToEndBootstrapAndLookup`): five real nodes over real loopback UDP,
 checking that a lookup from one of them finds exactly the other four, and
-that `Rounds`/`RPCsSent` come back non-zero. The same scenario, run as five
+that `Rounds`/`RPCsSent` come back non-zero. `lookup_test.go`
+(`TestLookupAfterHalfTheNetworkDies`) closes 8 of 16 nodes and checks
+that every lookup still returns `k` live nodes. The same scenario, run as five
 separate OS processes instead of in-process goroutines, is
 `scripts/demo.sh` — see the top-level README for how to run it and read
 its output.

@@ -22,11 +22,16 @@
 #   - pass 3: just as slow. A timeout never removes a contact from the
 #     routing table, so the querier asks the same dead nodes again. The
 #     network doesn't learn from failures.
-#   - answers after the kill are SHORT: every node returned is right and
-#     in the right order (a prefix of the true answer), but live nodes are
-#     missing, because failed candidates keep their slots in the lookup's
-#     k-closest list (lookup.go). This one was learned from the first runs,
-#     not predicted up front; see docs/EDGE-CASES.md.
+#   - no answer is SHORT: every lookup that finishes returns k live nodes,
+#     because a failed candidate gives up its place to the next-closest
+#     one (lookup.go, paper Sec. 2.3). Before that fix, answers came back
+#     short (see docs/EDGE-CASES.md).
+#   - reported, not asserted: an answer can still miss a live node that
+#     no survivor mentions. Survivors' tables keep their dead contacts,
+#     and a FIND_NODE reply carries only the k closest of them, so dead
+#     ones can crowd a live one out (SEED=4 shows it). And because the
+#     lookup keeps going past dead contacts, at 2s per round, some lookups
+#     can run out of the console's 10s.
 # The script PASSes when all of these hold.
 #
 # Usage: scripts/edge/b1-half-the-network-dies.sh
@@ -77,11 +82,13 @@ ISSUED=0
 # PASS_FAILED, PASS_MS, PASS_SLOW (lookups with a failed RPC), PASS_WRONG
 # (answers that differ from the brute-force k closest live nodes),
 # PASS_SHORT (wrong only by missing nodes: a prefix of the true answer),
-# and FAILED_<pass>_<t> per target.
+# PASS_TIMEOUT (lookups that ran out of the console's time), PASS_FEW
+# (answers with fewer nodes than the true answer has, short or not), and
+# FAILED_<pass>_<t> per target.
 run_pass() {
 	local pass="$1" label="$2" t=0 target nth start ms summary rounds sent failed got want verdict
 	shift 2
-	PASS_FAILED=0 PASS_MS=0 PASS_SLOW=0 PASS_WRONG=0 PASS_SHORT=0
+	PASS_FAILED=0 PASS_MS=0 PASS_SLOW=0 PASS_WRONG=0 PASS_SHORT=0 PASS_TIMEOUT=0 PASS_FEW=0
 	for target in $TARGET_IDS; do
 		t=$((t + 1))
 		ISSUED=$((ISSUED + 1))
@@ -94,7 +101,7 @@ run_pass() {
 		if [ -z "$summary" ]; then
 			echo "  $label  ${target:0:8}…  lookup failed: $(grep '^lookup failed' "$WORK/node$Q.log" | tail -1)"
 			eval "FAILED_${pass}_$t=99"
-			PASS_SLOW=$((PASS_SLOW + 1)) PASS_WRONG=$((PASS_WRONG + 1)) PASS_MS=$((PASS_MS + ms))
+			PASS_SLOW=$((PASS_SLOW + 1)) PASS_TIMEOUT=$((PASS_TIMEOUT + 1)) PASS_MS=$((PASS_MS + ms))
 			continue
 		fi
 		rounds="$(echo "$summary" | grep -o 'rounds=[0-9]*' | cut -d= -f2)"
@@ -103,6 +110,7 @@ run_pass() {
 		eval "FAILED_${pass}_$t=$failed"
 		got="$(lookup_answer "$Q" "$target" "$nth" | while read -r id; do index_of_id "$id" "$N"; done | tr '\n' ' ')"
 		want="$(closest_nodes "$target" "$K" $(for i in "$@"; do [ "$i" -ne "$Q" ] && echo "$i"; done) | tr '\n' ' ')"
+		[ "$(echo $got | wc -w)" -ge "$(echo $want | wc -w)" ] || PASS_FEW=$((PASS_FEW + 1)) # fewer nodes than exist
 		if [ "$got" = "$want" ]; then verdict="ok"; else
 			PASS_WRONG=$((PASS_WRONG + 1))
 			case "$want" in
@@ -117,8 +125,8 @@ run_pass() {
 		printf '  %s  %s…  rounds=%-2s rpcs=%-3s failed=%-2s %7s  %s\n' \
 			"$label" "${target:0:8}" "$rounds" "$sent" "$failed" "$(fmt_ms "$ms")" "$verdict"
 	done
-	printf '  %s  total: %d failed RPCs, %s for %d lookups, %d wrong answer(s), %d of them short\n' \
-		"$label" "$PASS_FAILED" "$(fmt_ms "$PASS_MS")" "$TARGETS" "$PASS_WRONG" "$PASS_SHORT"
+	printf '  %s  total: %d failed RPCs, %s for %d lookups, %d wrong answer(s), %d of them short, %d ran out of time\n' \
+		"$label" "$PASS_FAILED" "$(fmt_ms "$PASS_MS")" "$TARGETS" "$PASS_WRONG" "$PASS_SHORT" "$PASS_TIMEOUT"
 }
 
 echo
@@ -143,12 +151,12 @@ echo "  node$Q's routing table: $(grep 'contacts in .* non-empty buckets' "$WORK
 echo
 echo "=== Pass 2: the same lookups, right after the kill ==="
 run_pass 2 "pass 2" $ALIVE
-P2_FAILED=$PASS_FAILED P2_WRONG=$PASS_WRONG P2_MS=$PASS_MS P2_SLOW=$PASS_SLOW P2_SHORT=$PASS_SHORT
+P2_FAILED=$PASS_FAILED P2_WRONG=$PASS_WRONG P2_MS=$PASS_MS P2_SLOW=$PASS_SLOW P2_SHORT=$PASS_SHORT P2_TIMEOUT=$PASS_TIMEOUT P2_FEW=$PASS_FEW
 
 echo
 echo "=== Pass 3: the same lookups once more ==="
 run_pass 3 "pass 3" $ALIVE
-P3_FAILED=$PASS_FAILED P3_WRONG=$PASS_WRONG P3_MS=$PASS_MS P3_SHORT=$PASS_SHORT
+P3_FAILED=$PASS_FAILED P3_WRONG=$PASS_WRONG P3_MS=$PASS_MS P3_SHORT=$PASS_SHORT P3_TIMEOUT=$PASS_TIMEOUT P3_FEW=$PASS_FEW
 
 REPEATED=0 # targets that hit dead nodes in pass 2 AND again in pass 3
 for ((t = 1; t <= TARGETS; t++)); do
@@ -168,12 +176,14 @@ check "$([ "$P2_SLOW" -gt 0 ] && [ "$P2_MS" -ge $((P2_SLOW * RPC_TIMEOUT_MS)) ] 
 	"pass 2: $P2_SLOW of $TARGETS lookups hit dead nodes, $P2_FAILED failed RPCs, $(fmt_ms "$P2_MS") in total (at least one ${RPC_TIMEOUT_MS}ms timeout each)"
 check "$([ "$P2_SLOW" -gt 0 ] && [ "$REPEATED" -eq "$P2_SLOW" ] && echo yes)" \
 	"pass 3: $REPEATED of those $P2_SLOW hit dead nodes again ($P3_FAILED failed RPCs, $(fmt_ms "$P3_MS")): nothing was learned"
-check "$([ "$P2_SHORT" -gt 0 ] && [ "$P2_WRONG" -eq "$P2_SHORT" ] && [ "$P3_WRONG" -eq "$P3_SHORT" ] && echo yes)" \
-	"answers vs the true $K closest live nodes: $P2_SHORT short in pass 2, $P3_SHORT in pass 3, and no answer contained a wrong node"
+check "$([ $((P2_FEW + P3_FEW)) -eq 0 ] && [ $((P2_TIMEOUT + P3_TIMEOUT)) -lt $((2 * TARGETS)) ] && echo yes)" \
+	"no answer was short: every lookup that finished returned $K live nodes"
+echo "  reported, not asserted: $((P2_WRONG + P3_WRONG)) answer(s) missed a live node no survivor mentioned;" \
+	"$((P2_TIMEOUT + P3_TIMEOUT)) of $((2 * TARGETS)) lookups ran out of the console's time"
 
 echo
 if [ "$STATUS" -eq 0 ]; then
-	echo "PASS: after half the network died, lookups paid an RPC timeout per dead contact, paid it again on the repeat, and returned short answers."
+	echo "PASS: after half the network died, no lookup came back short, but each paid an RPC timeout per dead contact, and paid it again on the repeat."
 else
 	echo "FAIL (repeat this exact run with SEED=$SEED)"
 fi

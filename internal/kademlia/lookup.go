@@ -38,12 +38,16 @@ type lookupCandidate struct {
 // Algorithm, following the paper: start from the alpha closest contacts
 // this node already knows of (from its own routing table). Query them in
 // parallel with FIND_NODE. Merge every contact they return into a
-// candidate list, keeping only the k closest seen so far. Repeat, each
-// round querying up to alpha of the k-closest candidates that haven't
-// been queried yet, until every one of the k closest has been queried (or
-// failed). That exact stopping rule -- "queried and gotten responses from
-// the k closest nodes it has seen" -- is what makes this terminate in
-// O(log n) rounds instead of needing a fixed iteration count.
+// candidate list. Repeat, each round querying up to alpha of the k
+// closest candidates that haven't been queried yet, until the k closest
+// have all answered. A candidate that fails (times out) is "removed from
+// consideration" (Sec. 2.3): it stops counting towards those k, and the
+// next-closest candidate takes its place. That stopping rule -- "queried
+// and gotten responses from the k closest nodes it has seen" -- is what
+// makes this terminate in O(log n) rounds instead of needing a fixed
+// iteration count, and it's why the answer is the k closest LIVE nodes
+// even when some of the closest contacts are dead (edge case B1,
+// docs/EDGE-CASES.md).
 //
 // SIMPLIFICATION: the paper additionally short-circuits early once a round
 // returns nothing closer than what's already known UNLESS the k closest
@@ -84,7 +88,13 @@ func (n *Node) iterativeFind(ctx context.Context, target ID, findValue bool) (*L
 		candidates[c.ID] = &lookupCandidate{contact: c}
 		order = append(order, c.ID)
 	}
-	for _, c := range n.rt.Closest(target, n.k) {
+	// Seed with the whole routing table, nearest first, not just the k
+	// closest: only the working set below is ever queried, so farther
+	// contacts cost nothing unless closer ones fail. Without them, a lookup
+	// whose k closest contacts are all dead has nothing left to try
+	// (edge case B1 found lookups returning nobody while half the network
+	// was alive).
+	for _, c := range n.rt.Closest(target, n.rt.Size()) {
 		addCandidate(c)
 	}
 
@@ -94,6 +104,25 @@ func (n *Node) iterativeFind(ctx context.Context, target ID, findValue bool) (*L
 		})
 	}
 	sortByDistance()
+
+	// workingSet is the k closest candidates that haven't failed, nearest
+	// first. The lookup queries only these, and is done once all of them
+	// have answered: the paper's "queried and gotten responses from the k
+	// closest nodes it has seen". Failed candidates are "removed from
+	// consideration" (Sec. 2.3) but stay in `candidates`, so a later reply
+	// that mentions them can't bring them back for a second timeout.
+	workingSet := func() []*lookupCandidate {
+		var ws []*lookupCandidate
+		for _, id := range order {
+			if c := candidates[id]; !c.failed {
+				ws = append(ws, c)
+				if len(ws) == n.k {
+					break
+				}
+			}
+		}
+		return ws
+	}
 
 	type rpcOutcome struct {
 		candidate *lookupCandidate
@@ -108,16 +137,16 @@ func (n *Node) iterativeFind(ctx context.Context, target ID, findValue bool) (*L
 		}
 
 		var batch []*lookupCandidate
-		for _, id := range order {
+		for _, c := range workingSet() {
 			if len(batch) >= n.alpha {
 				break
 			}
-			if c := candidates[id]; !c.queried {
+			if !c.queried {
 				batch = append(batch, c)
 			}
 		}
 		if len(batch) == 0 {
-			break // every one of the k closest candidates has been queried: converged
+			break // the k closest live candidates have all answered: converged
 		}
 
 		result.Rounds++
@@ -156,15 +185,11 @@ func (n *Node) iterativeFind(ctx context.Context, target ID, findValue bool) (*L
 				addCandidate(c)
 			}
 		}
+		// No trimming to k: when a candidate fails, the next-closest one
+		// (perhaps one learned in an earlier round) moves into the working
+		// set. The list stays small: at most the routing table plus k
+		// contacts per reply.
 		sortByDistance()
-		// Trim to the k closest: anything farther can't end up in the
-		// final answer and would only add bookkeeping to later rounds.
-		if len(order) > n.k {
-			for _, id := range order[n.k:] {
-				delete(candidates, id)
-			}
-			order = order[:n.k]
-		}
 
 		if len(result.Values) > 0 {
 			// FIND_VALUE found something: stop. Every reply in this round
@@ -174,10 +199,8 @@ func (n *Node) iterativeFind(ctx context.Context, target ID, findValue bool) (*L
 		}
 	}
 
-	for _, id := range order {
-		if c := candidates[id]; !c.failed {
-			result.Closest = append(result.Closest, c.contact)
-		}
+	for _, c := range workingSet() {
+		result.Closest = append(result.Closest, c.contact)
 	}
 	if findValue {
 		n.logger.Info("find_value finished", "key", target.String(), "values_found", len(result.Values),
