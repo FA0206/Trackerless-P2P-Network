@@ -217,8 +217,8 @@ For `scripts/demo-big-network.sh` specifically:
 
 For the edge-case scripts (`scripts/edge/`, [EDGE-CASES.md](EDGE-CASES.md)):
 
-- **Ports.** Each case has its own block from 9400 up (B1: 9500…9515,
-  B2: 9525…9532);
+- **Ports.** Each case has its own block from 9400 up (A3: 9450…9471,
+  B1: 9500…9515, B2: 9525…9532);
   the list is in EDGE-CASES.md. Check leftovers with
   `lsof -nP -i :9400-9699`.
 - **Extra helpers** live in `scripts/lib/edge.sh`, sourced after

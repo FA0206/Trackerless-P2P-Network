@@ -38,6 +38,16 @@ LAN discovery by broadcast is another option, not implemented here.
 No. After the self-lookup, your routing table has contacts of its own.
 The bootstrap node is just one of them.
 
+The exception is a node that is the *only* link between two groups.
+Knowledge spreads only through messages: a node learns of you when you
+send it something. If two groups were built separately and only one node
+talks to both, its death splits the network for good, because nothing
+here re-bootstraps or refreshes buckets. But if anyone has done even one
+lookup across that node, the lookup contacted the far side directly, and
+those nodes recorded the querier. Then the link node can die harmlessly.
+[EDGE-CASES.md, case A3](EDGE-CASES.md#a3--two-islands-and-one-bridge)
+shows both.
+
 ### Do existing nodes have to "accept" a new node?
 
 No. They don't even know a join is happening. They answer `PING` and

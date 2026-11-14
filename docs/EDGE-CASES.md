@@ -24,6 +24,7 @@ Each case is a script in `scripts/edge/`. Every script:
   their console, using `scripts/lib/nodes.sh` plus `scripts/lib/edge.sh`.
 
 ```sh
+bash scripts/edge/a3-bridge-between-islands.sh # env: BASE_PORT=9450 (nothing random, no SEED)
 bash scripts/edge/b1-half-the-network-dies.sh  # env: N=16 K=4 KILL=8 TARGETS=4 BASE_PORT=9500 SEED=1
 bash scripts/edge/b2-record-holders-die.sh     # env: N=8 BASE_PORT=9525 SEED=1
 ```
@@ -45,7 +46,7 @@ yet tested).
 | **A. How nodes join** | | | |
 | A1 | Star: 15 nodes join via node0, then node0 is killed | Lookups stay correct; a new node bootstrapping via the dead hub fails after one RPC timeout | ⬜ |
 | A2 | Thundering herd: 20 nodes join via node0 at the same moment | Lookups still correct (tests concurrent bucket updates) | ⬜ |
-| A3 | Two islands joined by one bridge node; the bridge is killed | Cross-island lookups work, then never heal (no bucket refresh) | ⬜ |
+| A3 | Two islands joined by one bridge node; the bridge is killed | If nobody used the bridge: split for good. If one lookup crossed it: no harm | ✅ [below](#a3--two-islands-and-one-bridge) |
 | A4 | Tiny buckets (k = 1, 2) at N = 20 | Some lookups miss the true closest nodes | ⬜ |
 | **B. Churn** | | | |
 | B1 | Kill half the nodes, then repeat the same lookups | +1 RPC timeout per round with a dead contact, the repeat is just as slow, and answers come back **short** | ✅ [below](#b1--half-the-network-dies-at-once) |
@@ -59,6 +60,127 @@ yet tested).
 **Ports.** Each case has its own block so they can run side by side with
 the demos: A1 9400, A2 9425, A3 9450, A4 9475, B1 9500, B2 9525, B3 9550,
 B4 9575, C1 9600, C2 9625 (override with `BASE_PORT`).
+
+---
+
+## A3 — two islands and one bridge
+
+**Script:** `scripts/edge/a3-bridge-between-islands.sh`
+
+### Setup
+
+Two networks run side by side, built the same way:
+
+```
+   island A                                    island B
+   a0 ◄── a1 a2 a3 a4 join via a0              b0 ◄── b1 b2 b3 b4 join via b0
+    ▲                                           ▲      (B is never told about A)
+    │ X joins via a0                            │
+    └────────────── X (the bridge) ── PING ─────┘
+```
+
+X bootstraps into island A, so its self-lookup reaches every A node, and
+each of them records X. Then X PINGs b0, so X and b0 know each other.
+That's the only link: b1–b4 have never heard of X or of A.
+
+- **quiet** network: nothing more happens before X is killed.
+- **used** network: before X is killed, b3 looks up a3's ID and a3 looks
+  up b3's ID, once each, through the bridge.
+
+After X is killed (SIGKILL), a3 and b3 each look up the other, twice.
+
+k is the default 20, bigger than the 11-node network, so a correct
+lookup returns **every** live node. "Found 5 of 5 on the other island"
+is the brute-force answer. No randomness is involved: two runs give the
+same counts.
+
+### Prediction
+
+- **quiet:** `table` shows that the only cross-island knowledge is the 4
+  A nodes knowing X and b0 knowing X. After X dies, lookups find **0**
+  nodes on the other island, pay a 2 s timeout on the dead X, and the
+  repeat is the same. Nothing reconnects the islands: there's no bucket
+  refresh ([04](04-bootstrap-and-join.md)), and no node ever tries
+  another bootstrap.
+- **used:** the islands **survive** losing X. b3's lookup through the
+  bridge sent FIND_NODE to every A node directly, and each recorded b3
+  (`handleMessage` → `touchContact`, [02](02-routing-table-and-kbuckets.md)).
+  After that, the islands no longer depend on X.
+
+### Real output
+
+```
+=== quiet: who knows whom before the bridge dies (from `table`) ===
+    a1 knows 1 node(s) outside its island
+    a2 knows 1 node(s) outside its island
+    a3 knows 1 node(s) outside its island
+    a4 knows 1 node(s) outside its island
+    b1 knows 0 node(s) outside its island
+    b2 knows 0 node(s) outside its island
+    b3 knows 0 node(s) outside its island
+    b4 knows 0 node(s) outside its island
+    b0 knows 1 node(s) outside its island
+  as predicted: each A node knows only X across the gap (4 in total from a1-a4, b1-b4); among B only b0 knows X
+
+=== used: one lookup across the bridge from each side, before it dies ===
+    b3 looks up a3: rounds=4 rpcs_sent=10 rpcs_failed=0   124ms  found 5 of 5 on the other island, 10 nodes in all
+    a3 looks up b3: rounds=4 rpcs_sent=10 rpcs_failed=0   129ms  found 5 of 5 on the other island, 10 nodes in all
+  as predicted: the bridge works: both lookups found all 5 nodes on the other island
+
+=== Killing the bridge X in both networks (SIGKILL) ===
+
+=== quiet: lookups across the gap, twice ===
+    b3 looks up a3: rounds=2 rpcs_sent=5 rpcs_failed=1   2.07s  found 0 of 5 on the other island, 4 nodes in all
+    a3 looks up b3: rounds=2 rpcs_sent=5 rpcs_failed=1   2.05s  found 0 of 5 on the other island, 4 nodes in all
+    b3 looks up a3: rounds=2 rpcs_sent=5 rpcs_failed=1   2.06s  found 0 of 5 on the other island, 4 nodes in all
+    a3 looks up b3: rounds=2 rpcs_sent=5 rpcs_failed=1   2.07s  found 0 of 5 on the other island, 4 nodes in all
+  as predicted: 4 lookups found 0 nodes across the gap: the islands are cut apart, and stay that way
+
+=== used: the same lookups ===
+    b3 looks up a3: rounds=4 rpcs_sent=10 rpcs_failed=1   2.06s  found 5 of 5 on the other island, 9 nodes in all
+    a3 looks up b3: rounds=4 rpcs_sent=10 rpcs_failed=1   2.07s  found 5 of 5 on the other island, 9 nodes in all
+    b3 looks up a3: rounds=4 rpcs_sent=10 rpcs_failed=1   2.07s  found 5 of 5 on the other island, 9 nodes in all
+    a3 looks up b3: rounds=4 rpcs_sent=10 rpcs_failed=1   2.07s  found 5 of 5 on the other island, 9 nodes in all
+  as predicted: 4 lookups found 20 of 20 possible across the gap: one lookup through the bridge had already connected the islands
+
+PASS: an unused bridge's death split the network for good; a bridge that had carried one lookup each way could die harmlessly.
+```
+
+How to read the counts:
+
+- **quiet, after the kill: "4 nodes in all".** That's the querier's own
+  island minus itself. Its lookup asks its island-mates, b0 (or an A
+  node) hands back X, X times out (`rpcs_failed=1`), and there's nothing
+  else to try.
+- **used, before the kill: "10 nodes in all"** = everyone except the
+  querier, X included. After the kill, **9** = every live node except the
+  querier. That's the correct answer.
+- **used, after the kill: still 2 s each.** The islands are fine, but
+  every node still has dead X in its table and asks it on every lookup
+  (B1's "nothing is learned", again).
+
+### What it shows
+
+- **Knowledge spreads only through messages, and lookups spread it
+  fast.** A single lookup across the gap was enough to join the two
+  islands for good. That's the "every message updates the sender's
+  bucket" rule ([02](02-routing-table-and-kbuckets.md)) doing what the
+  paper intends.
+- **Without traffic, nothing spreads.** A quiet island stays one node
+  deep, and a single death cuts it off with no way back. In the paper,
+  bucket refresh would eventually send a lookup into every distant bucket
+  (Sec. 2.3), and X's island-mates would learn b0 that way, *before* X
+  died. Here there is no refresh (README simplifications table, "No
+  bucket refresh").
+- **A real network is mostly "used".** Real nodes join through one
+  well-known node and then do lookups all the time, so a true one-node
+  bridge is rare. It does happen with separately started groups that
+  meet late, for example two LANs in the multi-device demo.
+
+Fix (core code, not made here): bucket refresh, i.e. a periodic lookup
+for a random ID in each bucket not used recently (`node.go`;
+paper Sec. 2.3). It also fills the quiet island's tables before the
+bridge dies.
 
 ---
 

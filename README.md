@@ -29,7 +29,7 @@ evaluation includes performance graphs:
 | **Peer discovery (the DHT core):** 160-bit IDs, XOR metric, k-bucket routing table, `PING`/`FIND_NODE` over UDP, joining via one known node, iterative α-parallel lookup | ✅ Done | `main` — this README, [docs 01–05](#documentation) |
 | Unit + integration tests for the core; runnable demos (5-process chain, 20-node random joins with brute-force-checked lookups) | ✅ Done | `internal/kademlia/*_test.go`, `scripts/demo.sh`, `scripts/demo-big-network.sh` |
 | Debugging tooling: logs, per-node console, VSCode debug configs | ✅ Done | [docs/DEBUGGING.md](docs/DEBUGGING.md) |
-| Edge-case stress tests: node setups chosen to find what breaks | 🟡 In progress: 2 of 10 cases scripted (B1: half the network dies; B2: record holders die) | `scripts/edge/`, [docs/EDGE-CASES.md](docs/EDGE-CASES.md) |
+| Edge-case stress tests: node setups chosen to find what breaks | 🟡 In progress: 3 of 10 cases scripted (A3: bridge between islands dies; B1: half the network dies; B2: record holders die) | `scripts/edge/`, [docs/EDGE-CASES.md](docs/EDGE-CASES.md) |
 | `STORE` / `FIND_VALUE` (the DHT holds "who has file X") | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/06](docs/06-store-and-find-value.md) |
 | File transfer over TCP: pieces, SHA-256 verification, content keys | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/07](docs/07-file-transfer-over-tcp.md) |
 | Share a file / download it from the CLI; transfer demo | ✅ Done | `share` / `fetch` console commands, `scripts/demo-transfer.sh` |
@@ -231,13 +231,18 @@ repeat the same joins and targets. Walkthrough of a 3-round lookup:
 ### Edge cases (what breaks)
 
 ```sh
+bash scripts/edge/a3-bridge-between-islands.sh # env: BASE_PORT=9450
 bash scripts/edge/b1-half-the-network-dies.sh  # env: N=16 K=4 KILL=8 TARGETS=4 BASE_PORT=9500 SEED=1
 bash scripts/edge/b2-record-holders-die.sh     # env: N=8 BASE_PORT=9525 SEED=1
 ```
 
 Scripts in `scripts/edge/` set up specific node graphs to find the
 code's limits. Each one PASSes when the code behaves as its documented
-prediction says, including "this breaks". B1 kills 8 of 16 nodes. The
+prediction says, including "this breaks". A3 joins two separately built
+islands through one bridge node and kills it. If nobody had looked
+anything up across the bridge, the islands are cut apart for good (0 of
+5 found, every time). If one lookup had crossed it, the islands survive.
+B1 kills 8 of 16 nodes. The
 same 4 lookups go from 133 ms to ~10 s, don't get faster when repeated,
 and every one returns fewer than the k closest live nodes:
 
