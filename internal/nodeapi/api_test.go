@@ -18,13 +18,16 @@ import (
 // testNode is a real DHT node + file peer on loopback, with its API served
 // by an httptest server.
 type testNode struct {
-	node *kademlia.Node
-	peer *transfer.Peer
-	api  *httptest.Server
+	node   *kademlia.Node
+	peer   *transfer.Peer
+	api    *httptest.Server
+	events *Events
 }
 
 // startNodes starts n nodes (k=3), each joined via the first, and an API
-// server for each.
+// server for each. Each node's logger is wired like cmd/node's with --api:
+// a TeeHandler (here around a handler that prints nothing) feeding the
+// node's event hub.
 func startNodes(t *testing.T, n int) []testNode {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -32,8 +35,9 @@ func startNodes(t *testing.T, n int) []testNode {
 	nodes := make([]testNode, n)
 	for i := range nodes {
 		id := kademlia.HashID([]byte{'a', 'p', 'i', byte(i)})
+		events := NewEvents()
 		node, err := kademlia.NewNode(kademlia.Config{ID: id, K: 3, RPCTimeout: 500 * time.Millisecond,
-			Logger: slog.New(slog.DiscardHandler)})
+			Logger: slog.New(TeeHandler(slog.DiscardHandler, events))})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -44,9 +48,10 @@ func startNodes(t *testing.T, n int) []testNode {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { peer.Close() })
-		api := httptest.NewServer(New(Config{Node: node, Peer: peer, K: 3, Alpha: 3, RPCTimeout: 500 * time.Millisecond}).Handler())
+		api := httptest.NewServer(New(Config{Node: node, Peer: peer, K: 3, Alpha: 3,
+			RPCTimeout: 500 * time.Millisecond, Events: events}).Handler())
 		t.Cleanup(api.Close)
-		nodes[i] = testNode{node, peer, api}
+		nodes[i] = testNode{node, peer, api, events}
 		if i > 0 {
 			if _, err := node.Bootstrap(ctx, nodes[0].node.Self().UDPAddr()); err != nil {
 				t.Fatalf("bootstrap %d: %v", i, err)

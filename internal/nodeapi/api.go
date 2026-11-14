@@ -10,6 +10,9 @@ package nodeapi
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"time"
@@ -29,6 +32,11 @@ type Config struct {
 	K          int
 	Alpha      int
 	RPCTimeout time.Duration
+
+	// Events feeds GET /api/events. It must be the hub whose TeeHandler
+	// wraps the node's logger (cmd/node sets both up). Nil: no event
+	// stream, and /api/events is 404.
+	Events *Events
 }
 
 // Server answers HTTP requests about one node.
@@ -45,7 +53,77 @@ func New(cfg Config) *Server {
 	s.mux.HandleFunc("GET /api/table", s.handleTable)
 	s.mux.HandleFunc("GET /api/store", s.handleStore)
 	s.mux.HandleFunc("GET /api/files", s.handleFiles)
+	if cfg.Events != nil {
+		s.mux.HandleFunc("GET /api/events", s.handleEvents)
+	}
 	return s
+}
+
+// heartbeatInterval: an SSE comment sent when nothing else happened, so
+// a client (or anything in between) can tell a quiet node from a dead
+// connection.
+const heartbeatInterval = 15 * time.Second
+
+// handleEvents is GET /api/events[?level=debug|info|warn|error]: a
+// Server-Sent Events stream, one event per log record at that level or
+// above (default info). Each SSE message is
+//
+//	id: <seq>
+//	data: <Event as JSON, plus "dropped">
+//
+// where "dropped" counts the events this viewer missed so far because it
+// fell behind (see Events.publish). Browsers read it with EventSource.
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	level := slog.LevelInfo
+	if q := r.URL.Query().Get("level"); q != "" {
+		if err := level.UnmarshalText([]byte(q)); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "level must be debug, info, warn or error"})
+			return
+		}
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming not supported"})
+		return
+	}
+	sub, unsubscribe := s.cfg.Events.subscribe(level)
+	defer unsubscribe()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, ": events from node %s, level %s and above\n\n", s.cfg.Node.ID, level)
+	flusher.Flush()
+
+	heartbeat := time.NewTicker(heartbeatInterval)
+	defer heartbeat.Stop()
+	for {
+		var err error
+		select {
+		case <-r.Context().Done(): // the viewer disconnected, or the server is closing
+			return
+		case ev := <-sub.ch:
+			err = writeEvent(w, ev, sub.dropped.Load())
+		case <-heartbeat.C:
+			_, err = fmt.Fprint(w, ": heartbeat\n\n")
+		}
+		if err != nil {
+			return
+		}
+		flusher.Flush()
+	}
+}
+
+func writeEvent(w io.Writer, ev Event, dropped uint64) error {
+	data, err := json.Marshal(struct {
+		Event
+		Dropped uint64 `json:"dropped"`
+	}{ev, dropped})
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "id: %d\ndata: %s\n\n", ev.Seq, data)
+	return err
 }
 
 // Handler returns the API's HTTP handler. Every response allows any

@@ -110,8 +110,10 @@ transfer.NewPeer(node, tcpPort, ioTimeout) (*Peer, error)
 (*Peer).TCPPort(), Library().List(), Close()
 
 // internal/nodeapi
-nodeapi.New(nodeapi.Config{Node, Peer, K, Alpha, RPCTimeout}) *Server
-(*Server).Handler() http.Handler    // GET /api/node, /api/table, /api/store, /api/files
+nodeapi.New(nodeapi.Config{Node, Peer, K, Alpha, RPCTimeout, Events}) *Server
+(*Server).Handler() http.Handler    // GET /api/node, /api/table, /api/store, /api/files, /api/events
+nodeapi.NewEvents() *Events
+nodeapi.TeeHandler(inner slog.Handler, *Events) slog.Handler   // wrap the node's logger before NewNode
 
 // internal/framing
 framing.Encode / Decode     // one frame = one datagram
@@ -166,6 +168,8 @@ framing.Write / Read        // frames on a stream
 | TCP connection handler | `server.serve` | one connection | library (read-locked), the file on disk |
 | console | `cmd/node` | until stdin EOF | public `Node` / `Peer` API; runs downloads synchronously |
 | HTTP API server + one per request | `cmd/node` `startAPI`, only with `--api` | process | read-only snapshots through the public `Node` / `Peer` API (locked accessors) |
+| SSE stream (one per `/api/events` viewer) | the HTTP server | until the viewer disconnects | reads its own buffered channel; `Events.mu` only to (un)subscribe |
+| (no goroutine) log tap | every goroutine that logs | one log call | `Events.publish`: `Events.mu` briefly, non-blocking channel sends |
 
 Locks: `Bucket.mu`, `valueStore.mu`, `Node.pendingMu`, `Library.mu`
 (RW). A lookup's candidate state and a download's `downloader` state are
@@ -200,6 +204,13 @@ unlocked; each is used by a single goroutine. Keep it that way.
     nothing about a node changes. With it, handlers take copies through
     the public accessors and hold no lock across a network write, so a
     slow HTTP client can never stall the DHT or a transfer.
+11. **The log tap never blocks and never changes what's printed.** With
+    `--api`, every log call also runs `TeeHandler.Handle`, often on a
+    UDP handler goroutine. It must only do non-blocking sends
+    (`Events.publish`), and it must hand the printed handler exactly
+    the records that handler's own `Enabled` accepts.
+    `TestPublishNeverBlocks` and `TestTeeLeavesPrintedOutputUnchanged`
+    guard this.
 
 ## If you change X, also touch Y
 
@@ -216,3 +227,4 @@ unlocked; each is used by a single goroutine. Keep it that way.
 | Change how `--id-seed` maps to an ID | `scripts/demo.sh` recomputes IDs with `shasum` |
 | Add a CLI flag or console command | `cmd/node`, README, `DEBUGGING.md`, `.vscode/launch.json` if relevant |
 | Add or change an HTTP API endpoint or field | `internal/nodeapi/api.go` and `api_test.go`, `docs/NODE-API.md` (with real output); the visual demo, once it exists, reads these JSON field names |
+| Rename or remove any log message or attribute | it is also an `/api/events` event name/field: update the event table in `docs/NODE-API.md` and the visual demo (in addition to the demo scripts listed above) |

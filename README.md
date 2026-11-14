@@ -37,7 +37,7 @@ evaluation includes performance graphs:
 | Pieces spread so **no single node has the whole file** | ⬜ Not started — next step: per-piece availability | — |
 | Runs across multiple devices / Wi-Fi | ⬜ Not started — `--advertise-ip` exists; untested off localhost | — |
 | Sending messages (as opposed to files) | ⬜ Not started — `put`/`get` store short text, but there's no messaging feature | — |
-| Per-node HTTP API (for the visual demo) | 🟡 Increment 1 of 3 done: `--api` serves node info, routing table, stored values, files as JSON. Next: live event stream, then control endpoints | `internal/nodeapi`, [docs/NODE-API.md](docs/NODE-API.md) |
+| Per-node HTTP API (for the visual demo) | 🟡 Increments 1–2 of 3 done: `--api` serves node info, routing table, stored values, files as JSON, plus a live event stream (SSE) of every RPC, stored value and piece. Next: control endpoints | `internal/nodeapi`, [docs/NODE-API.md](docs/NODE-API.md) |
 | Visual demo | ⬜ Not started | — |
 | Performance graphs (the four above) | ⬜ Not started | — |
 | Merkle trees | ⬜ Not started — optional; see [FAQ](docs/FAQ.md#do-merkle-trees-make-sense-here) | — |
@@ -344,6 +344,9 @@ go test ./... -race -count=1
 - `internal/nodeapi/api_test.go` — every API endpoint against real nodes
   on loopback: table buckets and distances, values on exactly the
   nodes a STORE reached, binary values, files, CORS, 405/404
+- `internal/nodeapi/events_test.go` — the log tap leaves printed output
+  byte-identical, costs nothing without viewers, never blocks on a slow
+  viewer; real RPCs on the stream; levels; unsubscribe on disconnect
 
 `KADEMLIA_TEST_LOGS=1` shows the nodes' logs during tests.
 
@@ -375,7 +378,9 @@ internal/transfer/   file sharing on top of the DHT
   server.go          TCP server
   client.go          TCP client side
   peer.go            Share, Download (round-robin + failover), announce
-internal/nodeapi/    the optional per-node HTTP API: JSON snapshots of one node (docs/NODE-API.md)
+internal/nodeapi/    the optional per-node HTTP API (docs/NODE-API.md)
+  api.go             JSON snapshot endpoints, the SSE endpoint
+  events.go          log tap (TeeHandler) + non-blocking event fan-out to viewers
 scripts/demo.sh            5 processes: joining and lookup
 scripts/demo-transfer.sh   5 processes: put/get, share, downloads, killed seeder
 scripts/demo-seeder-death.sh  seeder killed mid-download: the file is lost on main

@@ -249,9 +249,12 @@ kills half of a 16-node network. The same lookups go from ~130 ms to
 
 Start the node with `--api 127.0.0.1:<port>`, and it serves its ID,
 routing table, stored values and files as JSON over HTTP
-([NODE-API.md](NODE-API.md)). It's off by default. With it off, the
-node behaves exactly as before. With it on, the API only reads copies
-through the node's public methods, so it can't change or slow the DHT.
+([NODE-API.md](NODE-API.md)), plus `/api/events`, a live stream of
+every RPC, stored value and received piece. It's off by default. With it
+off, the node behaves exactly as before. With it on, the API only reads
+copies through the node's public methods. The event stream is a tap on
+the node's logger that never waits for a viewer, so it can't change or
+slow the DHT.
 
 ## Wire protocol
 

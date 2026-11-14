@@ -59,6 +59,14 @@ func run() error {
 		level = slog.LevelWarn
 	}
 	logger := kademlia.NewLogger(id, level)
+	// With --api, every log record is also an event for GET /api/events.
+	// The tee passes the printed handler exactly the records it would get
+	// anyway, so stdout is unchanged (docs/NODE-API.md).
+	var events *nodeapi.Events
+	if *apiAddr != "" {
+		events = nodeapi.NewEvents()
+		logger = slog.New(nodeapi.TeeHandler(logger.Handler(), events))
+	}
 
 	// A whole lookup is several sequential RPC rounds, so its deadline must
 	// scale with the per-RPC timeout -- otherwise raising -rpc-timeout for a
@@ -97,7 +105,7 @@ func run() error {
 
 	// Started before bootstrapping, so a viewer can watch the join itself.
 	if *apiAddr != "" {
-		stopAPI, err := startAPI(*apiAddr, nodeapi.Config{Node: n, Peer: peer, K: *k, Alpha: *alpha, RPCTimeout: *rpcTimeout}, logger)
+		stopAPI, err := startAPI(*apiAddr, nodeapi.Config{Node: n, Peer: peer, K: *k, Alpha: *alpha, RPCTimeout: *rpcTimeout, Events: events}, logger)
 		if err != nil {
 			return fmt.Errorf("starting -api: %w", err)
 		}

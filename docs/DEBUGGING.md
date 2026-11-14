@@ -179,7 +179,16 @@ curl -s 127.0.0.1:8001/api/store        # values node1 holds for the network
 ```
 
 Handy for checking exercise (d) above: `/api/store` shows exactly which
-nodes hold a file's provider record. Pick API ports away from the node
+nodes hold a file's provider record.
+
+To watch one node live, without its terminal, follow its event stream.
+`-N` stops curl from buffering. `?level=debug` shows bucket updates and
+timeouts even if the node runs without `--verbose`:
+
+```sh
+curl -sN 127.0.0.1:8000/api/events               # every RPC in/out, value stored, piece received
+curl -sN '127.0.0.1:8000/api/events?level=debug' | grep -E 'timed out|evicted'
+``` Pick API ports away from the node
 ports (8000s for APIs, 9000s for nodes): a node's UDP and TCP ports
 already use its own number.
 

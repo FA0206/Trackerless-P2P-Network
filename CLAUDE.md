@@ -80,7 +80,11 @@ only downward; see `docs/ARCHITECTURE.md`.
 8. Nothing from a peer is trusted: provider records are validated,
    manifests must hash to the content key, pieces must match their
    SHA-256. Downloads only create new files (`O_EXCL`).
-9. The demo scripts grep exact log/console text (listed in
+9. With `--api`, every log record is also an `/api/events` event
+   (`nodeapi.TeeHandler`). The tap must never block (non-blocking sends
+   only) and must not change printed output. Log messages and attribute
+   names are therefore API, too (docs/NODE-API.md).
+10. The demo scripts grep exact log/console text (listed in
    `docs/ARCHITECTURE.md`, "If you change X"), and `demo.sh` recomputes
    node IDs as `shasum(seed)`. Keep them in sync with the Go code.
 
