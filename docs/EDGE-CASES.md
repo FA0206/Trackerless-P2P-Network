@@ -842,14 +842,31 @@ the value moves to them.
 | When a node learns of a newcomer closer to a key it holds, it STOREs the value there | `node.go` (`touchContact`) | Sec. 2.5 |
 | Caching: the searcher stores a found value at the closest node on its path that lacked it | `values.go` (`FindValue`) | Sec. 2.3 |
 
-### Known flakiness: one unexplained FAIL
+### A flaky FAIL that was the script's fault
 
-After swarming and the node API were merged in, one `run-all.sh` run
-reported `b3-late-joiners-hide-a-value  7s  FAIL` with `SEED=1`. The
-next 15 runs of the same seed (13 alone or right after B2, plus 2 full
-`run-all.sh` runs) all passed with identical output. That run's logs
-were lost (WSL clears `/tmp`), so we don't know which assertion failed.
-B3's DHT code didn't change in that merge. A likely suspect is timing: a
-newcomer's `get`, or the re-put, racing its join. It's the first thing
-to look at on the fix branch, because a fix that flips B3 must be told
-apart from a flaky run.
+B3 once failed in a `run-all.sh` run, and then passed 15 times in a row.
+A loop of 30 runs (half with the CPU kept busy) caught 5 failures, all
+at step 4's "the re-put reached the 2 closest nodes", with `stored on:`
+showing only one of node8 and node9. The putter's log showed the DHT had
+done the right thing:
+
+```
+put b3-1-3 (key 0ead8775570a34b61555f59a29dfc0571fe6a88d): stored on 2 other node(s), locally=false, failed=0
+time=2026-11-14T22:31:00.169+05:30 level=INFO msg="rpc sent" node=cfee051d type=PING to=0c167fb10ee3802321b9cfb31f440a07e8bbb032@127.0.0.1:9557 rpc_id=aad5bd35
+    0eb1a3aebfcbdc55a6cc85d006d59b5fe446ffe8@127.0.0.1:9558
+    0f11c5bf112711b5369b5a057fa96a9496b4cbe7@127.0.0.1:9559
+```
+
+The console prints the header and each contact as separate writes, and
+here a log line from another goroutine (a bucket-eviction PING) landed
+between them. The script took "the 2 lines after `put`", so it got the
+log line and node8, and missed node9. It could also read the block
+before the contact lines were written. The fix: `put_contacts` skips
+`time=` lines (as `lookup_answer` in `edge.sh` already did), and the
+script waits until it has as many contacts as the header announces.
+After it, 30 of 30 runs passed. `demo-parallel.sh`'s provider count had
+the same weakness and skips log lines now too.
+
+**Lesson for every script here:** console output and log lines share
+one file, and they can interleave. Parse console blocks by their own
+line shape, and skip `time=` lines.

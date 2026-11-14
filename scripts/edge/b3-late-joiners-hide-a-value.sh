@@ -81,6 +81,17 @@ get_on() {
 	printf '    node%-2s %-5s %s\n' "$i" "$([ "$GOT" = yes ] && echo found || echo MISS)" "${line#get $NAME: }"
 }
 
+# put_contacts <nth>: the node IDs the putter's nth `put $NAME` printed
+# under its header. Interleaved log lines (time=…) are skipped, as in
+# edge.sh's lookup_answer.
+put_contacts() {
+	awk -v hdr="put $NAME " -v nth="$1" '
+		index($0, hdr) == 1 { seen++; on = (seen == nth); next }
+		on && /^time=/ { next }
+		on && /^    [0-9a-f]+@/ { split($1, a, "@"); print a[1]; next }
+		on { exit }' "$WORK/node$PUTTER.log"
+}
+
 echo
 echo "=== node$PUTTER puts a value under SHA-1(\"$NAME\") ==="
 send "$PUTTER" "put $NAME hello from edge case B3"
@@ -150,8 +161,17 @@ echo "=== Step 4: node$PUTTER puts the same value again (a manual republish) ===
 PUTS="$(count_lines "$WORK/node$PUTTER.log" "^put $NAME ")"
 send "$PUTTER" "put $NAME hello from edge case B3"
 wait_for_count "$WORK/node$PUTTER.log" "^put $NAME " $((PUTS + 1)) 20
-STORED_AT="$(grep -A"$K" "^put $NAME " "$WORK/node$PUTTER.log" | tail -"$K" | grep -o '^ *[0-9a-f]\{40\}' |
-	while read -r id; do index_of_id "$id" "$TOTAL"; done | sort -n | tr '\n' ' ')"
+# The console prints the header, then one line per node it stored on, as
+# separate writes, and log lines from other goroutines can land in between
+# (e.g. an eviction PING). So: skip log lines, and wait until the block has
+# as many contacts as the header announced ("stored on N other node(s)").
+WANT="$(grep "^put $NAME " "$WORK/node$PUTTER.log" | sed -n "$((PUTS + 1))p" | sed 's/.*stored on \([0-9]*\) other.*/\1/')"
+for ((w = 0; w < 50; w++)); do
+	IDS="$(put_contacts "$((PUTS + 1))")"
+	[ "$(echo "$IDS" | grep -c .)" -ge "$WANT" ] && break
+	sleep 0.1
+done
+STORED_AT="$(for id in $IDS; do index_of_id "$id" "$TOTAL"; done | sort -n | tr '\n' ' ')"
 echo "  stored on:  $(for i in $STORED_AT; do printf 'node%s ' "$i"; done)"
 check "$([ "$(echo $STORED_AT)" = "$(echo $NEWHOLDERS_EXPECTED | tr ' ' '\n' | sort -n | tr '\n' ' ' | sed 's/ $//')" ] && echo yes)" \
 	"the re-put reached the $K closest nodes, which are newcomers"

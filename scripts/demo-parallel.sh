@@ -70,7 +70,8 @@ grep -E 'msg="piece (requested|received)"' "$WORK/node4.log" | awk '
 	}'
 
 MAX="$(grep 'msg="download complete"' "$WORK/node4.log" | grep -o 'max_inflight=[0-9]*' | cut -d= -f2)"
-PROVIDERS="$(awk '/^fetch/{on=1;next} on && /piece\(s\) from/{n++; next} on{exit} END{print n+0}' "$WORK/node4.log")"
+# Log lines (time=…) can land between the console's fetch lines: skip them.
+PROVIDERS="$(awk '/^fetch/{on=1;next} on && /^time=/{next} on && /piece\(s\) from/{n++; next} on{exit} END{print n+0}' "$WORK/node4.log")"
 echo
 echo "  most requests in flight at once: $MAX   providers used: $PROVIDERS"
 echo "  (one at a time would take at least 16 x $DELAY)"
