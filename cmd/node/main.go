@@ -41,6 +41,7 @@ func run() error {
 	k := flag.Int("k", kademlia.DefaultK, "bucket size / replication parameter k")
 	alpha := flag.Int("alpha", kademlia.DefaultAlpha, "lookup concurrency parameter alpha")
 	rpcTimeout := flag.Duration("rpc-timeout", kademlia.DefaultRPCTimeout, "per-RPC timeout (raise this, e.g. to 5m, when pausing at breakpoints)")
+	maxInFlight := flag.Int("max-inflight", transfer.DefaultMaxInFlight, "most piece requests a download keeps in flight at once (always at most 1 per provider)")
 	debugServeDelay := flag.Duration("debug-serve-delay", 0, "DEBUG ONLY: wait this long before answering each piece request, so a demo can kill this node mid-transfer (0 = off)")
 	flag.Parse()
 
@@ -81,7 +82,7 @@ func run() error {
 	if *tcpPort == 0 {
 		*tcpPort = n.Addr().Port
 	}
-	peer, err := transfer.NewPeer(n, *tcpPort, transfer.DefaultIOTimeout)
+	peer, err := transfer.NewPeer(n, transfer.Config{TCPPort: *tcpPort, MaxInFlight: *maxInFlight})
 	if err != nil {
 		return err
 	}

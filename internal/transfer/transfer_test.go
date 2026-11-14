@@ -40,7 +40,7 @@ func startNetwork(t *testing.T, size int) []testPeer {
 			t.Fatal(err)
 		}
 		node.Start()
-		peer, err := NewPeer(node, 0, 2*time.Second)
+		peer, err := NewPeer(node, Config{IOTimeout: 2 * time.Second})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -147,8 +147,8 @@ func TestCorruptProviderIsSkipped(t *testing.T) {
 	}
 	corrupt := filepath.Join(dir, "corrupt.bin")
 	os.WriteFile(corrupt, data, 0o644)
-	e, _ := peers[0].peer.lib.lookup(key)
-	peers[1].peer.lib.add(key, e.manifest, e.manifestBytes, corrupt)
+	m, mb, _ := peers[0].peer.lib.manifestFor(key)
+	peers[1].peer.lib.addComplete(key, m, mb, corrupt)
 	if err := peers[1].peer.announce(ctx, key); err != nil {
 		t.Fatalf("announce: %v", err)
 	}

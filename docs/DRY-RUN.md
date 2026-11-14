@@ -9,6 +9,17 @@
 - **Part 4** — `scripts/demo-big-network.sh`: 20 nodes, random joins,
   multi-round lookups checked by brute force
   ([jump](#part-4--scriptsdemo-big-networksh-multi-round-lookups)).
+- **Part 5** (branch `feature/parallel-partial-seeding`) — the same
+  seeder-death scenario, now surviving, plus `scripts/demo-parallel.sh`
+  ([jump](#part-5--swarming-the-seeder-dies-and-the-file-survives)).
+
+> **On branch `feature/parallel-partial-seeding`**, parts 2–4 were
+> recorded before parallel downloads existed. The piece-by-piece numbers
+> in part 2 (round-robin "0 → 9001, 1 → 9003, …", the 11/5 split) and
+> part 3's failure are the *old* behavior. Rerunning `demo-transfer.sh`
+> on the branch still passes, but pieces arrive rarest-first and in
+> parallel (see part 5 and docs/08). Part 3's script on the branch is the
+> "after" version.
 
 Each part traces one real run from the first shell line to the last
 process exiting, naming the file and function that runs at each step.
@@ -755,3 +766,155 @@ One random node shares a 1 MiB file; three others fetch it at the same
 time. With `k = 4`, the provider record lives on 4 of the 20 nodes, and
 each downloader's `FIND_VALUE` has to find it. All three copies matched
 the original in every run.
+
+---
+
+# Part 5 — Swarming: the seeder dies and the file survives
+
+Branch `feature/parallel-partial-seeding`: the code is at commits
+`f881a4a` and `cae73ad`, the scripts at `463f5e8`. Design and rationale:
+[08-swarming.md](08-swarming.md).
+
+## `scripts/demo-seeder-death.sh`, after
+
+Same scenario as part 3: five nodes on 9200–9204, `k = 3`, every node
+with `--debug-serve-delay 150ms`, three staggered leechers, and the
+seeder SIGKILLed while nobody has finished. Two differences, both
+visible in `git diff main feature/parallel-partial-seeding --
+scripts/demo-seeder-death.sh`:
+
+1. **The kill rule** is "the first moment the leechers together hold
+   every piece". On `main` that moment can't come before someone finishes,
+   so `main` had a "leading leecher is ¾ done" fallback. Here the fallback
+   would only kill the seeder before the pieces had spread. (An early run
+   of the branch script showed exactly that: the fallback fired with the
+   union at 14/16, and the file was lost.)
+2. **Every node runs `--max-inflight 1`.** Each leecher's single request
+   then goes to the rarest piece, one only the seeder has, so the swarm
+   runs ahead of every individual leecher. With 4 requests in flight,
+   leechers copied each other so fast that "together they hold
+   everything" and "someone holds everything" happened in the same
+   instant (1 run of 6 failed that way). That's a property of a healthy
+   swarm, but it makes "kill the seeder mid-download" unreliable.
+
+```
+=== Waiting for the kill moment ===
+  kill moment: the leechers together hold all 16 pieces; none has finished ( node2:10/16 node3:6/16 node4:3/16 )
+
+=== Killing the seeder (node1, SIGKILL); the leechers carry on from each other ===
+  node2: fetched "original.bin" (1048576 bytes, 16 pieces) in 2.486s
+      11 piece(s) from 127.0.0.1:9201          ← the seeder, before it died
+      4 piece(s) from 127.0.0.1:9203           ← node3
+      1 piece(s) from 127.0.0.1:9204           ← node4
+      provider 127.0.0.1:9201 failed and was skipped
+  node3: fetched … in 2.632s   (6 from the seeder, 9 from node2, 1 from node4)
+  node4: fetched … in 2.555s   (4 from the seeder, 8 from node2, 4 from node3)
+...
+PASS: the seeder died before any leecher finished and no node had the whole file, yet every leecher completed it from the others.
+```
+
+### Before and after, side by side
+
+| | `main` (part 3) | branch (this run) |
+|---|---|---|
+| Kill moment | leading leecher at 12/16 | leechers together at 16/16 |
+| Pieces held when the seeder died | 13 + 8 + 6 = **27**, covering only **13** distinct (`[0-12]`) | 10 + 6 + 3 = **19**, covering all **16** |
+| Why | everyone fetched `0, 1, 2, …`: nested prefixes | rarest-first, random ties: each leecher asked the seeder for pieces others lacked |
+| Could leechers help each other? | no: only complete files are served or announced | yes: each announced after its first piece and served every verified piece |
+| After the kill | all 3: `fetch failed … every provider failed`; partial files deleted | all 3 complete and byte-identical, ~0.8–1.9 s after the kill |
+
+### node4's side: from the seeder, then from its peers
+
+```
+05:09:30.474 INFO msg="providers found" key=c79e2d74… count=3             ← seeder, node2, node3 (both announced already)
+05:09:30.635 INFO msg="piece received" index=15 of=16 from=127.0.0.1:9201 bytes=65536 have=1 inflight=0
+05:09:30.638 INFO msg="provider announced" key=c79e2d74… tcp_addr=127.0.0.1:9204 replicas=3   ← after its FIRST piece
+05:09:30.787 INFO msg="piece received" index=1 of=16 from=127.0.0.1:9201 …  have=2
+05:09:30.939 INFO msg="piece received" index=4 of=16 from=127.0.0.1:9201 …  have=3
+05:09:31.092 INFO msg="piece received" index=10 of=16 from=127.0.0.1:9201 … have=4
+05:09:31.172 WARN msg="provider failed, trying the next one" provider=127.0.0.1:9201 error="read response header: EOF"
+05:09:31.327 INFO msg="piece received" index=7 of=16 from=127.0.0.1:9202 …  have=5    ← node2
+05:09:31.945 INFO msg="piece received" index=13 of=16 from=127.0.0.1:9203 … have=9    ← node3
+   …
+05:09:33.027 INFO msg="piece received" index=8 of=16 from=127.0.0.1:9203 …  have=16
+05:09:33.028 INFO msg="download complete" … providers=3 failed_providers=1 max_inflight=1 duration=2.555s
+```
+
+Notice:
+
+- **Pieces 15, 1, 4, 10 first: rarest-first.** node4 asked the seeder
+  for pieces that, as far as its fetched bitfields said, only the seeder
+  had. Compare `main`, where every leecher starts at 0.
+- **No stall after the kill.** node4 already knew node2 and node3, and
+  their bitfields said they had what it needed. The very next request
+  went to node2.
+- **The predicted DHT gaps stayed in the background.** The last line of
+  node4's log, a rediscovery `find_value finished … rpcs_failed=1`, is a
+  lookup that asked the dead seeder and waited out its RPC timeout. It
+  ran in a worker, so no piece waited for it.
+
+### node2 (the first leecher): how it found the others
+
+```
+05:09:29.460 INFO msg="providers found" key=c79e2d74… count=1             ← only the seeder at the start
+05:09:30.462 INFO msg="new providers found" … added=1 known=2             ← 1 s rediscovery: node3
+05:09:31.172 WARN msg="provider failed, trying the next one" provider=127.0.0.1:9201 …
+05:09:31.481 INFO msg="new providers found" … added=1 known=3             ← node4, found after the kill
+05:09:31.945 INFO msg="piece received" index=2 of=16 from=127.0.0.1:9203 … have=16
+```
+
+The seeder's log shows it served 21 pieces (11 + 6 + 4, the
+"from 127.0.0.1:9201" counts above) for 16 distinct pieces, plus three
+manifests. The 5 extra copies come from leechers working on stale
+bitfields; they're polled every 500 ms (a SIMPLIFICATION in docs/08).
+
+Function by function, for one piece in node4 (all in
+`internal/transfer/download.go` unless noted):
+
+```
+swarmDownload.run            event loop
+  schedule → pickPiece (picker.go)    rarest needed piece with an idle holder → (piece 7, node2)
+  startPiece                           log "piece requested", lend node2's connection to a worker
+    worker: ensureConn → providerConn.fetch(GET_PIECE 7) (client.go) → Manifest.VerifyPiece
+            sends event{evPiece, piece 7, data, conn}
+  wait → handle(evPiece)               give the connection back, WriteAt(PieceOffset(7)),
+                                       have.Set(7), Library.markHave (library.go) ← now servable
+  schedule …                           next request to node2
+```
+
+## `scripts/demo-parallel.sh`: three providers at once
+
+node1 shares; node2 and node3 download it, so three nodes hold the whole
+file; every provider serves with a 150 ms delay. Then node4 downloads.
+The script prints node4's timeline:
+
+```
+=== node4's timeline (ms since its first piece request) ===
+  +    0ms  request  piece  2 -> 127.0.0.1:9402   in flight after: 1
+  +    0ms  request  piece 11 -> 127.0.0.1:9401   in flight after: 2
+  +    0ms  request  piece  6 -> 127.0.0.1:9403   in flight after: 3
+  +  152ms  received piece  2 <- 127.0.0.1:9402   in flight after: 2
+  +  152ms  request  piece 15 -> 127.0.0.1:9402   in flight after: 3
+  +  154ms  received piece 11 <- 127.0.0.1:9401   in flight after: 2
+  +  154ms  request  piece 10 -> 127.0.0.1:9401   in flight after: 3
+  +  154ms  received piece  6 <- 127.0.0.1:9403   in flight after: 2
+  +  154ms  request  piece  8 -> 127.0.0.1:9403   in flight after: 3
+   …
+  +  929ms  received piece  9 <- 127.0.0.1:9402   in flight after: 0
+
+  most requests in flight at once: 3   providers used: 3
+PASS: node4's copy is identical, built from 3 providers with up to 3 pieces in flight at once.
+```
+
+Reading it:
+
+- **Three requests leave at +0 ms**, one per provider. That's the
+  per-provider limit of 1 (one connection, replies carry no index) times
+  three providers. The total limit of 4 isn't reached.
+- **Each provider takes ~150 ms per piece** (the debug delay), and its
+  next request goes out the instant its reply arrives (same timestamp).
+  The event loop refills slots as soon as a worker reports back.
+- **16 pieces in 929 ms**, against ≥ 2.4 s (16 × 150 ms) one at a time:
+  about 16/3 rounds.
+- **Pieces arrive out of order** (2, 11, 6, 15, 10, 8, …), and each is
+  written at its own offset (`WriteAt` in `handle`).

@@ -18,6 +18,7 @@ import "kademlia-demo/internal/kademlia"
 const (
 	opGetManifest = "GET_MANIFEST"
 	opGetPiece    = "GET_PIECE"
+	opGetBitfield = "GET_BITFIELD" // data = Bitfield of the pieces the provider has (bitfield.go)
 
 	maxRequestFrame = 1024    // requests and headers are tiny
 	maxDataFrame    = 8 << 20 // the largest manifest or piece we accept

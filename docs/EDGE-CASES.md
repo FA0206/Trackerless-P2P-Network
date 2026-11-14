@@ -37,13 +37,18 @@ bash scripts/edge/b3-late-joiners-hide-a-value.sh  # env: N=8 LATE=4 BASE_PORT=9
 `run-all.sh` on the current code:
 
 ```
-a2-thundering-herd                  8s  PASS: 19 nodes joined through one node at once; lookups were correct and no data race was reported.
+a2-thundering-herd                  6s  PASS: 19 nodes joined through one node at once; lookups were correct and no data race was reported.
 a3-bridge-between-islands          22s  PASS: an unused bridge's death split the network for good; a bridge that had carried one lookup each way could die harmlessly.
-a4-tiny-buckets                    13s  PASS: with nothing dead, k=4 lookups were all correct and k=1 lookups were not.
-b1-half-the-network-dies           24s  PASS: after half the network died, lookups paid an RPC timeout per dead contact, paid it again on the repeat, and returned short answers.
-b2-record-holders-die              12s  PASS: with every record holder dead the file could not be found, though 2 providers were online, and re-sharing did not bring it back.
-b3-late-joiners-hide-a-value        7s  PASS: newcomers closer to the key missed a value whose holders were alive; re-putting moved it to them.
+a4-tiny-buckets                    14s  PASS: with nothing dead, k=4 lookups were all correct and k=1 lookups were not.
+b1-half-the-network-dies           25s  PASS: after half the network died, lookups paid an RPC timeout per dead contact, paid it again on the repeat, and returned short answers.
+b2-record-holders-die              11s  PASS: with every record holder dead the file could not be found, though 2 providers were online, and re-sharing did not bring it back.
+b3-late-joiners-hide-a-value        9s  PASS: newcomers closer to the key missed a value whose holders were alive; re-putting moved it to them.
 ```
+
+The cases were written before swarming ([08](08-swarming.md)) was merged
+in, and re-run after it with the same verdicts. Swarming changes only
+`internal/transfer`, not the DHT, and a download with no provider records
+still fails at once with the same message, so B2's file case is unchanged.
 
 ## Results at a glance
 
@@ -95,7 +100,8 @@ handling (fixes B1, unblocks B2); **(b)** republish and hand-over
 (B2, B3); **(c)** bucket refresh, periodic and after joining (A3, A4).
 Each will flip some of these scripts to FAIL. Then update that script's
 prediction and its section here in the same change, as
-`demo-seeder-death.sh` does on the partial-seeding branch.
+`demo-seeder-death.sh` did when swarming (parallel downloads and partial
+seeding, [08](08-swarming.md)) landed.
 
 ## The catalogue
 
@@ -526,8 +532,8 @@ Fixes, none made here (they change core code):
 | no learning | remove a contact after repeated RPC failures | `node.go`, `bucket.go` | Sec. 4.1 |
 
 The first fix also turns this script's "short" assertion into a FAIL.
-At that point, flip the prediction, the way `demo-seeder-death.sh` flips
-on the partial-seeding branch.
+At that point, flip the prediction, the way `demo-seeder-death.sh` was
+flipped when swarming landed.
 
 ---
 
