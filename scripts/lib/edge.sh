@@ -106,6 +106,23 @@ lookup_answer() {
 		on { exit }' "$WORK/node$1.log"
 }
 
+# start_node_nowait <i> <udp-port> <bootstrap-port|-> [extra flags...]:
+# like nodes.sh's start_node, but returns immediately, so many nodes can be
+# started at the same moment. Wait for them with wait_for_log afterwards.
+start_node_nowait() {
+	local i="$1" port="$2" boot="$3"
+	shift 3
+	local bootflag=""
+	if [ "$boot" != "-" ]; then bootflag="--bootstrap 127.0.0.1:$boot"; fi
+	mkfifo "$WORK/node$i.in"
+	# shellcheck disable=SC2086 # $bootflag is intentionally word-split
+	"$BIN" --port "$port" --id-seed "${SEED_PREFIX:-demo}$i" $bootflag "$@" \
+		<"$WORK/node$i.in" >"$WORK/node$i.log" 2>&1 &
+	PIDS="$PIDS $!"
+	eval "PID$i=$!"
+	eval "exec $((10 + i))>\"$WORK/node$i.in\""
+}
+
 # holders_of <key> <n>: indexes of nodes (< n) that logged storing a value
 # under key, i.e. the nodes a STORE RPC for that key reached.
 holders_of() {

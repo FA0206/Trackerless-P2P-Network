@@ -24,50 +24,142 @@ Each case is a script in `scripts/edge/`. Every script:
   their console, using `scripts/lib/nodes.sh` plus `scripts/lib/edge.sh`.
 
 ```sh
+bash scripts/edge/run-all.sh                   # every case, one verdict line each (~1.5 min)
+
+bash scripts/edge/a2-thundering-herd.sh        # env: N=20 K=4 QUERIERS=4 TARGETS=3 BASE_PORT=9425 SEED=1 RACE=1
 bash scripts/edge/a3-bridge-between-islands.sh # env: BASE_PORT=9450 (nothing random, no SEED)
+bash scripts/edge/a4-tiny-buckets.sh           # env: N=20 QUERIERS=5 TARGETS=4 BASE_PORT=9475 SEED=1
 bash scripts/edge/b1-half-the-network-dies.sh  # env: N=16 K=4 KILL=8 TARGETS=4 BASE_PORT=9500 SEED=1
 bash scripts/edge/b2-record-holders-die.sh     # env: N=8 BASE_PORT=9525 SEED=1
 bash scripts/edge/b3-late-joiners-hide-a-value.sh  # env: N=8 LATE=4 BASE_PORT=9550 SEED=1
 ```
 
-**The main finding so far** (B1 and B2 both show it): a lookup only
+`run-all.sh` on the current code:
+
+```
+a2-thundering-herd                  8s  PASS: 19 nodes joined through one node at once; lookups were correct and no data race was reported.
+a3-bridge-between-islands          22s  PASS: an unused bridge's death split the network for good; a bridge that had carried one lookup each way could die harmlessly.
+a4-tiny-buckets                    13s  PASS: with nothing dead, k=4 lookups were all correct and k=1 lookups were not.
+b1-half-the-network-dies           24s  PASS: after half the network died, lookups paid an RPC timeout per dead contact, paid it again on the repeat, and returned short answers.
+b2-record-holders-die              12s  PASS: with every record holder dead the file could not be found, though 2 providers were online, and re-sharing did not bring it back.
+b3-late-joiners-hide-a-value        7s  PASS: newcomers closer to the key missed a value whose holders were alive; re-putting moved it to them.
+```
+
+## Results at a glance
+
+| Case | Holds up or breaks? | Headline number | Root cause | Fix (core code, not made here) |
+|---|---|---|---|---|
+| A2 thundering herd | **holds up** | 19/19 joins, 12/12 lookups correct, 0 data races in 20 race-detector processes | — | — |
+| A3 bridge between islands | **breaks if quiet** | quiet: 0 of 5 found across, forever; used: 5 of 5 | no bucket refresh | bucket refresh (Sec. 2.3) |
+| A4 tiny buckets | **breaks at k = 1** | k=1: 9–14 of 20 correct; k=4: 20 of 20 | thin routing tables: no post-join refresh | post-join bucket refresh (Sec. 2.3) |
+| B1 half the network dies | **breaks** | 133 ms → 10.35 s for 4 lookups; every answer short; repeat no better | dead contacts kept in tables and lookup shortlists | drop failed candidates; evict on repeated failure (Sec. 2.3, 4.1) |
+| B2 record holders die | **breaks** | file unfindable with 2 providers online; re-share doesn't help | no republish + B1's lookup problem | lookup fix first, then republish (Sec. 2.5) |
+| B3 late joiners | **breaks** | 13 of 16 newcomer `get`s miss; holders alive | values never move to closer nodes | republish / hand over on join (Sec. 2.5) |
+
+**The main finding** (B1 and B2 both show it): a lookup only
 ever starts from the k closest contacts in the routing table, a contact
 that times out is never removed, and failed candidates keep their slots
 in the lookup's k-closest list. So once nodes die, lookups return
 **short answers** (live nodes missing), and in the worst case **nothing
 at all**, even though live nodes are known. Nothing improves on its own.
 
-**The second finding** (A3 and B3): nothing maintains the network in the
-background. Contacts spread only as a side effect of traffic, and values
-stay where they were first stored. A quiet island cut off from the rest
-never reconnects (A3). Nodes that join near a key can't see a value
-sitting on healthy holders (B3). The paper's bucket refresh and hourly
-republish (Sec. 2.3, 2.5) are what's missing.
+**The second finding** (A3, A4 and B3): nothing maintains the network in
+the background. Contacts spread only as a side effect of traffic, and
+values stay where they were first stored. A quiet island cut off from
+the rest never reconnects (A3). With k = 1, joins reach so few nodes
+that lookups stop at nodes with empty buckets (A4). Nodes that join near
+a key can't see a value sitting on healthy holders (B3). The paper's
+bucket refresh and hourly republish (Sec. 2.3, 2.5) are what's missing.
+
+**What holds up:** concurrency. Twenty processes joining through one
+node at the same instant, all built with the race detector, gave correct
+lookups and no data races (A2).
 
 ## The catalogue
 
-Status: ✅ script written and passing · ⬜ planned (prediction only, not
-yet tested).
+Status: ✅ script written and passing · ✖ dropped (with the reason).
 
 | # | Setup | Prediction | Status |
 |---|---|---|---|
 | **A. How nodes join** | | | |
-| A1 | Star: 15 nodes join via node0, then node0 is killed | Lookups stay correct; a new node bootstrapping via the dead hub fails after one RPC timeout | ⬜ |
-| A2 | Thundering herd: 20 nodes join via node0 at the same moment | Lookups still correct (tests concurrent bucket updates) | ⬜ |
+| A1 | Star: 15 nodes join via node0, then node0 is killed | Lookups stay correct; a new node bootstrapping via the dead hub fails | ✖ covered elsewhere: A3's "used" network shows a node everyone joined through dying harmlessly, and bootstrapping via a dead address is DEBUGGING.md exercise (e) |
+| A2 | Thundering herd: 20 nodes join via node0 at the same moment | Holds up: all join, lookups correct, no data races | ✅ [below](#a2--a-thundering-herd-of-joins) |
 | A3 | Two islands joined by one bridge node; the bridge is killed | If nobody used the bridge: split for good. If one lookup crossed it: no harm | ✅ [below](#a3--two-islands-and-one-bridge) |
-| A4 | Tiny buckets (k = 1, 2) at N = 20 | Some lookups miss the true closest nodes | ⬜ |
+| A4 | Tiny buckets (k = 1, 2, 4) on the same 20 nodes | k = 1 returns wrong nodes with nothing dead; k = 4 doesn't | ✅ [below](#a4--tiny-buckets) |
 | **B. Churn** | | | |
 | B1 | Kill half the nodes, then repeat the same lookups | +1 RPC timeout per round with a dead contact, the repeat is just as slow, and answers come back **short** | ✅ [below](#b1--half-the-network-dies-at-once) |
 | B2 | Every node holding a file's provider record dies; the seeder stays up | The file can't be found, and **re-sharing doesn't fix it** | ✅ [below](#b2--the-provider-record-holders-all-die) |
 | B3 | Late joiners with IDs closer to a key than its holders | Newcomers' `get`s miss it, though the holders are alive; a re-`put` moves it to them | ✅ [below](#b3--late-joiners-closer-to-a-key) |
-| B4 | Seeder restarts with the same ID on a new port and re-shares | Every download wastes a connection on the stale record | ⬜ |
+| B4 | Seeder restarts with the same ID on a new port and re-shares | Every download wastes a connection on the stale record | ✖ minor and already documented: "dead providers' records linger (one wasted connection each)" is in the README simplifications table, and B2 shows the serious form of stale records |
 | **C. Limits and identity** | | | |
-| C1 | Hot file: 18 downloaders | Only 16 provider records survive; the original seeder's goes first | ⬜ |
-| C2 | Two nodes with the same ID on different ports | Others' contact flips between the two addresses | ⬜ |
+| C1 | Hot file: 18 downloaders | Only 16 provider records survive; the original seeder's goes first | ✖ harmless: dropping the *oldest* record loses nothing while newer providers have the file. The cap exists for the 8 KB datagram limit, which `TestLargestFindValueReplyFitsInDatagram` already checks |
+| C2 | Two nodes with the same ID on different ports | Others' contact flips between the two addresses | ✖ a configuration mistake, not a network condition; the FAQ ("What if two nodes pick the same ID?") covers it |
 
 **Ports.** Each case has its own block so they can run side by side with
-the demos: A1 9400, A2 9425, A3 9450, A4 9475, B1 9500, B2 9525, B3 9550,
-B4 9575, C1 9600, C2 9625 (override with `BASE_PORT`).
+the demos: A2 9425, A3 9450, A4 9475, B1 9500, B2 9525, B3 9550 (override
+with `BASE_PORT`). A4 builds its three networks one after another on the
+same 20 ports.
+
+---
+
+## A2 — a thundering herd of joins
+
+**Script:** `scripts/edge/a2-thundering-herd.sh`
+
+### Setup
+
+node0 starts alone. Then 19 nodes are launched **at once**, all with
+`--bootstrap node0`, without waiting for each other
+(`start_node_nowait` in `edge.sh`). `k = 4`, so buckets fill and the
+eviction check (ping the oldest contact) runs while joins overlap.
+
+Every node binary is built with **Go's race detector**: the script sets
+`GOFLAGS=-race` before `nodes_init` builds it (`RACE=0` turns it off).
+A data race in any of the 20 processes would print `WARNING: DATA RACE`
+into that node's log. `go test -race` checks the same code in tests;
+this checks it in 20 real processes talking over real sockets at once.
+
+Then 4 random nodes each look up 3 random IDs, checked against the
+brute-force 4 closest.
+
+### Prediction
+
+It holds up: every join completes, every lookup is correct, no race.
+Each received packet is handled on its own goroutine, and the shared
+state (buckets, value store, `pending`) is behind locks
+([ARCHITECTURE.md](ARCHITECTURE.md), "Goroutines and shared state").
+
+### Real output (`SEED=1`)
+
+```
+=== 19 nodes join through node0 at the same moment ===
+  19 of 19 joined, all within 553ms
+  routing table size right after joining: min 2, median 5, max 6
+
+=== Lookups checked against a brute-force answer ===
+  node7  -> cc281173…: rounds=2 rpcs_sent=6 rpcs_failed=0  ok
+  node7  -> 290e2d0b…: rounds=2 rpcs_sent=4 rpcs_failed=0  ok
+  …                                                        (12 lookups, all ok)
+  node3  -> 1470ed9b…: rounds=2 rpcs_sent=5 rpcs_failed=0  ok
+
+=== Data races reported by any of the 20 processes ===
+  none
+
+PASS: 19 nodes joined through one node at once; lookups were correct and no data race was reported.
+```
+
+Seeds 2 and 3: the same verdict. Joins took 269 ms and 209 ms, and the
+smallest routing table right after joining held 1 and 2 contacts.
+
+### What it shows
+
+The concurrency design holds. One detail is worth noticing: a node that
+joins while everyone else is joining can finish its join knowing only
+**1 or 2 contacts**, because node0 hadn't heard of anyone else yet when
+it answered. Lookups were still correct a moment later, because the
+traffic that follows fills tables in: every node that contacts you
+becomes your contact. With k = 4 that is enough. With k = 1 it isn't
+([A4](#a4--tiny-buckets)).
 
 ---
 
@@ -189,6 +281,103 @@ Fix (core code, not made here): bucket refresh, i.e. a periodic lookup
 for a random ID in each bucket not used recently (`node.go`;
 paper Sec. 2.3). It also fills the quiet island's tables before the
 bridge dies.
+
+---
+
+## A4 — tiny buckets
+
+**Script:** `scripts/edge/a4-tiny-buckets.sh`
+
+### Setup
+
+The **same** 20-node network is built three times, with k = 1, 2 and 4:
+the same node IDs, the same random joins (each node bootstraps through a
+random running node, re-seeded from `SEED` each time), and the same
+lookups (5 queriers × 4 random targets). Only k differs. Nobody dies.
+Every answer is compared with the brute-force k closest. The three
+networks run one after another on the same ports.
+
+### Prediction
+
+- **k = 4:** every lookup correct (`demo-big-network.sh` runs this
+  setting).
+- **k = 1:** some lookups return the wrong node. Each bucket holds one
+  contact, each FIND_NODE reply carries one contact, and the lookup stops
+  once its single best candidate has been asked.
+- **k = 2:** in between; reported, not asserted.
+
+### Real output (`SEED=1`)
+
+```
+=== k=1: 20 nodes on ports 9475-9494, random joins (SEED=1) ===
+  k=1: 11 of 20 lookups correct, 1.8 rounds on average
+    node7 -> 729dbc18…  rounds=1  got [8] want [19]
+    node13 -> 25cdfbf6…  rounds=3  got [12] want [18]
+    node13 -> 1753323d…  rounds=1  got [5] want [17]
+    …                                                   (9 wrong in all)
+
+=== k=2: 20 nodes on ports 9475-9494, random joins (SEED=1) ===
+  k=2: 11 of 20 lookups correct, 1.6 rounds on average
+    node13 -> 1753323d…  rounds=1  got [5 12] want [17 7]
+    …                                                   (9 wrong in all)
+
+=== k=4: 20 nodes on ports 9475-9494, random joins (SEED=1) ===
+  k=4: 20 of 20 lookups correct, 2.1 rounds on average
+
+PASS: with nothing dead, k=4 lookups were all correct and k=1 lookups were not.
+```
+
+| SEED | k = 1 | k = 2 | k = 4 |
+|---|---|---|---|
+| 1 | 11 of 20 | 11 of 20 | 20 of 20 |
+| 2 | 9 of 20 | 20 of 20 | 20 of 20 |
+| 3 | 14 of 20 | 20 of 20 | 20 of 20 |
+
+So k = 1 gets about half its lookups wrong, more than "some". k = 2
+depends on the network: perfect for two seeds, and as bad as k = 1 for
+the other.
+
+### Why: the routing tables are nearly empty
+
+Take `node13 -> 1753323d… got [5] want [17]` in the k = 1 network.
+node13 asked node5, node5 had nothing closer to offer, and the lookup
+stopped. Counting the senders in node5's log, and computing bucket
+indexes from the IDs (a one-off analysis, not part of the script):
+
+```
+node5 heard from: [0, 4, 12, 13]                  ← 4 of the 19 other nodes, ever
+target 1753323d lies in node5's bucket 158
+  node7, node11, node15, node17, node18 live in that bucket of node5,
+  and every one of them is closer to the target than node5 is
+```
+
+XOR guarantees this: any node in that bucket of node5 is closer to the
+target than node5 itself ([01](01-ids-and-xor-distance.md)). So if node5
+had **any** contact in bucket 158, the lookup would have moved on toward
+node17. It has none: in its whole life, node5 received messages from
+only 4 nodes. The problem isn't that buckets hold just 1 contact. It's
+that most of node5's buckets hold **zero**.
+
+That comes from how a node joins. Its self-lookup is its only active
+step, and with k = 1 every reply carries a single contact. A join
+reaches a handful of nodes, and only those learn about the newcomer.
+The paper adds a step for exactly this: after its self-lookup, a joining
+node **refreshes every bucket farther away than its closest neighbor**,
+doing one lookup into each (Sec. 2.3). That step is skipped here (README
+simplifications table, "No bucket refresh", and
+[04](04-bootstrap-and-join.md)). At k = 4 and above, replies carry
+enough contacts that it hasn't mattered so far. At k = 1 it does.
+
+### What it shows
+
+Lookup correctness depends on routing-table *coverage*: a contact in
+every bucket where nodes exist. Small k removes the redundancy that
+hides missing coverage. The demos use k = 3 (the 5-node transfer and
+seeder-death demos, where every node is within a lookup or two anyway),
+4 or 20. Treat the post-join refresh as the fix if experiments ever need
+a small k on a bigger network. Before the evaluation graphs, it's worth adding
+anyway: it makes the lookup-latency results less dependent on join
+order.
 
 ---
 

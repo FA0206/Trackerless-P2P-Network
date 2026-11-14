@@ -180,6 +180,28 @@ No. `k` (20) is **how many** closest nodes a lookup finds, and how many
 contacts a bucket holds. `alpha` (3) is **how many** RPCs a lookup has
 in flight at once. You can change either independently.
 
+### Can I use a very small `k`, like 1 or 2?
+
+You can, but lookups become unreliable even with nobody dead. With
+k = 1, every reply carries one contact, so a joining node reaches only a
+few others, and most of its buckets stay empty. A lookup that reaches a
+node with an empty bucket in the target's direction stops there, at the
+wrong node.
+[EDGE-CASES.md, case A4](EDGE-CASES.md#a4--tiny-buckets) builds the same
+20-node network three times: k = 1 got 9–14 of 20 lookups right, and
+k = 4 got all 20. The paper's post-join bucket refresh, skipped here,
+is what fixes it. The demos use k = 3 or more; A4 didn't test k = 3.
+
+### Is it safe for many nodes to join at once?
+
+Yes.
+[EDGE-CASES.md, case A2](EDGE-CASES.md#a2--a-thundering-herd-of-joins)
+starts 19 nodes joining through one node at the same instant, each
+process built with the race detector. All joined, lookups were correct,
+and no data race was reported. A node joining in that crowd may finish
+knowing only 1–2 contacts, but the traffic that follows fills its table
+in.
+
 ### What's an RPC ID vs. a node ID?
 
 Both are 160-bit, but unrelated. The node ID identifies a node. The RPC

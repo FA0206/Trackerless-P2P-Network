@@ -29,7 +29,7 @@ evaluation includes performance graphs:
 | **Peer discovery (the DHT core):** 160-bit IDs, XOR metric, k-bucket routing table, `PING`/`FIND_NODE` over UDP, joining via one known node, iterative α-parallel lookup | ✅ Done | `main` — this README, [docs 01–05](#documentation) |
 | Unit + integration tests for the core; runnable demos (5-process chain, 20-node random joins with brute-force-checked lookups) | ✅ Done | `internal/kademlia/*_test.go`, `scripts/demo.sh`, `scripts/demo-big-network.sh` |
 | Debugging tooling: logs, per-node console, VSCode debug configs | ✅ Done | [docs/DEBUGGING.md](docs/DEBUGGING.md) |
-| Edge-case stress tests: node setups chosen to find what breaks | 🟡 In progress: 4 of 10 cases scripted (A3: bridge between islands dies; B1: half the network dies; B2: record holders die; B3: late joiners hide a value) | `scripts/edge/`, [docs/EDGE-CASES.md](docs/EDGE-CASES.md) |
+| Edge-case stress tests: node setups chosen to find what breaks | ✅ Done: 6 cases (A2 thundering herd, A3 bridge between islands, A4 tiny buckets, B1 half the network dies, B2 record holders die, B3 late joiners); 4 planned ones dropped as covered or minor (reasons in the doc). `scripts/edge/run-all.sh` runs them all | `scripts/edge/`, [docs/EDGE-CASES.md](docs/EDGE-CASES.md) |
 | `STORE` / `FIND_VALUE` (the DHT holds "who has file X") | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/06](docs/06-store-and-find-value.md) |
 | File transfer over TCP: pieces, SHA-256 verification, content keys | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/07](docs/07-file-transfer-over-tcp.md) |
 | Share a file / download it from the CLI; transfer demo | ✅ Done | `share` / `fetch` console commands, `scripts/demo-transfer.sh` |
@@ -231,7 +231,10 @@ repeat the same joins and targets. Walkthrough of a 3-round lookup:
 ### Edge cases (what breaks)
 
 ```sh
+bash scripts/edge/run-all.sh                   # all six, one verdict line each (~1.5 min)
+bash scripts/edge/a2-thundering-herd.sh        # env: N=20 K=4 BASE_PORT=9425 SEED=1 RACE=1
 bash scripts/edge/a3-bridge-between-islands.sh # env: BASE_PORT=9450
+bash scripts/edge/a4-tiny-buckets.sh           # env: N=20 BASE_PORT=9475 SEED=1
 bash scripts/edge/b1-half-the-network-dies.sh  # env: N=16 K=4 KILL=8 TARGETS=4 BASE_PORT=9500 SEED=1
 bash scripts/edge/b2-record-holders-die.sh     # env: N=8 BASE_PORT=9525 SEED=1
 bash scripts/edge/b3-late-joiners-hide-a-value.sh  # env: N=8 LATE=4 BASE_PORT=9550 SEED=1
@@ -239,7 +242,17 @@ bash scripts/edge/b3-late-joiners-hide-a-value.sh  # env: N=8 LATE=4 BASE_PORT=9
 
 Scripts in `scripts/edge/` set up specific node graphs to find the
 code's limits. Each one PASSes when the code behaves as its documented
-prediction says, including "this breaks". A3 joins two separately built
+prediction says, including "this breaks".
+
+A2 starts 19 nodes joining through one node at the same instant, every
+process built with the race detector. It **holds up**: all join, the
+lookups are correct, and there are no data races. A4 builds the same
+20-node network with k = 1, 2 and 4. With nothing dead, k = 1 gets about
+half its lookups wrong (9–14 of 20 correct), and k = 4 gets all of them
+right. The cause is nearly empty routing tables, because joins skip the
+paper's bucket refresh.
+
+A3 joins two separately built
 islands through one bridge node and kills it. If nobody had looked
 anything up across the bridge, the islands are cut apart for good (0 of
 5 found, every time). If one lookup had crossed it, the islands survive.
@@ -358,7 +371,7 @@ scripts/demo-seeder-death.sh  seeder killed mid-download: the file is lost on ma
 scripts/demo-big-network.sh   20 nodes, random joins, lookups checked by brute force, transfer
 scripts/lib/nodes.sh       shared helper: start N nodes with console FIFOs (bash 3.2)
 scripts/lib/edge.sh        helpers for the edge cases: brute-force closest nodes, wait for the Nth log line
-scripts/edge/              edge-case scripts, one per case (docs/EDGE-CASES.md)
+scripts/edge/              edge-case scripts, one per case, and run-all.sh (docs/EDGE-CASES.md)
 docs/                concept docs 01-07 + reference docs
 .vscode/launch.json  debug configurations
 ```
@@ -376,7 +389,7 @@ Here is whether each one blocks the end goal:
 | JSON encoding | No, but it inflates the "control bytes" measurement. | Keep; say so in the evaluation. |
 | **Advertise IP set by hand** (`--advertise-ip`, default `127.0.0.1`; demos bootstrap via `127.0.0.1`) | **Yes, for multi-device.** Each node must be started with its LAN IP, and bootstrap via LAN addresses. No NAT traversal. | Before the multi-device demo: test on a LAN, maybe auto-detect the LAN IP. |
 | **Synchronous lookup rounds** ([05](docs/05-iterative-parallel-lookup.md)) | **Yes, for the latency and recovery graphs.** A dead node stalls a round by a full RPC timeout, and the seeder-kill scenario is exactly that. | Before measuring latency or recovery time. |
-| **No bucket refresh** — neither the post-join refresh nor the paper's hourly refresh ([04](docs/04-bootstrap-and-join.md)) | **Yes, for churn.** Dead contacts linger until a full bucket triggers a ping. | Before the seeder-kill experiments. Refresh traffic also belongs in the control-bytes count. |
+| **No bucket refresh** — neither the post-join refresh nor the paper's hourly refresh ([04](docs/04-bootstrap-and-join.md)) | **Yes, for churn.** Dead contacts linger until a full bucket triggers a ping. Edge cases show more: a quiet island cut off by one death never reconnects (A3), and with k = 1, routing tables stay so empty that lookups go wrong with nobody dead (A4) ([EDGE-CASES](docs/EDGE-CASES.md)). | Before the seeder-kill experiments. Refresh traffic also belongs in the control-bytes count. |
 | No lookup early-exit heuristic ([05](docs/05-iterative-parallel-lookup.md)) | Slightly inflates RPC counts. | Optional, before the graphs. |
 | **Values never expire or get republished** ([06](docs/06-store-and-find-value.md)) | **Yes, for churn.** Dead providers' records linger (one wasted connection each), and records don't move to closer nodes that join later. Edge cases B2 and B3 show both ([EDGE-CASES](docs/EDGE-CASES.md)). | Before the seeder-kill and recovery experiments. |
 | No caching of found values ([06](docs/06-store-and-find-value.md)) | No. | Keep. |

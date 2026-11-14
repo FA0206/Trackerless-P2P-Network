@@ -48,11 +48,12 @@ bash scripts/demo.sh                            # join + lookup demo; must print
 bash scripts/demo-transfer.sh                   # put/get + file transfer + killed seeder; must print PASS
 bash scripts/demo-seeder-death.sh               # seeder dies mid-download; on main PASS means the file was lost
 bash scripts/demo-big-network.sh                # 20 nodes, random joins, lookups vs brute force + transfer; must print PASS
-bash scripts/edge/a3-bridge-between-islands.sh  # edge case: two islands, one bridge dies; PASS = behaved as docs/EDGE-CASES.md predicts
-bash scripts/edge/b1-half-the-network-dies.sh   # edge case: half the nodes die; PASS = behaved as docs/EDGE-CASES.md predicts
-bash scripts/edge/b2-record-holders-die.sh      # edge case: record holders die; PASS = behaved as docs/EDGE-CASES.md predicts
-bash scripts/edge/b3-late-joiners-hide-a-value.sh  # edge case: closer nodes join late; PASS = behaved as docs/EDGE-CASES.md predicts
+bash scripts/edge/run-all.sh                    # every edge case; each PASS = behaved as docs/EDGE-CASES.md predicts
 ```
+
+A core fix (lookup, refresh, republish) is expected to flip some edge-case
+predictions to FAIL. Then update the script's prediction and its
+EDGE-CASES.md section in the same change, as `demo-seeder-death.sh` does.
 
 Packages: `internal/kademlia` (the DHT, opaque values), `internal/transfer`
 (files on top of the DHT's public API), `internal/framing` (shared

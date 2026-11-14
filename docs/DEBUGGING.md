@@ -217,8 +217,9 @@ For `scripts/demo-big-network.sh` specifically:
 
 For the edge-case scripts (`scripts/edge/`, [EDGE-CASES.md](EDGE-CASES.md)):
 
-- **Ports.** Each case has its own block from 9400 up (A3: 9450…9471,
-  B1: 9500…9515, B2: 9525…9532, B3: 9550…9561);
+- **Ports.** Each case has its own block from 9425 up (A2: 9425…9444,
+  A3: 9450…9471, A4: 9475…9494, B1: 9500…9515, B2: 9525…9532,
+  B3: 9550…9561);
   the list is in EDGE-CASES.md. Check leftovers with
   `lsof -nP -i :9400-9699`.
 - **Extra helpers** live in `scripts/lib/edge.sh`, sourced after
@@ -236,7 +237,19 @@ For the edge-case scripts (`scripts/edge/`, [EDGE-CASES.md](EDGE-CASES.md)):
   <seed>` overrides the default `<SEED_PREFIX><i>`, because Go's `flag`
   package keeps the last value of a repeated flag. Set `ID<i>` to match
   yourself. B3 uses this for nodes chosen by brute force to be close to
-  a key.
+  a key. A4 uses it to give three networks the same IDs.
+- **Starting many nodes at the same moment.** `start_node_nowait` (in
+  `edge.sh`) is `start_node` without the waits. Afterwards, wait for
+  each node's `bootstrap complete` yourself (A2 does).
+- **Race detector on real processes.** `export GOFLAGS=-race` before
+  `nodes_init`, and the node binary is built with `-race`. A race prints
+  `WARNING: DATA RACE` and a stack trace into that node's log. A2 does
+  this by default (`RACE=0` to skip). It needs a C compiler (cgo), and
+  each process uses more memory.
+- **`set -o pipefail` gotcha.** `grep` exits 1 when nothing matches, and
+  with `pipefail` that kills the script inside `$(…)`. Write
+  `{ grep … || true; }` wherever "no match" is a normal answer. Two edge
+  scripts died on exactly this while being written.
 - **A FAIL is information, not necessarily a bug in the script.** It
   means the code didn't behave as predicted. Read the node logs in the
   printed work directory, as for the demos.

@@ -90,7 +90,7 @@ run_pass() {
 		send "$Q" "lookup $target" >/dev/null
 		wait_for_count "$WORK/node$Q.log" '^lookup [0-9a-f]\{40\}:\|^lookup failed' "$ISSUED" 60
 		ms=$(($(now_ms) - start))
-		summary="$(grep "^lookup $target:" "$WORK/node$Q.log" | sed -n "${nth}p")"
+		summary="$(grep "^lookup $target:" "$WORK/node$Q.log" | sed -n "${nth}p" || true)" # empty if it failed
 		if [ -z "$summary" ]; then
 			echo "  $label  ${target:0:8}…  lookup failed: $(grep '^lookup failed' "$WORK/node$Q.log" | tail -1)"
 			eval "FAILED_${pass}_$t=99"
