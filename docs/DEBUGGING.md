@@ -215,6 +215,22 @@ For `scripts/demo-big-network.sh` specifically:
   `FIND_NODE` sends and replies (DRY-RUN part 4 shows how one reads).
   Then use the console's `table` on the nodes you expected to be found.
 
+For the edge-case scripts (`scripts/edge/`, [EDGE-CASES.md](EDGE-CASES.md)):
+
+- **Ports.** Each case has its own block from 9400 up (B2: 9525…9532);
+  the list is in EDGE-CASES.md. Check leftovers with
+  `lsof -nP -i :9400-9699`.
+- **Extra helpers** live in `scripts/lib/edge.sh`, sourced after
+  `nodes.sh`. `node_ids_init N` computes every node's ID once (into
+  `ID0`, `ID1`, …). `closest_nodes <key> <k> <indexes…>` is the
+  brute-force answer. `wait_for_count <file> <regex> <n> <s>` waits for
+  the *n*-th match, for when one node runs the same command twice (plain
+  `wait_for_log` would see the first, old line). `holders_of <key> <n>`
+  lists the nodes that logged `value stored` for a key.
+- **A FAIL is information, not necessarily a bug in the script.** It
+  means the code didn't behave as predicted. Read the node logs in the
+  printed work directory, as for the demos.
+
 ---
 
 ## 3. Breakpoints in VSCode

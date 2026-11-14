@@ -259,6 +259,17 @@ Yes, up to 16 distinct values of at most 256 bytes each. That's how
 "every peer that has file X" fits under file X's key. The limits keep a
 full `FIND_VALUE` reply inside one UDP datagram.
 
+### What if the k nodes holding a value all die? Can I just store it again?
+
+The value is gone: nothing republishes it. And on the current code,
+storing it again from a node that had stored it before **doesn't work
+either**. That node's routing table still lists the dead holders as its
+closest contacts to the key. A lookup starts from only those k contacts,
+they all time out, and the lookup ends with nothing. `Store` then keeps
+the value only locally, where nobody else's lookup will look.
+[EDGE-CASES.md, case B2](EDGE-CASES.md#b2--the-provider-record-holders-all-die)
+shows this with real output and lists the fixes.
+
 ## File transfer (TCP)
 
 ### How do I know which key to ask for? If I want an Ace Attorney file, what do I query?

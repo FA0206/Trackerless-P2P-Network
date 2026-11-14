@@ -29,6 +29,7 @@ evaluation includes performance graphs:
 | **Peer discovery (the DHT core):** 160-bit IDs, XOR metric, k-bucket routing table, `PING`/`FIND_NODE` over UDP, joining via one known node, iterative α-parallel lookup | ✅ Done | `main` — this README, [docs 01–05](#documentation) |
 | Unit + integration tests for the core; runnable demos (5-process chain, 20-node random joins with brute-force-checked lookups) | ✅ Done | `internal/kademlia/*_test.go`, `scripts/demo.sh`, `scripts/demo-big-network.sh` |
 | Debugging tooling: logs, per-node console, VSCode debug configs | ✅ Done | [docs/DEBUGGING.md](docs/DEBUGGING.md) |
+| Edge-case stress tests: node setups chosen to find what breaks | 🟡 In progress: 1 of 10 cases scripted (B2: record holders die) | `scripts/edge/`, [docs/EDGE-CASES.md](docs/EDGE-CASES.md) |
 | `STORE` / `FIND_VALUE` (the DHT holds "who has file X") | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/06](docs/06-store-and-find-value.md) |
 | File transfer over TCP: pieces, SHA-256 verification, content keys | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/07](docs/07-file-transfer-over-tcp.md) |
 | Share a file / download it from the CLI; transfer demo | ✅ Done | `share` / `fetch` console commands, `scripts/demo-transfer.sh` |
@@ -70,6 +71,9 @@ needed, and which function implements it.
   capture, plus hands-on exercises (forcing an eviction, killing a node).
 - [FAQ.md](docs/FAQ.md) — common confusions, how Kademlia output leads
   to a TCP connection, what a joining node needs, Merkle trees.
+- [EDGE-CASES.md](docs/EDGE-CASES.md) — node setups that stress the
+  code, each with a prediction, a script, real output, and what would
+  fix it.
 - [CLAUDE.md](CLAUDE.md) — project scope and ground rules, for AI
   assistants and new teammates alike.
 
@@ -224,6 +228,26 @@ A failing run prints its `SEED`; rerun with `SEED=<that number>` to
 repeat the same joins and targets. Walkthrough of a 3-round lookup:
 [DRY-RUN.md](docs/DRY-RUN.md) part 4.
 
+### Edge cases (what breaks)
+
+```sh
+bash scripts/edge/b2-record-holders-die.sh     # env: N=8 BASE_PORT=9525 SEED=1
+```
+
+Scripts in `scripts/edge/` set up specific node graphs to find the
+code's limits. Each one PASSes when the code behaves as its documented
+prediction says, including "this breaks". B2 kills the 3 nodes holding a
+file's provider record while the seeder stays up. The file can't be
+found, and re-sharing doesn't bring it back:
+
+```
+  node4: fetch failed: transfer: no providers found for 93accc52…
+  node1's re-announce lookup: rounds=1 rpcs_sent=3 rpcs_failed=3 closest_found=0
+PASS: with every record holder dead the file could not be found, though 2 providers were online, and re-sharing did not bring it back.
+```
+
+Catalogue, predictions and explanations: [docs/EDGE-CASES.md](docs/EDGE-CASES.md).
+
 ### One node at a time (e.g. in split VSCode terminals)
 
 ```sh
@@ -307,6 +331,8 @@ scripts/demo-transfer.sh   5 processes: put/get, share, downloads, killed seeder
 scripts/demo-seeder-death.sh  seeder killed mid-download: the file is lost on main
 scripts/demo-big-network.sh   20 nodes, random joins, lookups checked by brute force, transfer
 scripts/lib/nodes.sh       shared helper: start N nodes with console FIFOs (bash 3.2)
+scripts/lib/edge.sh        helpers for the edge cases: brute-force closest nodes, wait for the Nth log line
+scripts/edge/              edge-case scripts, one per case (docs/EDGE-CASES.md)
 docs/                concept docs 01-07 + reference docs
 .vscode/launch.json  debug configurations
 ```
@@ -332,6 +358,15 @@ Here is whether each one blocks the end goal:
 | Pieces fetched one at a time ([07](docs/07-file-transfer-over-tcp.md)) | Not for correctness; matters for the download-time graph. | Before the download-time graph. |
 | One failure drops a provider; no retries; no resume ([07](docs/07-file-transfer-over-tcp.md)) | Not yet. | Revisit with real networks / Wi-Fi. |
 | No security (ID spoofing, Sybil, rate limits) | Not in the goal list. | Later, if at all. |
+
+**Found by the edge cases, not (yet) a labeled simplification:** a
+lookup starts from only the k closest contacts in the routing table, and
+a contact that times out stays there. When all of those are dead, the
+lookup stops with nothing, even though the node knows live nodes farther
+away. Edge case B2 shows this losing a file whose seeder is still
+online ([EDGE-CASES.md](docs/EDGE-CASES.md#b2--the-provider-record-holders-all-die)).
+It blocks the churn and recovery experiments. Fix it in `lookup.go`
+together with republishing, before measuring recovery.
 
 **Bottom line:** nothing here had to be undone before adding
 `STORE`/`FIND_VALUE` and TCP transfer, and it's all built now. Before the
