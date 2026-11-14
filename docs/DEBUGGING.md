@@ -90,7 +90,7 @@ Each node reads **console commands** from its terminal
 | `get <name>` | FIND_VALUE for SHA-1(name); says whether it was answered locally or via the network |
 | `share <path>` | publish a file; prints its content key |
 | `fetch <hex-key> <out-path>` | download a file; prints pieces per provider and any failed providers |
-| `files` | files this node can serve |
+| `files` | files this node can serve, with how many pieces it has (`has 7/16` while downloading) |
 
 Log lines and console output share the terminal. Use `--quiet` on the
 pane you're typing into. If you start a node in the background with `&`
@@ -217,11 +217,24 @@ can't forget it's on:
 WARN msg="DEBUG: delaying every piece this node serves" delay=150ms
 ```
 
-Example: repeat exercise (d) with `--debug-serve-delay 300ms` on the
-seeder's pane. Now you have ~5 seconds to `Ctrl+C` it while pane 3's
-download is still running, and you'll see that download fail (the
-"before" behavior; see DRY-RUN part 3). Don't use it for timing
-measurements: it's an artificial delay.
+Example: repeat exercise (d) with a 16-piece file
+(`head -c 1048576 /dev/urandom > /tmp/big.bin`, then `share /tmp/big.bin`)
+and `--debug-serve-delay 300ms` on every pane. Now a download takes a few
+seconds, long enough to `Ctrl+C` the seeder in the middle:
+
+- **One downloader:** nobody else has the missing pieces. You'll see
+  `download stalled …` warnings, and after 15 s
+  `fetch failed: … stalled`.
+- **Two downloaders** (start the second `fetch` before the kill): type
+  `files` in each pane to see `has N/16`. If together they already hold
+  all 16, they finish from each other after the kill. If not, the pieces
+  nobody had are gone and both stall.
+
+Don't use the flag for timing measurements: it's an artificial delay.
+
+`--max-inflight <n>` (default 4) caps how many pieces one download
+requests at once. Set it to 1 to watch rarest-first one piece at a time
+in the logs (`piece requested` / `piece received`).
 
 ### Scripts with many nodes: `scripts/lib/nodes.sh`
 
@@ -351,7 +364,10 @@ surprises.
 | a value arriving / being served | `Node.replyStore`, `Node.replyFindValue` (`node.go`) |
 | FIND_VALUE stopping early | the `if len(result.Values) > 0` check in `iterativeFind` (`lookup.go`) |
 | a provider answering a TCP request | `server.handleConn` / `server.answer` (`internal/transfer/server.go`) |
-| the downloader choosing a provider | `downloader.candidates`, `downloader.fetch` (`peer.go`) |
+| the downloader choosing the next piece and provider | `pickPiece` (`picker.go`), called from `swarmDownload.schedule` (`download.go`) |
+| a result coming back from a worker | `swarmDownload.handle` (`download.go`); inspect `ev`, `d.inflight`, `d.providers` |
+| why a download is (not) considered stalled | `swarmDownload.canProgress` (`download.go`) |
+| a peer refusing a piece it doesn't have yet | `Library.readPiece` (`library.go`) |
 | a piece failing verification | `Manifest.VerifyPiece` (`manifest.go`) |
 
 Useful VSCode features:
@@ -446,6 +462,9 @@ what "connection refused" is.
 | `fetch failed: … file exists` | Downloads never overwrite; pick a new output path. |
 | `no providers found` | Wrong key, or every node holding the provider records is gone (values aren't republished yet). |
 | A download pauses ~2 s before starting | Its `FIND_VALUE` round included a dead node (synchronous rounds; see DRY-RUN part 2). |
+| `download stalled: no live provider has the missing pieces` | Every node that had the missing pieces is gone. It keeps rediscovering for 15 s, then fails and deletes the partial file. |
+| `fetch failed: … is already in the library` | This node already shares or is downloading that key. |
+| After a long pause at a breakpoint in the download loop, providers get marked dead | While the loop is paused no new requests go out. Providers close connections idle for their IO timeout (10 s), and the next request on such a connection fails. Use logpoints, or pause only briefly. |
 | `bootstrap node … did not answer PING` | Seed not started yet, wrong port, or seed paused in the debugger with a short `--rpc-timeout`. |
 | Lookup shows `rpcs_failed` while debugging | Some node was paused at a breakpoint longer than `--rpc-timeout`. Raise it. |
 | A node "disappears" from another's table | It was evicted after failing a ping. Check the `--verbose` log of the node that dropped it. |

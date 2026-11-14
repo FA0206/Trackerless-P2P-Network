@@ -1,44 +1,59 @@
 #!/usr/bin/env bash
 #
-# "Before" demo: the seeder dies mid-download, and the file is LOST.
+# "After" demo: the seeder dies mid-download, and the file SURVIVES.
 #
 #   node1 shares a 1 MiB file (16 pieces). Three leechers (node2, node3,
 #   node4) start downloading it one after another. Then node1 is killed
-#   (SIGKILL) while every leecher is still mid-download.
+#   (SIGKILL) while every leecher is still mid-download -- at the first moment
+#   the leechers TOGETHER hold every piece, though none of them holds all.
 #
-# On this branch (main) a downloader only announces itself once it has the
-# whole file, and a failed download deletes its partial output. So when the
-# only complete copy disappears, nobody can finish, and the pieces that were
-# already sent are thrown away. This demo PASSES when exactly that happens:
-# every leecher reports "fetch failed" and no output file is left behind.
+# THE "BEFORE" VERSION LIVES ON main: there, the same scenario loses the file
+# (downloaders only announce complete files and fetch pieces in order, so
+# the leechers' pieces overlap and can never cover the file before one of
+# them finishes). The script keeps its name on this branch so that
+#   git diff main feature/parallel-partial-seeding -- scripts/demo-seeder-death.sh
+# shows exactly what changed: the kill rule and the verdict.
 #
-# Branch feature/parallel-partial-seeding changes the downloader so that the
-# same scenario succeeds; there, this script's expectation is flipped.
+# On this branch downloaders fetch rarest-first and serve pieces as soon as
+# they have them (docs/08-swarming.md), so after the seeder dies the leechers
+# finish from each other. This demo PASSES when every leecher ends up with a
+# byte-identical copy although no node held the whole file when the seeder
+# died.
 #
-# Timing: localhost transfers take milliseconds, so every node runs with
-# --debug-serve-delay (a DEBUG ONLY flag, off by default; docs/DEBUGGING.md)
-# and the script decides when to kill by watching the logs, never by
-# sleeping. Kill rule: as soon as the leechers TOGETHER hold every piece, or
-# the leading leecher has 3/4 of them, whichever comes first -- and never
-# after any leecher has finished.
+# Timing: every node runs with the DEBUG ONLY --debug-serve-delay (off by
+# default; docs/DEBUGGING.md), and the script watches logs instead of
+# sleeping. Kill rule: as soon as the leechers together hold every piece,
+# never after any leecher has finished. (main's version has a fallback --
+# "or the leading leecher has 3/4 of the pieces" -- because there the
+# leechers can never together hold every piece before one finishes. Here the
+# fallback would only kill the seeder before the pieces had spread.)
 #
-# Usage: scripts/demo-seeder-death.sh   (env: BASE_PORT=9200 DELAY=150ms)
+# Each leecher fetches ONE piece at a time (--max-inflight 1). Rarest-first
+# then sends that one request to a piece only the seeder has, so the swarm
+# as a whole runs ahead of every individual leecher and there is a clear
+# moment when the pieces have spread but nobody has them all. With more
+# parallelism the leechers copy each other so fast that "together they hold
+# everything" and "someone holds everything" arrive almost at once
+# (scripts/demo-parallel.sh shows the parallelism itself).
+#
+# Usage: scripts/demo-seeder-death.sh   (env: BASE_PORT=9200 DELAY=150ms MAXINFLIGHT=1)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 . scripts/lib/nodes.sh
 
 BASE_PORT="${BASE_PORT:-9200}"
 DELAY="${DELAY:-150ms}"
+MAXINFLIGHT="${MAXINFLIGHT:-1}"
 K=3
 PIECES=16
 LEECHERS="2 3 4"
 SEED_PREFIX=demo
 
 nodes_init
-echo "Starting 5 nodes on ports $BASE_PORT-$((BASE_PORT + 4)) (k=$K, --debug-serve-delay $DELAY)..."
-start_node 0 "$BASE_PORT" - --k "$K" --debug-serve-delay "$DELAY"
+echo "Starting 5 nodes on ports $BASE_PORT-$((BASE_PORT + 4)) (k=$K, --debug-serve-delay $DELAY, --max-inflight $MAXINFLIGHT)..."
+start_node 0 "$BASE_PORT" - --k "$K" --debug-serve-delay "$DELAY" --max-inflight "$MAXINFLIGHT"
 for i in 1 2 3 4; do
-	start_node "$i" $((BASE_PORT + i)) "$BASE_PORT" --k "$K" --debug-serve-delay "$DELAY"
+	start_node "$i" $((BASE_PORT + i)) "$BASE_PORT" --k "$K" --debug-serve-delay "$DELAY" --max-inflight "$MAXINFLIGHT"
 done
 
 head -c $((PIECES * 65536)) /dev/urandom >"$WORK/original.bin"
@@ -69,49 +84,42 @@ send 4 "fetch $KEY $WORK/node4.bin"
 wait_pieces 4 1
 
 union_count() { for i in $LEECHERS; do pieces_received "$i"; done | sort -n -u | wc -l | tr -d ' '; }
-leading_count() {
-	local best=0 n
-	for i in $LEECHERS; do
-		n="$(count "$i")"
-		[ "$n" -le "$best" ] || best="$n"
-	done
-	echo "$best"
-}
-any_finished() {
-	for i in $LEECHERS; do
-		if grep -q '^fetched ' "$WORK/node$i.log"; then return 0; fi
-	done
-	return 1
-}
-
 echo
 echo "=== Waiting for the kill moment ==="
 REASON=""
 waited=0
 while [ -z "$REASON" ]; do
-	if any_finished; then
-		echo "FAIL: a leecher finished before the kill moment; the timing assumption broke (try a larger DELAY)."
+	# One snapshot per check: a leecher with all pieces counts as finished
+	# even before its console prints "fetched".
+	FINISHED=""
+	AT_KILL=""
+	for i in $LEECHERS; do
+		c="$(count "$i")"
+		AT_KILL="$AT_KILL node$i:$c/$PIECES"
+		if [ "$c" -ge "$PIECES" ] || grep -q '^fetched ' "$WORK/node$i.log"; then FINISHED="node$i"; fi
+	done
+	if [ -n "$FINISHED" ]; then
+		echo "FAIL: $FINISHED finished before the leechers together held every piece; the timing assumption broke."
 		exit 1
 	fi
 	if [ "$(union_count)" -ge "$PIECES" ]; then
 		REASON="the leechers together hold all $PIECES pieces"
-	elif [ "$(leading_count)" -ge $((PIECES * 3 / 4)) ]; then
-		REASON="the leading leecher has $((PIECES * 3 / 4)) of $PIECES pieces"
 	fi
 	sleep 0.05
 	waited=$((waited + 1))
 	[ "$waited" -lt 1200 ] || { echo "FAIL: kill moment never came" >&2; exit 1; }
 done
-echo "  kill moment: $REASON"
+echo "  kill moment: $REASON; none has finished ($AT_KILL )"
 
 echo
-echo "=== Killing the seeder (node1, SIGKILL) ==="
+echo "=== Killing the seeder (node1, SIGKILL); the leechers carry on from each other ==="
 kill_node 1
 for i in $LEECHERS; do
-	wait_for_log "$WORK/node$i.log" '^fetch' 60
+	wait_for_log "$WORK/node$i.log" '^fetch' 90
 done
 for i in $LEECHERS; do
-	echo "  node$i: $(grep '^fetch' "$WORK/node$i.log" | head -1)"
+	echo "  node$i: $(grep '^fetch' "$WORK/node$i.log" | head -1 | sed -E 's/ into [^ ]+//')"
+	awk '/^fetch/{on=1;next} on && /^    /{print "  " $0; next} on{exit}' "$WORK/node$i.log"
 done
 
 # ranges: "0 1 2 5" on stdin -> "0-2,5"
@@ -120,26 +128,26 @@ ranges() {
 	     END{if(NR) printf "%s%s",s,(s==p?"":"-"p); else printf "none"}'
 }
 echo
-echo "=== What had spread when the seeder died (from the leechers' logs) ==="
+echo "=== Pieces each leecher received in total, from anyone (from the logs) ==="
 for i in $LEECHERS; do
 	echo "  node$i: $(count "$i")/$PIECES pieces  [$(pieces_received "$i" | ranges)]"
 done
 echo "  together: $(union_count)/$PIECES pieces  [$(for i in $LEECHERS; do pieces_received "$i"; done | sort -n -u | ranges)]"
 
 echo
-echo "=== Verdict (main: the file is expected to be lost) ==="
+echo "=== Verdict (this branch: the file is expected to survive) ==="
 STATUS=0
 for i in $LEECHERS; do
-	if grep -q '^fetch failed' "$WORK/node$i.log" && [ ! -e "$WORK/node$i.bin" ]; then
-		echo "  node$i: download failed and left no partial file  (expected)"
+	if grep -q '^fetched' "$WORK/node$i.log" && cmp -s "$WORK/original.bin" "$WORK/node$i.bin"; then
+		echo "  node$i: complete, byte-identical to the original"
 	else
-		echo "  node$i: UNEXPECTED: $(grep '^fetch' "$WORK/node$i.log" | head -1); file exists: $([ -e "$WORK/node$i.bin" ] && echo yes || echo no)"
+		echo "  node$i: NOT complete: $(grep '^fetch' "$WORK/node$i.log" | head -1)"
 		STATUS=1
 	fi
 done
 echo
 if [ "$STATUS" -eq 0 ]; then
-	echo "PASS: the seeder died before any leecher finished, and the file was lost -- the pieces already sent were thrown away."
+	echo "PASS: the seeder died before any leecher finished and no node had the whole file, yet every leecher completed it from the others."
 else
 	echo "FAIL"
 fi

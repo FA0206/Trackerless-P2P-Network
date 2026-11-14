@@ -504,51 +504,38 @@ breaking a hash.
 
 ### How does a leecher know what order the pieces go in when it rebuilds the file?
 
-From the **piece index**, never from arrival order. `PieceHashes[i]` in
-the manifest is the hash of the file's `i`-th chunk (`BuildManifest`).
-The downloader asks for piece `i` by index (`GET_PIECE`, sent from
-`providerConn.fetch` in `client.go`). The provider reads bytes
-`[i·PieceSize, …)` (`Library.readPiece`). The downloader checks them
-against `PieceHashes[i]` (`Manifest.VerifyPiece`) and writes them at
-`PieceOffset(i)` (`f.WriteAt` in `downloader.fetchPiecesInto`,
-`peer.go`). The step-by-step path, with file and line references, is in
+From the **piece index**, never from arrival order. That matters on this
+branch, where pieces routinely arrive out of order. The path:
+
+- `PieceHashes[i]` in the manifest is the hash of the file's `i`-th chunk
+  (`BuildManifest`).
+- The picker chooses an index (`pickPiece`, `picker.go`), and
+  `swarmDownload.startPiece` (`download.go`) asks a provider for that
+  index (`GET_PIECE`, via `providerConn.fetch` in `client.go`).
+- The provider reads bytes `[i·PieceSize, …)` (`Library.readPiece`), but
+  only if piece `i`'s bit is set.
+- The worker checks the bytes against `PieceHashes[i]`
+  (`Manifest.VerifyPiece`). `swarmDownload.handle` writes them at
+  `PieceOffset(i)` (`file.WriteAt`), then publishes the piece
+  (`Library.markHave`).
+
+The step-by-step path is in
 [07, "How the downloader knows where each piece goes"](07-file-transfer-over-tcp.md#how-the-downloader-knows-where-each-piece-goes).
-
-### Why can't leechers finish when pieces were already sent?
-
-Because on `main`, pieces a leecher holds are invisible and, if the
-download fails, deleted. `scripts/demo-seeder-death.sh` shows it: three
-leechers hold 13, 8, and 6 pieces when the seeder dies, and all three
-fail. The reasons, all in `internal/transfer/peer.go`:
-
-1. **Only complete files are announced or served.** `Peer.announce` and
-   `Library.add` run at the end of `Peer.Download`. Until then, no other
-   leecher can learn that this one has anything, or fetch from it.
-2. **Pieces are fetched in order (`0, 1, 2, …`).** Every leecher holds a
-   prefix, and the prefixes overlap. In the demo, 27 pieces held between
-   three leechers cover only pieces 0–12. Pieces 13–15 lived only on the
-   seeder.
-3. **A failed download deletes its output** (`fetchPiecesInto`'s cleanup),
-   since there's no resume.
-
-So after the seeder dies, the only provider record anyone has points at
-a dead node: "every provider failed". Full trace:
-[DRY-RUN part 3](DRY-RUN.md#part-3--scriptsdemo-seeder-deathsh-the-file-is-lost).
-Branch `feature/parallel-partial-seeding` fixes 1 and 2.
 
 ### Can this network handle pieces arriving out of order?
 
-On `main`: **the format can, the downloader never tries.**
-Positioning, verification, and `WriteAt` are all per-index, and a
-provider answers any index in any order. But `fetchPiecesInto` requests
-pieces strictly `0, 1, 2, …`, one at a time. And because replies don't
-carry the index, each connection must keep one request outstanding at a
-time. Details:
-[07, "Can pieces arrive out of order?"](07-file-transfer-over-tcp.md#can-pieces-arrive-out-of-order).
+**Yes, and on this branch it does so routinely.** The downloader picks
+pieces rarest-first with random tie-breaks and keeps up to
+`--max-inflight` (default 4) requests in flight on different
+connections. Pieces arrive in whatever order providers answer, e.g.
+`2, 11, 6, 15, 10, 8, …` in DRY-RUN part 5's parallel demo. Placement,
+verification, and serving are all per index, so order doesn't matter.
 
-Branch `feature/parallel-partial-seeding` changes this. It fetches out of
-order (rarest-first), concurrently over several connections, and lets
-peers serve pieces before they have the whole file.
+What still constrains it: **one outstanding request per connection**,
+because replies don't repeat the index, so there's no pipelining. On
+`main` the downloader requested `0, 1, 2, …` strictly one at a time,
+although the format already allowed any order. Details:
+[07, "Can pieces arrive out of order?"](07-file-transfer-over-tcp.md#can-pieces-arrive-out-of-order).
 
 ### Why SHA-1 for node IDs but SHA-256 for files?
 

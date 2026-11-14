@@ -239,6 +239,6 @@ func (c *consoleEnv) files() {
 		return
 	}
 	for _, f := range list {
-		fmt.Fprintf(c.out, "%s  %s  %d bytes, %d pieces  (%s)\n", f.Key, f.Name, f.Size, f.Pieces, f.Path)
+		fmt.Fprintf(c.out, "%s  %s  %d bytes, has %d/%d pieces  (%s)\n", f.Key, f.Name, f.Size, f.Have, f.Pieces, f.Path)
 	}
 }

@@ -43,7 +43,7 @@ func startNodes(t *testing.T, n int) []testNode {
 		}
 		node.Start()
 		t.Cleanup(func() { node.Close() })
-		peer, err := transfer.NewPeer(node, 0, 2*time.Second)
+		peer, err := transfer.NewPeer(node, transfer.Config{IOTimeout: 2 * time.Second})
 		if err != nil {
 			t.Fatal(err)
 		}

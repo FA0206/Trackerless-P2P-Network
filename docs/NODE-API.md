@@ -520,7 +520,7 @@ cmd/node  ──(--api)──►  internal/nodeapi  ──►  internal/transfer
   accessors the console's `table` and `files` use. Control handlers call
   the same methods the console calls, and those were already safe to run
   concurrently: each lookup and each download keeps its own state
-  (ARCHITECTURE.md invariant 9). A slow HTTP client can't block packet
+  (ARCHITECTURE.md invariant 10). A slow HTTP client can't block packet
   handling.
 
 ### The event stream: a tap on the logger
