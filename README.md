@@ -29,7 +29,7 @@ evaluation includes performance graphs:
 | **Peer discovery (the DHT core):** 160-bit IDs, XOR metric, k-bucket routing table, `PING`/`FIND_NODE` over UDP, joining via one known node, iterative α-parallel lookup | ✅ Done | `main` — this README, [docs 01–05](#documentation) |
 | Unit + integration tests for the core; runnable demos (5-process chain, 20-node random joins with brute-force-checked lookups) | ✅ Done | `internal/kademlia/*_test.go`, `scripts/demo.sh`, `scripts/demo-big-network.sh` |
 | Debugging tooling: logs, per-node console, VSCode debug configs | ✅ Done | [docs/DEBUGGING.md](docs/DEBUGGING.md) |
-| Edge-case stress tests: node setups chosen to find what breaks | ✅ Done: 6 cases (A2 thundering herd, A3 bridge between islands, A4 tiny buckets, B1 half the network dies, B2 record holders die, B3 late joiners), ranked by fix priority. `scripts/edge/run-all.sh` runs them all. Fixing them, on `feature/edge-case-fixes` ([FIXES.md](docs/FIXES.md)): lookups no longer come back short after deaths (B1, B2), and nodes that stop answering are skipped once stale (B1) | `scripts/edge/`, [docs/EDGE-CASES.md](docs/EDGE-CASES.md) |
+| Edge-case stress tests: node setups chosen to find what breaks | ✅ Done: 6 cases (A2 thundering herd, A3 bridge between islands, A4 tiny buckets, B1 half the network dies, B2 record holders die, B3 late joiners), ranked by fix priority. `scripts/edge/run-all.sh` runs them all. Fixing them, on `feature/edge-case-fixes` ([FIXES.md](docs/FIXES.md)): lookups no longer come back short after deaths (B1, B2), nodes that stop answering are skipped once stale (B1), and values are republished, so B2's and B3's lost values come back by themselves | `scripts/edge/`, [docs/EDGE-CASES.md](docs/EDGE-CASES.md) |
 | `STORE` / `FIND_VALUE` (the DHT holds "who has file X") | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/06](docs/06-store-and-find-value.md) |
 | File transfer over TCP: pieces, SHA-256 verification, content keys | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/07](docs/07-file-transfer-over-tcp.md) |
 | Share a file / download it from the CLI; transfer demo | ✅ Done | `share` / `fetch` console commands, `scripts/demo-transfer.sh` |
@@ -265,13 +265,13 @@ repeat the same joins and targets. Walkthrough of a 3-round lookup:
 ### Edge cases (what breaks)
 
 ```sh
-bash scripts/edge/run-all.sh                   # all six, one verdict line each (~2 min)
+bash scripts/edge/run-all.sh                   # all six, one verdict line each (~2.5 min)
 bash scripts/edge/a2-thundering-herd.sh        # env: N=20 K=4 BASE_PORT=9425 SEED=1 RACE=1
 bash scripts/edge/a3-bridge-between-islands.sh # env: BASE_PORT=9450
 bash scripts/edge/a4-tiny-buckets.sh           # env: N=20 BASE_PORT=9475 SEED=1
 bash scripts/edge/b1-half-the-network-dies.sh  # env: N=16 K=4 KILL=8 TARGETS=4 BASE_PORT=9500 SEED=1
-bash scripts/edge/b2-record-holders-die.sh     # env: N=8 BASE_PORT=9525 SEED=1
-bash scripts/edge/b3-late-joiners-hide-a-value.sh  # env: N=8 LATE=4 BASE_PORT=9550 SEED=1
+bash scripts/edge/b2-record-holders-die.sh     # env: N=8 BASE_PORT=9525 SEED=1 REPUBLISH=15s
+bash scripts/edge/b3-late-joiners-hide-a-value.sh  # env: N=8 LATE=4 BASE_PORT=9550 SEED=1 REPUBLISH=20s
 ```
 
 Scripts in `scripts/edge/` set up specific node graphs to find the
@@ -312,22 +312,25 @@ With `--stale-after 1`, pass 3 is already clean. How each fix was found
 and checked: [FIXES.md](docs/FIXES.md).
 
 B2 kills the 3 nodes holding a file's provider record while the seeder
-stays up. The file can't be found. Before the lookup fix, re-sharing
-didn't bring it back either. Now it does:
+stays up. The file can't be found, until the seeder's next republish
+(paper Sec. 2.5) stores the record on the 3 closest live nodes:
 
 ```
   node4: fetch failed: transfer: no providers found for 93accc52…
-  node1's re-announce lookup: rounds=2 rpcs_sent=6 rpcs_failed=3 closest_found=3
-PASS: with every record holder dead the file could not be found, though 2 providers were online, until the seeder shared it again.
+  node1 republished 12.86s after step 3 ended
+  its republish lookup: rounds=2 rpcs_sent=6 rpcs_failed=3 closest_found=3
+PASS: with every record holder dead the file could not be found, though 2 providers were online, until the seeder's next republish brought it back.
 ```
 
 B3 adds 4 nodes whose IDs are closer to a stored value's key than its
-holders. Nobody dies, yet most newcomers can't find the value. A re-`put`
-moves it to them:
+holders. Nobody dies, yet most newcomers can't find the value, until
+the next republish moves it to them:
 
 ```
     node8  MISS  0 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
   as predicted: 3 of 4 newcomers missed it, though both holders are alive
+  node1 republished 16.23s after step 3 ended: values=1 stored_at=2 stored_locally=false failed=0
+  as predicted: the republish reached the 2 closest nodes, which are newcomers
 ```
 
 Catalogue, predictions, explanations, and the cases ranked by fix
@@ -365,6 +368,7 @@ Then type console commands into a node's terminal:
 | `--verbose` / `--quiet` | debug-level / warnings-only logging |
 | `--console` | read console commands from stdin (default true; use `--console=false` for background processes) |
 | `--k`, `--alpha`, `--rpc-timeout` | protocol parameters (20, 3, 2s); raise `--rpc-timeout` when using breakpoints |
+| `--republish-interval <d>` | how often a node stores again what it published and what it holds for others (default 1h, the paper's number; negative = off). Lets values survive their holders dying and reach closer newcomers ([06](docs/06-store-and-find-value.md#republishing-keeping-values-on-the-k-closest-live-nodes)) |
 | `--stale-after <n>` | failed RPCs in a row before a contact is stale: kept in the table, but lookups and replies skip it until it's heard from again (default 5, the paper's number; negative = never) ([02](docs/02-routing-table-and-kbuckets.md#stale-contacts-a-node-that-stops-answering)) |
 
 ### Tests
@@ -425,6 +429,7 @@ internal/kademlia/   the DHT (see docs/ARCHITECTURE.md for dependencies)
   node.go            Config, RPC engine, receive path + replies, eviction, Bootstrap
   lookup.go          iterative alpha-parallel lookup (FIND_NODE and FIND_VALUE)
   values.go          Store, FindValue
+  republish.go       republish loop: publisher and holder passes (paper Sec. 2.5)
   logging.go         structured stdout logs
 internal/framing/    [4-byte length][body] frames, for UDP datagrams and TCP streams
 internal/transfer/   file sharing on top of the DHT
@@ -470,7 +475,8 @@ Here is whether each one blocks the end goal:
 | Stale contacts: no replacement cache, no exponential backoff ([02](docs/02-routing-table-and-kbuckets.md#stale-contacts-a-node-that-stops-answering)) | No. A stale contact is replaced only when a new contact for its bucket messages us; lookups just skip it. | Keep; refresh refills buckets. |
 | **No bucket refresh** — neither the post-join refresh nor the paper's hourly refresh ([04](docs/04-bootstrap-and-join.md)) | **Yes, for churn.** A node that never sends an RPC to its dead contacts never marks them stale, and keeps handing them out in replies, where they can hide a live node (B1, SEED=4). Edge cases show more: a quiet island cut off by one death never reconnects (A3), and with k = 1, routing tables stay so empty that lookups go wrong with nobody dead (A4) ([EDGE-CASES](docs/EDGE-CASES.md)). | Before the seeder-kill experiments. Refresh traffic also belongs in the control-bytes count. |
 | No lookup early-exit heuristic ([05](docs/05-iterative-parallel-lookup.md)) | Slightly inflates RPC counts. | Optional, before the graphs. |
-| **Values never expire or get republished** ([06](docs/06-store-and-find-value.md)) | **Yes, for churn.** Dead providers' records linger (one wasted connection each), and records don't move to closer nodes that join later. Edge cases B2 and B3 show both ([EDGE-CASES](docs/EDGE-CASES.md)). | Before the seeder-kill and recovery experiments. |
+| **Values never expire** ([06](docs/06-store-and-find-value.md)) | Not for recovery (republish handles that), but dead providers' records linger: a downloader wastes one failed connection on each, and holders keep republishing them. Needs each STORE to carry the remaining lifetime. | Before long-running churn experiments. |
+| Republish: one interval for holders and the original publisher (paper: 1 h and 24 h); no lookup-free republish ([06](docs/06-store-and-find-value.md)) | No. More publisher traffic than the paper's, and one lookup per key per interval. | Keep; count republish traffic in the control-bytes graph. |
 | No caching of found values ([06](docs/06-store-and-find-value.md)) | No. | Keep. |
 | One failure drops a provider for the whole download; no retries; no resume ([07](docs/07-file-transfer-over-tcp.md), [08](docs/08-swarming.md)) | Not yet. | Revisit with real networks / Wi-Fi. |
 | One outstanding request per provider, no pipelining ([08](docs/08-swarming.md)) | No; limits one provider's throughput. | Before throughput/download-time graphs, if it shows. |
@@ -488,6 +494,10 @@ Here is whether each one blocks the end goal:
 - A node that stopped answering was asked again on every lookup. Now
   it's stale after 5 failed RPCs in a row (`--stale-after`), and lookups
   and replies skip it ([02](docs/02-routing-table-and-kbuckets.md), B1).
+- Values lived only on the nodes chosen when they were stored. Now
+  publishers and holders republish them (`--republish-interval`,
+  [06](docs/06-store-and-find-value.md)), so they survive their holders
+  dying and reach closer newcomers (B2, B3).
 
 **Found by the edge cases, not fixed yet:** a node only learns that a
 contact is dead by sending it an RPC. Nodes that just answer requests
@@ -498,8 +508,8 @@ keep handing out their dead contacts, where they can hide a live node
 end goal, is done on this branch. Before the end-goal measurements, in
 roughly this order:
 
-1. **lookup failure handling, synchronous rounds, bucket refresh, and
-   value expiry/republish**, so churn (killing the seeder) is handled the way the paper intends
+1. **synchronous rounds, bucket refresh, and value expiry** (lookup
+   failure handling and republish are done), so churn (killing the seeder) is handled the way the paper intends
    before measuring recovery time. The swarm already hides them during
    downloads (they run in workers), but they still cost seconds in
    discovery after a death.

@@ -30,22 +30,25 @@ bash scripts/edge/a2-thundering-herd.sh        # env: N=20 K=4 QUERIERS=4 TARGET
 bash scripts/edge/a3-bridge-between-islands.sh # env: BASE_PORT=9450 (nothing random, no SEED)
 bash scripts/edge/a4-tiny-buckets.sh           # env: N=20 QUERIERS=5 TARGETS=4 BASE_PORT=9475 SEED=1
 bash scripts/edge/b1-half-the-network-dies.sh  # env: N=16 K=4 KILL=8 TARGETS=4 MAX_PASSES=10 BASE_PORT=9500 SEED=1 NODE_FLAGS=
-bash scripts/edge/b2-record-holders-die.sh     # env: N=8 BASE_PORT=9525 SEED=1
-bash scripts/edge/b3-late-joiners-hide-a-value.sh  # env: N=8 LATE=4 BASE_PORT=9550 SEED=1
+bash scripts/edge/b2-record-holders-die.sh     # env: N=8 BASE_PORT=9525 SEED=1 REPUBLISH=15s
+bash scripts/edge/b3-late-joiners-hide-a-value.sh  # env: N=8 LATE=4 BASE_PORT=9550 SEED=1 REPUBLISH=20s
 ```
 
-`run-all.sh` on the current code (with the lookup fix and stale
-contacts; B1 and B2's predictions changed with them, see their sections
-and [FIXES.md](FIXES.md)):
+`run-all.sh` on the current code (with the lookup fix, stale contacts
+and republishing; B1, B2 and B3's predictions changed with them, see
+their sections and [FIXES.md](FIXES.md)):
 
 ```
-a2-thundering-herd                 12s  PASS: 19 nodes joined through one node at once; lookups were correct and no data race was reported.
-a3-bridge-between-islands          24s  PASS: an unused bridge's death split the network for good; a bridge that had carried one lookup each way could die harmlessly.
-a4-tiny-buckets                    19s  PASS: with nothing dead, k=4 lookups were all correct and k=1 lookups were not.
-b1-half-the-network-dies           61s  PASS: after half the network died, lookups paid a timeout per dead node, but no answer came back short, and by pass 7 the querier had stopped asking dead nodes.
-b2-record-holders-die              16s  PASS: with every record holder dead the file could not be found, though 2 providers were online, until the seeder shared it again.
-b3-late-joiners-hide-a-value        7s  PASS: newcomers closer to the key missed a value whose holders were alive; re-putting moved it to them.
+a2-thundering-herd                  7s  PASS: 19 nodes joined through one node at once; lookups were correct and no data race was reported.
+a3-bridge-between-islands          22s  PASS: an unused bridge's death split the network for good; a bridge that had carried one lookup each way could die harmlessly.
+a4-tiny-buckets                    14s  PASS: with nothing dead, k=4 lookups were all correct and k=1 lookups were not.
+b1-half-the-network-dies           59s  PASS: after half the network died, lookups paid a timeout per dead node, but no answer came back short, and by pass 7 the querier had stopped asking dead nodes.
+b2-record-holders-die              41s  PASS: with every record holder dead the file could not be found, though 2 providers were online, until the seeder's next republish brought it back.
+b3-late-joiners-hide-a-value       42s  PASS: newcomers closer to the key missed a value whose holders were alive, until the putter's next republish moved it to them.
 ```
+
+B2 and B3 take ~40 s because they wait for real republishes (15 s and
+20 s intervals).
 
 The cases were written before swarming ([08](08-swarming.md)) was merged
 in, and re-run after it with the same verdicts. Swarming changes only
@@ -60,8 +63,8 @@ still fails at once with the same message, so B2's file case is unchanged.
 | A3 bridge between islands | **breaks if quiet** | quiet: 0 of 5 found across, forever; used: 5 of 5 | no bucket refresh | bucket refresh (Sec. 2.3) |
 | A4 tiny buckets | **breaks at k = 1** | k=1: 9–14 of 20 correct; k=4: 20 of 20 | thin routing tables: no post-join refresh | post-join bucket refresh (Sec. 2.3) |
 | B1 half the network dies | **slow at first, recovers; was wrong** | was: every answer short, and repeats no better. Now: none short; 2–8 s per lookup right after the kill, back to ms after 1 repeat (`--stale-after 1`) or 3–6 (default 5); SEED=4 still misses a live node | dead contacts in other nodes' tables (own shortlists and learning fixed) | **done:** drop failed candidates (Sec. 2.3), stale contacts (Sec. 4.1). Planned: bucket refresh |
-| B2 record holders die | **breaks until re-shared** | file unfindable with 2 providers online; a manual re-share brings it back (it didn't before the lookup fix) | no republish | republish (Sec. 2.5); the lookup fix it needed is done |
-| B3 late joiners | **breaks** | 13 of 16 newcomer `get`s miss; holders alive | values never move to closer nodes | republish / hand over on join (Sec. 2.5) |
+| B2 record holders die | **breaks until the next republish** | file unfindable with 2 providers online until the seeder's next republish (13–15 s later with a 15 s interval), which brings it back by itself | records written only at share time (fixed: republish) | **done:** lookup fix, republish (Sec. 2.5). Not yet: expiry |
+| B3 late joiners | **breaks until the next republish** | 13 of 16 newcomer `get`s miss; holders alive; the next republish moves the value to them | values move to closer nodes only at a republish | **done:** republish (Sec. 2.5). Not yet: hand-over on join |
 
 **The main finding** (B1 and B2 both show it): a lookup only
 ever started from the k closest contacts in the routing table, a contact
@@ -83,7 +86,9 @@ values stay where they were first stored. A quiet island cut off from
 the rest never reconnects (A3). With k = 1, joins reach so few nodes
 that lookups stop at nodes with empty buckets (A4). Nodes that join near
 a key can't see a value sitting on healthy holders (B3). The paper's
-bucket refresh and hourly republish (Sec. 2.3, 2.5) are what's missing.
+bucket refresh and hourly republish (Sec. 2.3, 2.5) were what was
+missing. **Republish is built now** (B2 and B3 recover at the next
+republish); bucket refresh is next.
 
 **What holds up:** concurrency. Twenty processes joining through one
 node at the same instant, all built with the race detector, gave correct
@@ -98,8 +103,8 @@ and by how much else depends on fixing it first.
 | Rank | Case | Problem | Why this rank | Fix | Where |
 |---|---|---|---|---|---|
 | 1 | **B1** | Lookups around dead nodes are wrong (short answers) and slow, and don't improve. **Short answers and not improving: fixed.** Slow right after a death, and dead contacts in other nodes' replies: open | The root cause underneath B2. Every churn experiment runs into it, including the seeder-kill and time-to-recovery graph, and the answers are *wrong*, not just slow. A small change in one function | Drop failed candidates from the k-closest list so the lookup continues to live nodes; remove a contact after repeated RPC failures. For the latency graph: keep α RPCs in flight instead of synchronous rounds | `lookup.go`, `node.go`, `bucket.go` |
-| 2 | **B2** | A file becomes unfindable when its record holders die, even with providers online | Directly the end goal ("downloads keep working when nodes leave") and the recovery graph. Needs fix 1 first, or the republish lookup stalls on the same dead contacts | Republish values hourly; expire them after 24 h (Sec. 2.5) | `store.go`, `values.go` |
-| 3 | **B3** | Newcomers near a key can't see its value | Same family as B2, but nothing is lost: the holders are alive. Hourly republishing from fix 2 resolves it over time | Fix 2, plus: when a node meets a newcomer closer to a key it holds, it STOREs the value there (Sec. 2.5) | `node.go` (`touchContact`) |
+| 2 | **B2** | A file becomes unfindable when its record holders die, even with providers online. **Fixed: the next republish brings it back** | Directly the end goal ("downloads keep working when nodes leave") and the recovery graph. Needs fix 1 first, or the republish lookup stalls on the same dead contacts | Republish values hourly; expire them after 24 h (Sec. 2.5) | `store.go`, `values.go` |
+| 3 | **B3** | Newcomers near a key can't see its value. **Fixed one interval late by republishing**; hand-over on join: open | Same family as B2, but nothing is lost: the holders are alive. Hourly republishing from fix 2 resolves it over time | Fix 2, plus: when a node meets a newcomer closer to a key it holds, it STOREs the value there (Sec. 2.5) | `node.go` (`touchContact`) |
 | 4 | **A3** | A quiet group cut off by one node's death never reconnects | Matters for the multi-device demo (two LANs started separately) and for long-idle networks. Busy networks connect themselves through traffic, so it rarely bites today | Bucket refresh: a lookup for a random ID in every bucket not used for a while (Sec. 2.3) | `node.go` |
 | 5 | **A4** | With k = 1, lookups go wrong with nobody dead | Only matters for k ≤ 2. Every demo uses k ≥ 3, where all lookups were correct. Shares its code with fix 4 | After joining, refresh every bucket farther away than the closest neighbor (Sec. 2.3) | `node.go` (`Bootstrap`) |
 | — | **A2** | — | Holds up; nothing to fix | — | — |
@@ -117,8 +122,13 @@ handling (fixes B1, unblocks B2); **(b)** republish and hand-over
   and lookups and replies skip it (paper Sec. 4.1). B1's "nothing was
   learned" flipped. B1 now repeats its lookups until the querier stops
   asking dead nodes, which measures time to recovery.
-- **next:** (b) republish, then (c) bucket refresh. Each step's
-  investigation, change and evidence is in [FIXES.md](FIXES.md).
+- **(b), republish, done:** publishers and holders store their values
+  again every `--republish-interval` (paper Sec. 2.5). B2's and B3's
+  step 4 (a manual re-share or re-`put`) became "wait for the next
+  republish". Hand-over on join (B3 at once, not one interval later) and
+  expiry are not built.
+- **next:** (c) bucket refresh. Each step's investigation, change and
+  evidence is in [FIXES.md](FIXES.md).
 
 Each fix will flip some of these scripts to FAIL. Then update that script's
 prediction and its section here in the same change, as
@@ -139,8 +149,8 @@ code.
 | A4 | Tiny buckets (k = 1, 2, 4) on the same 20 nodes | k = 1 returns wrong nodes with nothing dead; k = 4 doesn't | [section](#a4--tiny-buckets) |
 | **B. Churn** | | | |
 | B1 | Kill half the nodes, then repeat the same lookups until none asks a dead node | +1 RPC timeout per round with a dead contact at first; the querier **learns** (stale contacts) and gets back to milliseconds. No answer is **short** (they were before the lookup fix) | [section](#b1--half-the-network-dies-at-once) |
-| B2 | Every node holding a file's provider record dies; the seeder stays up | The file can't be found until the seeder **shares it again** (which didn't help before the lookup fix) | [section](#b2--the-provider-record-holders-all-die) |
-| B3 | Late joiners with IDs closer to a key than its holders | Newcomers' `get`s miss it, though the holders are alive; a re-`put` moves it to them | [section](#b3--late-joiners-closer-to-a-key) |
+| B2 | Every node holding a file's provider record dies; the seeder stays up | The file can't be found until the seeder's **next republish** brings it back by itself | [section](#b2--the-provider-record-holders-all-die) |
+| B3 | Late joiners with IDs closer to a key than its holders | Newcomers' `get`s miss it, though the holders are alive, until the putter's next republish moves it to them | [section](#b3--late-joiners-closer-to-a-key) |
 
 **Ports.** Each case has its own block so they can run side by side with
 the demos: A2 9425, A3 9450, A4 9475, B1 9500, B2 9525, B3 9550 (override
@@ -750,12 +760,20 @@ file instead` line that appears with some seeds.
 
 ### Steps and prediction
 
+The seeder republishes what it published every `REPUBLISH` (default
+15 s; [06](06-store-and-find-value.md#republishing-keeping-values-on-the-k-closest-live-nodes)).
+Every other node keeps the paper's 1 h, so only the seeder's republish
+plays a part.
+
 | Step | What happens | Prediction |
 |---|---|---|
 | 1 | node2 downloads (control) | works, and node2 becomes a provider |
-| 2 | kill the 3 holders; ping node1 and node2 | both providers answer |
-| 3 | node4 downloads | **fails: "no providers found"**, with 2 providers online |
-| 4 | node1 shares the file again, then node5 downloads | **works**: the record reaches the 3 closest live nodes (this flipped with the lookup fix; see below) |
+| 2 | right after one of node1's republishes: kill the 3 holders; ping node1 and node2 | both providers answer |
+| 3 | node4 downloads, before node1's next republish | **fails: "no providers found"**, with 2 providers online |
+| 4 | nobody does anything until node1's next republish; then node5 downloads | **works**: the republish puts the record on the 3 closest live nodes |
+
+Killing the holders right after a republish leaves step 3 a whole
+interval, so it sees the network with no republish in between.
 
 ### Real output (`SEED=1`)
 
@@ -766,48 +784,61 @@ file instead` line that appears with some seeds.
   holders (from logs):    node0 node3 node6  (nodes that logged "value stored")
 
 === Step 1 (control): node2 downloads while the holders are alive ===
-  node2: fetched "shared-1-1.bin" (262144 bytes, 4 pieces) in 9ms
+  node2: fetched "shared-1-1.bin" (262144 bytes, 4 pieces) in 4ms
   node2's copy is identical; node2 is now a provider too
 
-=== Step 2: kill the 3 record holders (SIGKILL) ===
+=== Step 2: right after one of node1's republishes, kill the 3 record holders (SIGKILL) ===
+  node1 republished its record (every 15s); killing the holders now
   killed node0
   killed node6
   killed node3
   providers still online, pinged from node4:
-    PONG from 127.0.0.1:9526 in 966µs
-    PONG from 127.0.0.1:9527 in 870µs
+    PONG from 127.0.0.1:9526 in 719µs
+    PONG from 127.0.0.1:9527 in 416µs
 
 === Step 3: node4 tries to download (predicted: no record found) ===
   node4: fetch failed: transfer: no providers found for 93accc525bce78b07f7868ba330d890537216c3d
   its FIND_VALUE: values_found=0 rounds=3 rpcs_sent=6 rpcs_failed=3
   as predicted: the file is online on 2 nodes, but nobody can find them
 
-=== Step 4: node1 shares the file again (predicted: this brings it back) ===
-  node1's re-announce lookup: rounds=2 rpcs_sent=6 rpcs_failed=3 closest_found=3
-  node1's store:              stored_at=2 stored_locally=true failed=0
-  as predicted: the lookup skipped the dead holders and the record went to the 3 closest live nodes
-  node5: fetched "shared-1-1.bin" (262144 bytes, 4 pieces) in 6.017s
+=== Step 4: nobody does anything; node1's next republish (predicted: brings it back) ===
+  node1 republished 12.86s after step 3 ended
+  its republish lookup: rounds=2 rpcs_sent=6 rpcs_failed=3 closest_found=3
+  its republish:        values=1 stored_at=2 stored_locally=true failed=0
+  as predicted: the republish skipped the dead holders and the record went to the 3 closest live nodes
+  node5: fetched "shared-1-1.bin" (262144 bytes, 4 pieces) in 6.076s
   as predicted: node5 found the new record and its copy is identical
 
-PASS: with every record holder dead the file could not be found, though 2 providers were online, until the seeder shared it again.
+PASS: with every record holder dead the file could not be found, though 2 providers were online, until the seeder's next republish brought it back.
 ```
 
-The 3 closest live nodes include node1 itself, so the record went to two
-others plus node1's own store (`stored_at=2 stored_locally=true`).
-node5's download took 6 s, not milliseconds: its lookups still ask the
-dead holders first and wait 2 s for each round that includes one (its
-`FIND_VALUE` logged `rpcs_failed=2`).
+The record came back with nobody doing anything. node5's download took
+6 s, not milliseconds: node5's own lookups still ask the dead holders
+first, at 2 s per round. They aren't stale yet for node5, which hasn't
+sent them 5 RPCs.
+
+`SEED=2` and `SEED=3` (both of which needed a renamed file) give the same
+verdict. Their republishes came 13.01 s and 14.73 s after step 3 ended.
+
+### How step 4 changed with each fix
+
+| Code | Step 4 | Result |
+|---|---|---|
+| original | node1 shares the file again by hand | **fails**: its lookup stops at the dead holders, and the record stays on node1 alone |
+| + lookup fix ([FIXES.md](FIXES.md#2-lookups-skip-dead-candidates-b1-b2)) | node1 shares the file again by hand | works: the lookup skips the dead holders |
+| + republishing ([FIXES.md](FIXES.md#4-republishing-b2-b3)) | nobody does anything | works: node1's next republish does the re-share |
 
 ### Step 3: why the file can't be found
 
 A downloader finds providers only through `FIND_VALUE(key)`, which asks
 the nodes closest to the key. Those are exactly the 3 dead holders. The
-record was written once, at share time, and nothing ever copies it
-anywhere else: values are never republished (`store.go`,
-`SIMPLIFICATION`; README simplifications table, "Values never expire or
-get republished"). In the paper, every holder republishes hourly
-(Sec. 2.5), which keeps the record on the k closest *live* nodes as
-holders die.
+record was last written by node1's republish just before the kill, and
+nothing copies it anywhere else until the next one. Holders republish
+too, but all of them died together. Between republishes, a key whose
+holders all die is unfindable. The shorter the interval, the shorter
+that gap; the paper's 1 h makes it long, but it's rare for all k
+holders to die within an hour (Sec. 2.2: k "is chosen such that any
+given k nodes are very unlikely to fail within an hour of each other").
 
 ### Step 4: re-sharing didn't help before the lookup fix
 
@@ -865,16 +896,17 @@ the table) is still true, which is why node5's download takes 6 s.
 
 A file is online on two nodes but invisible as soon as the few nodes
 near its key die together. Churn there is enough to lose a file, even if
-the seeder never leaves. Sharing it again brings it back, now that the
-lookup gets past the dead holders.
+the seeder never leaves. **Now it comes back by itself** at the
+publisher's next republish, with no manual re-share.
 
 | Fix | Status | Where | Paper |
 |---|---|---|---|
 | Drop failed candidates from a lookup's shortlist, so live nodes farther out move up | **done** | `lookup.go` (`iterativeFind`) | Sec. 2.3 |
 | Seed a lookup from the whole routing table | **done** | `lookup.go` | Sec. 2.3 |
-| Republish values hourly; expire after 24 h. That makes step 4 automatic | not yet | `store.go`, `values.go` | Sec. 2.5 |
-| Remove a contact after repeated RPC failures, not only on a full-bucket ping. That makes node5's download fast again | not yet | `node.go`, `bucket.go` | Sec. 4.1 (stale after 5 failures) |
-| Bucket refresh, so a node learns live replacements for the dead | not yet | `node.go` | Sec. 2.3, 2.5 |
+| Stale after repeated RPC failures, so lookups stop asking dead nodes | **done** (each node learns from its own RPCs, so node5's first download still pays) | `stale.go`, `node.go` | Sec. 4.1 |
+| Republish (publisher and holders). That makes step 4 automatic | **done** | `republish.go`, `values.go`, `store.go` | Sec. 2.5 |
+| Expire values 24 h after publication, so dead providers' records go away | not yet | `store.go`, STORE message | Sec. 2.3 |
+| Bucket refresh, so a node learns live replacements for the dead | planned | `node.go` | Sec. 2.3, 2.5 |
 
 **Republish needed the lookup fix first.** The 3 holders died at the
 same moment, so none of them could republish. The publisher's own
@@ -923,7 +955,12 @@ How the script controls this:
 | 1 | every other node `get`s it (control) | all find it |
 | 2 | 4 newcomers join, all closer to the key | the 2 closest nodes are now newcomers |
 | 3 | everyone `get`s it again | **newcomers miss it**, though both holders are alive |
-| 4 | node1 `put`s it again; the other newcomers `get` it | the value moves to the 2 closest (newcomers); all find it |
+| 4 | nobody does anything until node1's next republish; the other newcomers `get` it | the value moves to the 2 closest (newcomers); all find it |
+
+node1 (the putter) republishes what it published every `REPUBLISH`
+(default 20 s; [06](06-store-and-find-value.md#republishing-keeping-values-on-the-k-closest-live-nodes)),
+and every other node keeps the paper's 1 h. The newcomers join right
+after one of node1's republishes, so steps 2 and 3 see none.
 
 **Why step 3 should fail.** A `get` is a FIND_VALUE lookup that starts
 from the k closest contacts in the querier's own routing table
@@ -932,11 +969,11 @@ newcomers, since they're closest to the key. They don't have the value,
 and they answer with the contacts *they* know closest to the key: more
 newcomers. With k = 2, the lookup can run out of unqueried candidates
 before it ever reaches a holder. Nothing moves the value toward the
-newcomers: values are never republished (`store.go`, `SIMPLIFICATION`).
-In the paper, holders republish every hour, and that is how a value
-reaches nodes that join closer to its key (Sec. 2.5). A newly joined
-node is also supposed to be handed the values it is now closest to
-(Sec. 2.5); there's no such step here either.
+newcomers until the next republish ([06](06-store-and-find-value.md#republishing-keeping-values-on-the-k-closest-live-nodes)),
+whose fresh lookup finds them. That is the paper's mechanism too
+(Sec. 2.5). The paper also hands a newly joined node the values it's now
+closest to, right when it joins (Sec. 2.5). That isn't built, so until
+the next republish, newcomers miss the value.
 
 ### Real output (`SEED=1`)
 
@@ -949,10 +986,14 @@ node is also supposed to be handed the values it is now closest to
 
 === Step 1 (control): every other node gets it ===
     node0  found 1 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
-    …                                                   (node1, 2, 4, 5, 6 the same)
+    node1  found 1 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
+    node2  found 1 value(s) via network: rounds=2 rpcs_sent=4 rpcs_failed=0
+    node4  found 1 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
+    node5  found 1 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
+    node6  found 1 value(s) via network: rounds=2 rpcs_sent=4 rpcs_failed=0
   as predicted: 6 of 6 found it
 
-=== Step 2: 4 nodes join, each closer to the key than both holders ===
+=== Step 2: right after one of node1's republishes, 4 nodes join, each closer to the key than both holders ===
     node8 joined: id 0eb1a3ae…  distance to key 001c24db…  (seed "edgeb3-late-1-50")
     node9 joined: id 0f11c5bf…  distance to key 01bc42ca…  (seed "edgeb3-late-1-97")
     node10 joined: id 0cc6589c…  distance to key 026bdfe9…  (seed "edgeb3-late-1-207")
@@ -962,7 +1003,11 @@ node is also supposed to be handed the values it is now closest to
 
 === Step 3: everyone gets it again (the holders are still alive) ===
     node0  found 1 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
-    …                                                   (node1, 2, 4, 5, 6 the same)
+    node1  found 1 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
+    node2  found 1 value(s) via network: rounds=2 rpcs_sent=4 rpcs_failed=0
+    node4  found 1 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
+    node5  found 1 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
+    node6  found 1 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
     node8  MISS  0 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
     node9  MISS  0 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
     node10 found 1 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
@@ -970,24 +1015,33 @@ node is also supposed to be handed the values it is now closest to
   original nodes: 6 of 6 found it (reported, not asserted)
   as predicted: 3 of 4 newcomers missed it, though both holders are alive
 
-=== Step 4: node1 puts the same value again (a manual republish) ===
-  stored on:  node8 node9
-  as predicted: the re-put reached the 2 closest nodes, which are newcomers
+=== Step 4: nobody does anything; node1's next republish (predicted: moves it to the newcomers) ===
+  node1 republished 16.23s after step 3 ended: values=1 stored_at=2 stored_locally=false failed=0
+  now stored on: node8 node9 (of the 2 closest: node8 node9 )
+  as predicted: the republish reached the 2 closest nodes, which are newcomers
     node10 found 1 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
     node11 found 1 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
   as predicted: 2 of 2 other newcomers find it now
 
-PASS: newcomers closer to the key missed a value whose holders were alive; re-putting moved it to them.
+PASS: newcomers closer to the key missed a value whose holders were alive, until the putter's next republish moved it to them.
 ```
+
+node1 republished 16 s after step 3 ended (its interval is 20 s, and
+steps 2 and 3 took about 4 s), with nobody doing anything. Before
+republishing existed, step 4 was a manual re-`put` by node1, with the
+same result.
 
 **Seeds 1–4:**
 
-| SEED | newcomers that missed (step 3) | original nodes that found it (step 3) | newcomers that found it after the re-put |
+| SEED | newcomers that missed (step 3) | original nodes that found it (step 3) | newcomers that found it after step 4 |
 |---|---|---|---|
 | 1 | 3 of 4 | 6 of 6 | 2 of 2 |
 | 2 | 3 of 4 | 6 of 6 | 2 of 2 |
 | 3 | 3 of 4 | 6 of 6 | 2 of 2 |
 | 4 | 4 of 4 | 6 of 6 | 2 of 2 |
+
+Seeds 1–3 were re-run with republishing and gave the same counts; the
+SEED=4 row is from the manual re-`put` version.
 
 ### The prediction we got wrong: node10 found it
 
@@ -1020,20 +1074,23 @@ newcomers, they would start missing it too.
 
 A value is only as findable as its placement is up to date. Nodes that
 join near a key, which are exactly the nodes a lookup converges on, can
-be blind to it while it sits on two healthy holders. This is the "values
-don't move to closer nodes" half of the README's "Values never expire or
-get republished" simplification. B2 is the other half, "values vanish
-when their holders die".
+be blind to it while it sits on two healthy holders. This was the
+"values don't move to closer nodes" half of the old "Values never expire
+or get republished" simplification. B2 was the other half, "values
+vanish when their holders die".
 
-Step 4 shows the fix works when the lookup is healthy. Unlike B2, nobody
-is dead here, so the re-put's lookup finds the true 2 closest nodes, and
-the value moves to them.
+**Republishing fixes it, one interval late.** Unlike B2, nobody is dead
+here, so the republish's lookup finds the true 2 closest nodes, and the
+value moves to them. Until then, newcomers miss it. Holders republish
+too (the Go test `TestHolderRepublishReachesACloserNewcomer` covers
+that, with the publisher gone). This script only shortens the putter's
+interval, so step 4 is the publisher's pass.
 
-| Fix (not made here) | Where | Paper |
-|---|---|---|
-| Holders republish every hour, so values drift to whoever is closest now | `store.go`, `values.go` | Sec. 2.5 |
-| When a node learns of a newcomer closer to a key it holds, it STOREs the value there | `node.go` (`touchContact`) | Sec. 2.5 |
-| Caching: the searcher stores a found value at the closest node on its path that lacked it | `values.go` (`FindValue`) | Sec. 2.3 |
+| Fix | Status | Where | Paper |
+|---|---|---|---|
+| Republish (publisher and holders), so values drift to whoever is closest now | **done** | `republish.go` | Sec. 2.5 |
+| When a node learns of a newcomer closer to a key it holds, it STOREs the value there at once, not one interval later | not yet | `node.go` (`touchContact`) | Sec. 2.5 |
+| Caching: the searcher stores a found value at the closest node on its path that lacked it | not planned | `values.go` (`FindValue`) | Sec. 2.3 |
 
 ### A flaky FAIL that was the script's fault
 

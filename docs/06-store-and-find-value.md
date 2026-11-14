@@ -109,11 +109,53 @@ sharing stores small JSON provider records. They're `[]byte` in Go and
 base64 on the wire, because JSON strings can't carry arbitrary bytes
 intact.
 
+## Republishing: keeping values on the k closest live nodes
+
+A value lands on the k closest nodes *at the moment it's stored*. Two
+things make that set go out of date (paper Sec. 2.5): its holders die,
+and new nodes join closer to the key. Edge cases B2 and B3 show both
+([EDGE-CASES.md](EDGE-CASES.md)). The paper's answer is to store values
+again periodically, and so does `republish.go`. Every
+`--republish-interval` (default 1 h, the paper's number) each node runs
+two passes:
+
+- **publisher:** every (key, value) this node itself `Store`d is stored
+  again. `Store` remembers each one, even if that attempt failed. This
+  is what saves a value when **all** its holders die at once (B2): no
+  holder survives to republish, but the publisher does.
+- **holder:** every key this node holds for others is stored again,
+  *unless it got a STORE for that key during the last interval*. The
+  paper's reasoning: whoever sent that STORE sent it to the other k−1
+  closest nodes too, so they're up to date. With timers that aren't in
+  step, about one holder per key republishes each interval. This keeps a
+  value alive after its publisher has left.
+
+Each republish of a key is a fresh lookup, then STOREs to whatever k
+closest nodes it finds now: one lookup per key, one STORE per value per
+node. The lookup skips dead and stale nodes ([05](05-iterative-parallel-lookup.md)),
+so a republish moves values off dead holders and onto newcomers. Each
+key logs one line:
+
+```
+level=INFO msg="republish complete" node=… key=93accc52… reason=publisher values=1 stored_at=2 stored_locally=true failed=0
+```
+
+In B2, the seeder's next republish after the holders died put its
+provider record on the 3 closest live nodes, and a new leecher then
+downloaded the file. In B3, the putter's next republish put the value on
+the two newcomers closest to the key.
+
+**Choosing the interval** is a trade-off between traffic and recovery
+time. The paper's 1 h suits real networks. The edge-case scripts give
+just the publisher 15–20 s, so a recovery fits in one run.
+
 ## SIMPLIFICATIONS (and whether they block the end goal)
 
 | Paper feature | Here | Effect |
 |---|---|---|
-| Republish every hour; expire after 24 h (Sec. 2.3, 2.5) | Values never expire, and nobody republishes | Records of dead providers linger (a downloader wastes one failed connection on them). Values don't move to closer nodes that join later. **Fix before churn experiments.** |
+| Republish: holders hourly, original publisher every 24 h (Sec. 2.3, 2.5) | Both passes run every `--republish-interval` (default 1 h) | More publisher traffic than the paper's. Harmless; it also recovers faster. |
+| Expire values 24 h after publication (Sec. 2.3) | Values never expire | Records of dead providers linger (a downloader wastes one failed connection on them), and a holder's republish keeps copying them. Fixing it needs each STORE to carry the value's remaining lifetime. Not needed for B2/B3. |
+| Skip the lookup before a holder's republish, using split buckets (Sec. 2.5) | Every republish starts with a lookup | One lookup per key per interval. Fine at this scale; needs bucket splitting ([02](02-routing-table-and-kbuckets.md)). |
 | Cache the value at the closest node that didn't have it (Sec. 2.3) | No caching | Popular keys put all load on their k holders. Fine at this scale. |
 | Stop the instant one reply contains the value | Stops after the round that found it (rounds are synchronous, [05](05-iterative-parallel-lookup.md)) | A dead node in that round still costs a full RPC timeout. The demo shows this: a 2 s stall in part 3. |
 | — | Anyone can STORE anything under any key | Fine for a course demo. Consumers must validate values (the file layer does). |
@@ -127,14 +169,23 @@ intact.
 | Sending one STORE / FIND_VALUE | `Node.storeRPC`, `Node.findValueRPC` | `node.go` |
 | Publishing to the k closest | `Node.Store`, `selfAmongClosest` | `values.go` |
 | Finding a value | `Node.FindValue` → `iterativeFind(…, true)` | `values.go`, `lookup.go` |
-| Local storage, limits | `valueStore`, `maxValueSize`, `maxValuesPerKey` | `store.go` |
+| Local storage, limits, when each key was last stored | `valueStore`, `maxValueSize`, `maxValuesPerKey`, `notRefreshedSince` | `store.go` |
+| Republishing (publisher and holder passes) | `publications`, `Node.republishLoop`, `republishOnce`, `republishKey`; `Node.storeOnClosest` (shared with `Store`) | `republish.go`, `values.go` |
 
 Tests: `store_test.go` (distinct values per key, cap, copies, datagram
 fit) and `values_test.go`. The latter checks over real UDP, with 8 nodes
 and `k = 3`, that a stored value lands on **exactly** the 3 nodes a
 brute-force sort says are closest, and that every node can find it, some
 via the network. It also covers several publishers under one key, a
-missing key, and an oversize value.
+missing key, and an oversize value. `republish_test.go` covers
+republishing:
+- the store's refresh bookkeeping;
+- a holder skipping a key it just got a STORE for;
+- B2 in Go: every holder dies, and the publisher's republish makes the
+  value findable again;
+- B3 in Go: the publisher leaves, and a holder's republish reaches a
+  newcomer closer to the key;
+- `Close` stopping the loop.
 
 ## What's next
 

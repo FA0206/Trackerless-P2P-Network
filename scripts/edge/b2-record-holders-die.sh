@@ -8,26 +8,29 @@
 #   the 3 nodes whose IDs are closest to the content key (paper Sec. 2.3),
 #   and the seeder is chosen so it isn't one of them.
 #
+#   The seeder republishes what it published every REPUBLISH (default
+#   15s; republish.go, paper Sec. 2.5). Every other node keeps the
+#   paper's 1h, so only the seeder's republish can play a part here.
+#
 #   1. Control: a leecher downloads the file. It works.
-#   2. The 3 record holders are killed (SIGKILL). The seeder and the first
-#      leecher, who both have the file, stay up and answer PING.
-#   3. A second leecher tries to download: FIND_VALUE finds no record.
-#   4. The seeder shares the file again (a manual "republish"). A third
+#   2. Right after one of the seeder's republishes, the 3 record holders
+#      are killed (SIGKILL). The seeder and the first leecher, who both
+#      have the file, stay up and answer PING.
+#   3. A second leecher tries to download, before the next republish.
+#   4. Nobody does anything until the seeder's next republish. A third
 #      leecher tries to download.
 #
 # Prediction: step 3 fails with "no providers found", although two
-# providers are online. Values are never republished (store.go,
-# SIMPLIFICATION), so records live only on the nodes chosen at share time.
+# providers are online: the record lived only on the dead holders.
 #
-# Step 4 works: the seeder's re-announce lookup meets the dead holders,
-# skips past them to the k closest LIVE nodes (lookup.go, paper Sec. 2.3)
-# and stores the record there, and the third leecher's FIND_VALUE finds
-# it. Re-sharing by hand is what republishing would do automatically.
-# (Before the lookup fix, failed candidates kept their places among the k
-# closest, so step 4 failed too; see docs/EDGE-CASES.md.)
+# Step 4 works: the seeder's republish looks the key up again, skips the
+# dead holders (lookup.go, Sec. 2.3), and stores the record on the k
+# closest LIVE nodes, where the third leecher's FIND_VALUE finds it.
+# (Before republishing existed, step 4 was a manual re-share; before the
+# lookup fix, even that failed. See docs/EDGE-CASES.md.)
 # The script PASSES when all four steps behave as predicted.
 #
-# Usage: scripts/edge/b2-record-holders-die.sh   (env: N=8 BASE_PORT=9525 SEED=1)
+# Usage: scripts/edge/b2-record-holders-die.sh   (env: N=8 BASE_PORT=9525 SEED=1 REPUBLISH=15s)
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 . scripts/lib/nodes.sh
@@ -39,6 +42,10 @@ BASE_PORT="${BASE_PORT:-9525}"
 SEED="${SEED:-1}" # picks the file's bytes, and so its content key
 SEED_PREFIX=edgeb2-
 SEEDER=1
+# The seeder's republish interval. Step 3 must finish within one interval
+# (its lookups wait 2s per round that meets a dead holder), so not much
+# shorter than this.
+REPUBLISH="${REPUBLISH:-15s}"
 
 nodes_init
 node_ids_init "$N"
@@ -46,7 +53,11 @@ ALL="$(seq 0 $((N - 1)) | tr '\n' ' ')"
 echo "Starting $N nodes on ports $BASE_PORT-$((BASE_PORT + N - 1)), k=$K, all joining via node0 (SEED=$SEED)..."
 start_node 0 "$BASE_PORT" - --k "$K"
 for ((i = 1; i < N; i++)); do
-	start_node "$i" $((BASE_PORT + i)) "$BASE_PORT" --k "$K"
+	if [ "$i" -eq "$SEEDER" ]; then
+		start_node "$i" $((BASE_PORT + i)) "$BASE_PORT" --k "$K" --republish-interval "$REPUBLISH"
+	else
+		start_node "$i" $((BASE_PORT + i)) "$BASE_PORT" --k "$K"
+	fi
 done
 
 echo
@@ -100,8 +111,19 @@ else
 	STATUS=1
 fi
 
+# republished_count: how many times the seeder has republished KEY as its
+# publisher (republish.go logs one "republish complete" line per key per pass).
+republished_count() {
+	count_lines "$WORK/node$SEEDER.log" "msg=\"republish complete\" .*key=$KEY reason=publisher"
+}
+
 echo
-echo "=== Step 2: kill the $K record holders (SIGKILL) ==="
+echo "=== Step 2: right after one of node$SEEDER's republishes, kill the $K record holders (SIGKILL) ==="
+# Killing just after a republish leaves step 3 a whole interval before
+# the next one, so step 3 sees the network without any republish.
+R0="$(republished_count)"
+wait_for_count "$WORK/node$SEEDER.log" "msg=\"republish complete\" .*key=$KEY reason=publisher" $((R0 + 1)) 60
+echo "  node$SEEDER republished its record (every $REPUBLISH); killing the holders now"
 for i in $HOLDERS; do
 	kill_node "$i"
 	echo "  killed node$i"
@@ -132,22 +154,23 @@ else
 fi
 
 echo
-echo "=== Step 4: node$SEEDER shares the file again (predicted: this brings it back) ==="
-SHARES="$(count_lines "$WORK/node$SEEDER.log" "content key:")"
-send "$SEEDER" "share $FILE"
-wait_for_count "$WORK/node$SEEDER.log" "content key:" $((SHARES + 1)) 60
+echo "=== Step 4: nobody does anything; node$SEEDER's next republish (predicted: brings it back) ==="
+R1="$(republished_count)"
+T0="$(now_ms)"
+wait_for_count "$WORK/node$SEEDER.log" "msg=\"republish complete\" .*key=$KEY reason=publisher" $((R1 + 1)) 60
+echo "  node$SEEDER republished $(fmt_ms $(($(now_ms) - T0))) after step 3 ended"
 LOOKUP="$(grep "msg=\"lookup converged\".*target=$KEY" "$WORK/node$SEEDER.log" | tail -1 | grep -o 'rounds=.*' || true)"
-STORE="$(grep "msg=\"store complete\".*key=$KEY" "$WORK/node$SEEDER.log" | tail -1 | grep -o 'stored_at=.*' || true)"
-echo "  node$SEEDER's re-announce lookup: $LOOKUP"
-echo "  node$SEEDER's store:              $STORE"
-case "$LOOKUP $STORE" in
+REPUB="$(grep "msg=\"republish complete\" .*key=$KEY reason=publisher" "$WORK/node$SEEDER.log" | tail -1 | grep -o 'values=.*' || true)"
+echo "  its republish lookup: $LOOKUP"
+echo "  its republish:        $REPUB"
+case "$LOOKUP $REPUB" in
 *"rpcs_failed=0"*)
-	echo "  UNEXPECTED: the re-announce lookup never met a dead holder"
+	echo "  UNEXPECTED: the republish lookup never met a dead holder"
 	STATUS=1 ;;
 *"closest_found=$K"*"failed=0")
-	echo "  as predicted: the lookup skipped the dead holders and the record went to the $K closest live nodes" ;;
+	echo "  as predicted: the republish skipped the dead holders and the record went to the $K closest live nodes" ;;
 *)
-	echo "  UNEXPECTED: the re-announce didn't reach $K live nodes"
+	echo "  UNEXPECTED: the republish didn't reach $K live nodes"
 	STATUS=1 ;;
 esac
 send "$L3" "fetch $KEY $WORK/node$L3.bin"
@@ -162,7 +185,7 @@ fi
 
 echo
 if [ "$STATUS" -eq 0 ]; then
-	echo "PASS: with every record holder dead the file could not be found, though 2 providers were online, until the seeder shared it again."
+	echo "PASS: with every record holder dead the file could not be found, though 2 providers were online, until the seeder's next republish brought it back."
 else
 	echo "FAIL (repeat this exact run with SEED=$SEED)"
 fi

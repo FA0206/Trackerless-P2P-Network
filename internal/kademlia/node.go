@@ -32,6 +32,10 @@ type Node struct {
 	rt          *RoutingTable
 	stale       *staleTracker // nodes that failed several RPCs in a row (stale.go)
 	store       *valueStore
+	published   *publications // what this node itself Stored, for republishing
+	republish   time.Duration // republish interval; <= 0 = off (republish.go)
+	stop        chan struct{} // closed by Close: stops the republish loop
+	stopOnce    sync.Once
 	transport   *Transport
 	logger      *slog.Logger
 	advertiseIP string
@@ -59,7 +63,11 @@ type Config struct {
 	Alpha       int           // default DefaultAlpha
 	RPCTimeout  time.Duration // default DefaultRPCTimeout
 	StaleAfter  int           // failed RPCs in a row before a node is stale; default DefaultStaleAfter, < 0 = never
-	Logger      *slog.Logger  // default NewLogger(ID, Info)
+	// RepublishInterval: how often this node stores again what it
+	// published and what it holds (republish.go, paper Sec. 2.5).
+	// Default DefaultRepublishInterval (1 h); < 0 turns republishing off.
+	RepublishInterval time.Duration
+	Logger            *slog.Logger // default NewLogger(ID, Info)
 }
 
 // NewNode creates a node listening on cfg.Port. Call Start to begin
@@ -83,6 +91,9 @@ func NewNode(cfg Config) (*Node, error) {
 	if cfg.StaleAfter == 0 {
 		cfg.StaleAfter = DefaultStaleAfter
 	}
+	if cfg.RepublishInterval == 0 {
+		cfg.RepublishInterval = DefaultRepublishInterval
+	}
 	transport, err := NewTransport(cfg.Port, cfg.Logger)
 	if err != nil {
 		return nil, err
@@ -94,6 +105,9 @@ func NewNode(cfg Config) (*Node, error) {
 		ID:          cfg.ID,
 		rt:          rt,
 		stale:       stale,
+		published:   newPublications(),
+		republish:   cfg.RepublishInterval,
+		stop:        make(chan struct{}),
 		store:       newValueStore(),
 		transport:   transport,
 		logger:      cfg.Logger,
@@ -130,10 +144,15 @@ func (n *Node) Start() {
 			n.logger.Error("transport listen loop exited with error", "error", err)
 		}
 	}()
+	if n.republish > 0 {
+		go n.republishLoop(n.republish)
+	}
 }
 
-// Close shuts down the node's socket.
+// Close stops the republish loop and shuts down the node's socket. Safe to
+// call more than once.
 func (n *Node) Close() error {
+	n.stopOnce.Do(func() { close(n.stop) })
 	return n.transport.Close()
 }
 

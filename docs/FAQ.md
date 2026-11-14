@@ -339,28 +339,36 @@ full `FIND_VALUE` reply inside one UDP datagram.
 
 ### What if the k nodes holding a value all die? Can I just store it again?
 
-The value is gone: nothing republishes it. Storing it again does work.
-The node's routing table still lists the dead holders as its closest
-contacts to the key, so its lookup times out on them first. But a failed
-contact gives up its place to the next-closest one
-([05](05-iterative-parallel-lookup.md)), and the value lands on the k
-closest live nodes. It costs a few seconds of timeouts.
+You don't have to: the publisher does it by itself. Every
+`--republish-interval` (default 1 h) a node stores again everything it
+published ([06](06-store-and-find-value.md#republishing-keeping-values-on-the-k-closest-live-nodes)).
+Its lookup times out on the dead holders first, but a failed contact
+gives up its place to the next-closest one
+([05](05-iterative-parallel-lookup.md)), so the value lands on the k
+closest live nodes. Until that republish, the value can't be found.
 [EDGE-CASES.md, case B2](EDGE-CASES.md#b2--the-provider-record-holders-all-die)
-shows both halves with real output. (Before the lookup fix, the re-store
-failed too: the lookup gave up after the dead holders and kept the value
-only locally.) Doing that re-store automatically is the paper's
-republish (Sec. 2.5), which isn't built yet.
+shows it with real output: the file is unfindable right after the
+kill, and back 13 s later, at the seeder's next republish (15 s
+interval). Storing it again by hand works too, and does the same thing
+sooner.
+
+If the publisher has left as well, the value is gone: holders republish
+too, but here all of them died.
 
 ### A node joins with an ID closer to a key than the nodes holding it. Does it get the value?
 
-No. A value stays on the nodes chosen when it was stored. Nothing copies
-it to newcomers, because there's no republish and no hand-over on join
-(the paper has both, Sec. 2.5). Worse, the newcomers can't *find* it.
-Their lookups start from their closest contacts, which are other
-newcomers, and with a small k they may never get past them to a holder.
+Yes, at the next republish, not at once. The value stays on the nodes
+chosen when it was stored until its publisher or a holder republishes it
+([06](06-store-and-find-value.md#republishing-keeping-values-on-the-k-closest-live-nodes)).
+That republish's fresh lookup finds the newcomers, and the value moves to
+them. Until then the newcomers can't even *find* it. Their lookups start
+from their closest contacts, which are other newcomers, and with a small
+k they may never get past them to a holder.
 [EDGE-CASES.md, case B3](EDGE-CASES.md#b3--late-joiners-closer-to-a-key)
-shows 13 of 16 such lookups failing while the holders were alive, and a
-re-`put` fixing it.
+shows 13 of 16 such lookups failing while the holders were alive, and
+the putter's next republish fixing it. The paper also hands a newcomer
+the values it's closest to right when it joins (Sec. 2.5). That isn't
+built.
 
 ## File transfer (TCP)
 

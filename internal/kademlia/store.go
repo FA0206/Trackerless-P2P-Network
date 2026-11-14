@@ -3,6 +3,7 @@ package kademlia
 import (
 	"bytes"
 	"sync"
+	"time"
 )
 
 // Limits on what a node will hold for others. Both exist because a
@@ -25,18 +26,25 @@ const (
 // than replacing (like BitTorrent's DHT, which keeps a list of peers per
 // file). Storing an identical value again just marks it most recent.
 //
-// SIMPLIFICATION: values never expire, and nobody republishes them. The
-// paper re-publishes every hour and expires values after 24 h (Sec. 2.3,
-// 2.5), which is how stale records (e.g. from a node that left) disappear
-// and how records migrate to newly joined nodes that are closer to the
-// key. Here a value lives until the node holding it exits.
+// It also remembers when each key last got a STORE, so the republish loop
+// (republish.go) can skip keys another node just republished (paper
+// Sec. 2.5).
+//
+// SIMPLIFICATION: values never expire. The paper expires a value 24 h
+// after publication unless its publisher publishes it again (Sec. 2.3), so
+// records of nodes that left disappear. Doing that needs each STORE to
+// carry the value's remaining lifetime, so a holder's republish doesn't
+// extend it; that's a separate step. Here a value lives until the node
+// holding it exits, and republishing (republish.go) keeps copying it.
 type valueStore struct {
-	mu     sync.Mutex
-	values map[ID][][]byte // per key: oldest first
+	mu        sync.Mutex
+	values    map[ID][][]byte  // per key: oldest first
+	refreshed map[ID]time.Time // per key: when the last put happened
+	now       func() time.Time // time.Now; tests replace it
 }
 
 func newValueStore() *valueStore {
-	return &valueStore{values: make(map[ID][][]byte)}
+	return &valueStore{values: make(map[ID][][]byte), refreshed: make(map[ID]time.Time), now: time.Now}
 }
 
 // put adds value under key. Once a key holds maxValuesPerKey values, the
@@ -44,6 +52,7 @@ func newValueStore() *valueStore {
 func (s *valueStore) put(key ID, value []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.refreshed[key] = s.now()
 	vals := s.values[key]
 	for i, v := range vals {
 		if bytes.Equal(v, value) {
@@ -82,6 +91,26 @@ func (s *valueStore) snapshot() map[ID][][]byte {
 			copies[i] = bytes.Clone(v)
 		}
 		out[key] = copies
+	}
+	return out
+}
+
+// notRefreshedSince returns copies of the values of every key whose last
+// put is older than cutoff: the keys this holder should republish. A key
+// that got a STORE after cutoff is left out, because whoever sent that
+// STORE also sent it to the other k-1 closest nodes (paper Sec. 2.5).
+func (s *valueStore) notRefreshedSince(cutoff time.Time) map[ID][][]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[ID][][]byte)
+	for key, vals := range s.values {
+		if !s.refreshed[key].After(cutoff) {
+			copies := make([][]byte, len(vals))
+			for i, v := range vals {
+				copies[i] = bytes.Clone(v)
+			}
+			out[key] = copies
+		}
 	}
 	return out
 }

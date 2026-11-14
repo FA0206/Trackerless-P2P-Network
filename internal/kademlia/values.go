@@ -21,18 +21,33 @@ type StoreResult struct {
 // itself among the k closest, it keeps a copy too: the lookup never
 // returns ourselves, so we have to check that separately.
 //
-// SIMPLIFICATION: no republishing. The paper has every holder re-publish
-// hourly and the original publisher every 24 h (Sec. 2.5), which keeps
-// values alive as holders leave and moves them onto closer nodes that join
-// later. Here a value lives exactly on the nodes chosen at publish time.
+// This node also remembers that it published (key, value), and publishes
+// it again every Config.RepublishInterval (republish.go, paper Sec. 2.5),
+// so the value survives its holders dying and moves to closer nodes that
+// join later. It remembers even if this attempt fails: the next republish
+// may succeed.
 func (n *Node) Store(ctx context.Context, key ID, value []byte) (*StoreResult, error) {
 	if len(value) > maxValueSize {
 		return nil, fmt.Errorf("kademlia: value is %d bytes, limit is %d", len(value), maxValueSize)
 	}
+	n.published.add(key, value)
 	lookup, err := n.Lookup(ctx, key)
 	if err != nil {
 		return nil, err
 	}
+	result := n.storeOnClosest(ctx, key, value, lookup)
+	n.logger.Info("store complete", "key", key.String(), "stored_at", len(result.StoredAt),
+		"stored_locally", result.StoredLocally, "failed", result.Failed)
+	if len(result.StoredAt) == 0 && !result.StoredLocally {
+		return result, errors.New("kademlia: no node stored the value")
+	}
+	return result, nil
+}
+
+// storeOnClosest sends STORE(key, value) to the nodes a lookup for key
+// found, keeping a local copy too if this node is among the k closest.
+// Shared by Store and the republish loop. It logs nothing; callers do.
+func (n *Node) storeOnClosest(ctx context.Context, key ID, value []byte, lookup *LookupResult) *StoreResult {
 	result := &StoreResult{Key: key, Lookup: lookup}
 
 	targets := lookup.Closest
@@ -65,13 +80,7 @@ func (n *Node) Store(ctx context.Context, key ID, value []byte) (*StoreResult, e
 		}
 		result.StoredAt = append(result.StoredAt, o.contact)
 	}
-
-	n.logger.Info("store complete", "key", key.String(), "stored_at", len(result.StoredAt),
-		"stored_locally", result.StoredLocally, "failed", result.Failed)
-	if len(result.StoredAt) == 0 && !result.StoredLocally {
-		return result, errors.New("kademlia: no node stored the value")
-	}
-	return result, nil
+	return result
 }
 
 // selfAmongClosest reports whether self would be one of the k closest

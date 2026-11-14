@@ -23,6 +23,7 @@ Every fix follows the same steps:
 | 1 | [B3's flaky FAIL](#1-b3s-flaky-fail-a-script-bug) | `1ec8628` | test script |
 | 2 | [Lookups skip dead candidates](#2-lookups-skip-dead-candidates-b1-b2) | `de5a42d` | `lookup.go` |
 | 3 | [Stale contacts](#3-stale-contacts-b1-learning) | `3606ea6` | `stale.go`, `bucket.go`, `routingtable.go`, `node.go`, `lookup.go` |
+| 4 | [Republishing](#4-republishing-b2-b3) | the commit after `765ad6c` | `republish.go`, `values.go`, `store.go`, `node.go` |
 
 ---
 
@@ -195,4 +196,106 @@ LAN. The flag lets the evaluation compare both.
   that includes a dead node), because rounds are synchronous. Keeping α
   RPCs in flight would fix that (README: "Synchronous lookup rounds").
 - **B2 still needs a manual re-share:** republishing (Sec. 2.5), plan
-  step 3.
+  step 3. *Done in [fix 4](#4-republishing-b2-b3).*
+
+---
+
+## 4. Republishing (B2, B3)
+
+**Seen:** a value lived only on the nodes chosen when it was stored.
+- **B2:** when all 3 holders of a provider record died, the file was
+  unfindable although its seeder was online, and stayed that way. After
+  fix 2, a manual re-share brought it back.
+- **B3:** nodes that joined closer to a key couldn't see its value. A
+  manual re-`put` moved it to them.
+
+Both manual steps are what the paper does automatically.
+
+**The paper** (Sec. 2.3 and 2.5, read from the PDF):
+- every holder republishes each value hourly;
+- a holder that *received* a STORE for a key in the last hour skips it:
+  whoever sent that STORE sent it to the other k−1 closest nodes too;
+- the original publisher republishes every 24 h, and values expire 24 h
+  after publication.
+
+**Which part fixes what:**
+- B2 kills all the holders at once, so no holder survives to
+  republish. Only the **publisher's** republish can help.
+- B3 has no deaths. **Any** republish helps, because each one starts
+  with a fresh lookup, and that lookup finds the newcomers.
+
+**Scope decision:** both republish passes, but **not expiry**. Expiry
+needs each STORE to carry the value's remaining lifetime (a wire change),
+so that a holder's republish doesn't extend it. It solves a different
+problem (old records of departed providers), and neither B2 nor B3 needs
+it. It's listed as the remaining half of the simplification.
+
+**Change:**
+- `values.go`: `Store` remembers each (key, value) it publishes (in
+  `publications`, even if the attempt fails). The part that STOREs on
+  the k closest nodes a lookup found is split out as `storeOnClosest`,
+  so republishing reuses it.
+- `store.go`: the value store remembers when each key last got a STORE
+  (`notRefreshedSince`).
+- `republish.go`: every `--republish-interval` (default 1 h, the
+  paper's), a **publisher pass** (everything this node published) and a
+  **holder pass** (every held key without a STORE in the last interval).
+  Each key gets one fresh lookup, then STOREs, and one `republish
+  complete` log line. Keys are handled one at a time, each bounded like
+  a console operation.
+- `node.go`: `Config.RepublishInterval`; `Start` runs the loop; `Close`
+  stops it (safe to call twice).
+- `SIMPLIFICATION:` one interval for holders and publisher (the paper
+  uses 1 h and 24 h), no expiry, and no lookup-free republish (that
+  needs bucket splitting).
+
+**A detail that would have broken the scripts:** Go's `slog` text format
+only quotes a message that contains a space. A one-word message such as
+`republished` would print as `msg=republished`, unquoted, unlike every
+other message the scripts grep. It's named `republish complete`, to
+match `store complete`.
+
+**Tests** (`republish_test.go`):
+- the store's refresh bookkeeping (with a fake clock);
+- publications deduplicating;
+- a holder skipping a key it just got;
+- **B2 in Go:** all holders die, and the publisher's republish makes
+  the value findable again;
+- **B3 in Go:** the publisher leaves, and a holder's republish reaches
+  a newcomer whose ID differs from the key in the last bit;
+- `Close` stopping the loop.
+
+The republish tests passed 3 runs in a row under `-race`.
+
+**Scripts:** step 4 of B2 and B3 changed from "re-share or re-`put` by
+hand" to "wait for the next republish". Republishing makes timing
+matter, so:
+- only the seeder/putter gets a short interval (`REPUBLISH`: 15 s in
+  B2, 20 s in B3); every other node keeps 1 h. Otherwise, for example,
+  B2's first leecher, which becomes a provider and so a publisher,
+  could republish in the middle of step 3;
+- the holders are killed (B2), or the newcomers join (B3), right after
+  one of its republishes. Step 3 then has a whole interval before the
+  next one.
+
+**Verified:**
+
+| | step 3 | step 4 (no manual action) | seeds |
+|---|---|---|---|
+| B2 | file unfindable, 2 providers online | the seeder's republish came 12.9–14.7 s after step 3 and put the record on the 3 closest live nodes; a new leecher downloaded it | 1–3 PASS |
+| B3 | 3 of 4 newcomers miss the value | the putter's republish came 16–19 s after step 3 and put it on the 2 newcomers closest to the key; the other newcomers found it | 1–3 PASS |
+
+Every demo, race test and other edge case is unchanged: with the
+default 1 h interval, no republish happens while they run.
+
+**Still open:**
+- **Expiry,** so dead providers' records go away. Today a downloader
+  wastes one failed connection on each, and holders keep republishing
+  them.
+- **Hand-over on join** (Sec. 2.5): give a newcomer the values it's
+  closest to as soon as it joins, rather than one interval later.
+- **Between republishes, a key whose holders all died is unfindable.**
+  The paper accepts that: it chooses k so that k nodes rarely all fail
+  within an hour.
+- **Plan step 4: bucket refresh.** It fixes A3 and A4, and the dead
+  contacts that other nodes hand out (B1, SEED=4).

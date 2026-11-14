@@ -460,7 +460,7 @@ what "connection refused" is.
 |---|---|
 | `bind: address already in use` | A node from an earlier run is still alive (it holds both UDP and TCP on that port number). Find it: `lsof -nP -i :9000`, then `kill <pid>`. |
 | `fetch failed: … file exists` | Downloads never overwrite; pick a new output path. |
-| `no providers found` | Wrong key, or every node holding the provider records is gone (values aren't republished yet). |
+| `no providers found` | Wrong key, or every node holding the provider records is gone. The providers' next republish (`--republish-interval`, default 1 h) puts the records back; until then the file can't be found. |
 | A download pauses ~2 s before starting | Its `FIND_VALUE` round included a dead node (synchronous rounds; see DRY-RUN part 2). |
 | `download stalled: no live provider has the missing pieces` | Every node that had the missing pieces is gone. It keeps rediscovering for 15 s, then fails and deletes the partial file. |
 | `fetch failed: … is already in the library` | This node already shares or is downloading that key. |

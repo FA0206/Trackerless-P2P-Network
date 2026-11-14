@@ -315,6 +315,8 @@ full list is every `logger.Debug/Info/Warn/Error` call in
 | `lookup converged` | INFO | `target`, `rounds`, `rpcs_sent`, `rpcs_failed`, `closest_found` | `lookup.go` | a FIND_NODE lookup finished |
 | `find_value finished` | INFO | `key`, `values_found`, `rounds`, … | `lookup.go` | a FIND_VALUE lookup finished |
 | `value stored` | INFO | `key`, `bytes` | `node.go` `replyStore` | this node now holds a value for the network |
+| `republish complete` | INFO | `key`, `reason` (`publisher` / `holder`), `values`, `stored_at`, `stored_locally`, `failed` | `republish.go` | this node stored a key's values again on the k closest nodes (every `--republish-interval`) |
+| `republish failed` | WARN | `key`, `reason`, `error` | `republish.go` | the republish lookup failed (e.g. nobody answered) |
 | `store complete` | INFO | `key`, `stored_at`, `stored_locally`, `failed` | `values.go` | this node finished publishing a value |
 | `provider announced` | INFO | `key`, `tcp_addr`, `replicas` | `peer.go` | this node is now a provider of a file: after `share`, and for a downloader after its first piece (partial seeding, [08](08-swarming.md)) |
 | `providers found`, `tcp connected to provider` | INFO | `key`, `count` / `provider` | `download.go` | a download found providers / opened a connection |

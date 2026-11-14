@@ -269,7 +269,8 @@ the three known gaps had to be fixed. What the real runs did turn up:
 ## What's next
 
 Per-piece availability is done, so the remaining items before the
-end-goal measurements are the three known gaps (synchronous lookup
-rounds, bucket refresh, record expiry/republish). After those come
+end-goal measurements are the known gaps: synchronous lookup rounds,
+bucket refresh, and record expiry. Republishing is done on
+`feature/edge-case-fixes` ([FIXES.md](FIXES.md)). After those come
 instrumentation and the evaluation harness. See the README's
 simplifications table.

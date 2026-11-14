@@ -14,8 +14,12 @@
 #      that --id-seed. Now the 2 closest nodes to the key are newcomers
 #      that have never heard of the value. The holders are still alive.
 #   3. Every node `get`s it again.
-#   4. node1 `put`s the same text again (a manual "republish"), and the
-#      newcomers `get` it once more.
+#   4. Nobody does anything until node1's next republish (republish.go,
+#      paper Sec. 2.5); then the newcomers `get` it once more.
+#
+#   node1 republishes what it published every REPUBLISH (default 20s);
+#   every other node keeps the paper's 1h. The newcomers join right after
+#   one of node1's republishes, so steps 2 and 3 see no republish.
 #
 # Prediction:
 #   - step 1: everyone finds it.
@@ -23,18 +27,19 @@
 #     starts from the k=2 closest contacts in the node's own table. When
 #     those are other newcomers, they don't have the value and only point
 #     at each other, so the FIND_VALUE lookup never reaches a holder.
-#     Values never move to closer nodes that join later (no republish:
-#     store.go, SIMPLIFICATION; paper Sec. 2.5).
+#     Values don't move to closer nodes that join later until a republish.
 #     Not EVERY newcomer misses: one whose table happens to lack the other
 #     newcomers still has a holder among its 2 closest contacts. The first
 #     run predicted "all miss" and was wrong (see docs/EDGE-CASES.md), so
 #     the check is "at least one newcomer misses".
-#   - step 4: the re-put's lookup finds the 2 closest nodes (newcomers),
-#     the value lands on them, and every newcomer finds it.
+#   - step 4: node1's republish looks the key up again, finds the 2
+#     closest nodes (newcomers), the value lands on them, and every
+#     newcomer finds it. (Before republishing existed, step 4 was a manual
+#     re-`put`; see docs/EDGE-CASES.md.)
 # The script PASSes when all three hold.
 #
 # Usage: scripts/edge/b3-late-joiners-hide-a-value.sh
-#        (env: N=8 LATE=4 BASE_PORT=9550 SEED=1)
+#        (env: N=8 LATE=4 BASE_PORT=9550 SEED=1 REPUBLISH=20s)
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 . scripts/lib/nodes.sh
@@ -48,6 +53,9 @@ SEED="${SEED:-1}" # picks the value's name (so its key) and the late joiners' se
 SEED_PREFIX=edgeb3-
 PUTTER=1
 TOTAL=$((N + LATE))
+# The putter's republish interval. Steps 2 and 3 (4 joins, 10 gets) must
+# fit in one interval.
+REPUBLISH="${REPUBLISH:-20s}"
 
 nodes_init
 node_ids_init "$N"
@@ -67,8 +75,18 @@ HOLDERS="$(echo $HOLDERS)"
 echo "Starting $N nodes on ports $BASE_PORT-$((BASE_PORT + N - 1)), k=$K, all joining via node0 (SEED=$SEED)..."
 start_node 0 "$BASE_PORT" - --k "$K"
 for ((i = 1; i < N; i++)); do
-	start_node "$i" $((BASE_PORT + i)) "$BASE_PORT" --k "$K"
+	if [ "$i" -eq "$PUTTER" ]; then
+		start_node "$i" $((BASE_PORT + i)) "$BASE_PORT" --k "$K" --republish-interval "$REPUBLISH"
+	else
+		start_node "$i" $((BASE_PORT + i)) "$BASE_PORT" --k "$K"
+	fi
 done
+
+# republished_count: how many times the putter has republished KEY as its
+# publisher (republish.go logs one "republish complete" line per key per pass).
+republished_count() {
+	count_lines "$WORK/node$PUTTER.log" "msg=\"republish complete\" .*key=$KEY reason=publisher"
+}
 
 # get_on <i>: node i runs `get $NAME`; sets GOT ("yes"/"no") and prints a row.
 get_on() {
@@ -81,16 +99,6 @@ get_on() {
 	printf '    node%-2s %-5s %s\n' "$i" "$([ "$GOT" = yes ] && echo found || echo MISS)" "${line#get $NAME: }"
 }
 
-# put_contacts <nth>: the node IDs the putter's nth `put $NAME` printed
-# under its header. Interleaved log lines (time=…) are skipped, as in
-# edge.sh's lookup_answer.
-put_contacts() {
-	awk -v hdr="put $NAME " -v nth="$1" '
-		index($0, hdr) == 1 { seen++; on = (seen == nth); next }
-		on && /^time=/ { next }
-		on && /^    [0-9a-f]+@/ { split($1, a, "@"); print a[1]; next }
-		on { exit }' "$WORK/node$PUTTER.log"
-}
 
 echo
 echo "=== node$PUTTER puts a value under SHA-1(\"$NAME\") ==="
@@ -118,7 +126,10 @@ done
 check "$([ "$FOUND" -eq "$ASKED" ] && echo yes)" "$FOUND of $ASKED found it"
 
 echo
-echo "=== Step 2: $LATE nodes join, each closer to the key than both holders ==="
+# Join right after a republish, so steps 2 and 3 run before the next one.
+R0="$(republished_count)"
+wait_for_count "$WORK/node$PUTTER.log" "msg=\"republish complete\" .*key=$KEY reason=publisher" $((R0 + 1)) 60
+echo "=== Step 2: right after one of node$PUTTER's republishes, $LATE nodes join, each closer to the key than both holders ==="
 # The closer of the two holders sets the bar: a newcomer must beat it.
 eval "bar=\$ID$(echo $HOLDERS | awk '{print $1}')"
 BAR="$(xor_hex "$bar" "$KEY")"
@@ -157,24 +168,19 @@ echo "  original nodes: $OLD_FOUND of $OLD_ASKED found it (reported, not asserte
 check "$([ "$NEW_FOUND" -lt "$LATE" ] && echo yes)" "$((LATE - NEW_FOUND)) of $LATE newcomers missed it, though both holders are alive"
 
 echo
-echo "=== Step 4: node$PUTTER puts the same value again (a manual republish) ==="
-PUTS="$(count_lines "$WORK/node$PUTTER.log" "^put $NAME ")"
-send "$PUTTER" "put $NAME hello from edge case B3"
-wait_for_count "$WORK/node$PUTTER.log" "^put $NAME " $((PUTS + 1)) 20
-# The console prints the header, then one line per node it stored on, as
-# separate writes, and log lines from other goroutines can land in between
-# (e.g. an eviction PING). So: skip log lines, and wait until the block has
-# as many contacts as the header announced ("stored on N other node(s)").
-WANT="$(grep "^put $NAME " "$WORK/node$PUTTER.log" | sed -n "$((PUTS + 1))p" | sed 's/.*stored on \([0-9]*\) other.*/\1/')"
-for ((w = 0; w < 50; w++)); do
-	IDS="$(put_contacts "$((PUTS + 1))")"
-	[ "$(echo "$IDS" | grep -c .)" -ge "$WANT" ] && break
-	sleep 0.1
+echo "=== Step 4: nobody does anything; node$PUTTER's next republish (predicted: moves it to the newcomers) ==="
+R1="$(republished_count)"
+T0="$(now_ms)"
+wait_for_count "$WORK/node$PUTTER.log" "msg=\"republish complete\" .*key=$KEY reason=publisher" $((R1 + 1)) 60
+echo "  node$PUTTER republished $(fmt_ms $(($(now_ms) - T0))) after step 3 ended:" \
+	"$(grep "msg=\"republish complete\" .*key=$KEY reason=publisher" "$WORK/node$PUTTER.log" | tail -1 | grep -o 'values=.*')"
+STORED_AT=""
+for i in $NEWHOLDERS_EXPECTED; do
+	if grep -q "msg=\"value stored\".*key=$KEY" "$WORK/node$i.log"; then STORED_AT="$STORED_AT $i"; fi
 done
-STORED_AT="$(for id in $IDS; do index_of_id "$id" "$TOTAL"; done | sort -n | tr '\n' ' ')"
-echo "  stored on:  $(for i in $STORED_AT; do printf 'node%s ' "$i"; done)"
-check "$([ "$(echo $STORED_AT)" = "$(echo $NEWHOLDERS_EXPECTED | tr ' ' '\n' | sort -n | tr '\n' ' ' | sed 's/ $//')" ] && echo yes)" \
-	"the re-put reached the $K closest nodes, which are newcomers"
+echo "  now stored on: $(for i in $STORED_AT; do printf 'node%s ' "$i"; done)(of the $K closest: $(for i in $NEWHOLDERS_EXPECTED; do printf 'node%s ' "$i"; done))"
+check "$([ "$(echo $STORED_AT | wc -w)" -eq "$K" ] && echo yes)" \
+	"the republish reached the $K closest nodes, which are newcomers"
 NEW_FOUND=0
 for ((i = N; i < TOTAL; i++)); do
 	in_list "$i" $NEWHOLDERS_EXPECTED && continue
@@ -186,7 +192,7 @@ check "$([ "$NEW_FOUND" -eq "$ASKED" ] && echo yes)" "$NEW_FOUND of $ASKED other
 
 echo
 if [ "$STATUS" -eq 0 ]; then
-	echo "PASS: newcomers closer to the key missed a value whose holders were alive; re-putting moved it to them."
+	echo "PASS: newcomers closer to the key missed a value whose holders were alive, until the putter's next republish moved it to them."
 else
 	echo "FAIL (repeat this exact run with SEED=$SEED)"
 fi
