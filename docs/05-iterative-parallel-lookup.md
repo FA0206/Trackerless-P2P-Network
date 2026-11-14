@@ -21,8 +21,8 @@ Code: `Node.Lookup` / the unexported `Node.lookup` in
 ## The algorithm, step by step
 
 Starting state: a **candidate list**, seeded with every contact in this
-node's routing table, nearest to the target first
-(`RoutingTable.Closest`). For a node that's just joining, that's the one
+node's routing table that isn't stale (see below), nearest to the target
+first (`RoutingTable.Closest`). For a node that's just joining, that's the one
 bootstrap node it PINGed first (see [04](04-bootstrap-and-join.md)).
 Every candidate starts unqueried.
 
@@ -70,14 +70,23 @@ came back short, some with nobody at all. Edge case B1 found it
 ([EDGE-CASES.md](EDGE-CASES.md#b1--half-the-network-dies-at-once)), and
 `TestLookupAfterHalfTheNetworkDies` (`lookup_test.go`) guards the fix.
 
-**What the fix can't do on its own:** a lookup only learns of nodes
-someone mentions. A reply carries the replier's `k` closest contacts,
-dead ones included, because nothing removes dead contacts from routing
-tables yet. With many deaths, those can crowd out a live node, which the
-lookup then never hears of. B1 with `SEED=4` shows answers that are
-complete (`k` live nodes) but miss one closer live node this way.
-Removing contacts that keep failing (paper Sec. 4.1) and refreshing
-buckets (Sec. 2.3) are the fixes for that.
+**Stale nodes are skipped.** A node that failed `--stale-after` RPCs in
+a row (default 5) and hasn't spoken since is *stale*
+([02](02-routing-table-and-kbuckets.md#stale-contacts-a-node-that-stops-answering)).
+The seeds leave it out, and `addCandidate` drops it even when another
+node's reply mentions it, so repeated lookups stop paying timeouts for
+the same dead nodes. The paper "avoids sending them any further RPCs"
+(Sec. 4.1). One exception: if every table contact is stale, the lookup
+seeds with them anyway, because then it's more likely this node's own
+network was down.
+
+**What this can't fix:** a lookup only learns of nodes someone mentions.
+A reply carries the replier's `k` closest contacts, and the replier's
+own table still lists dead nodes it never tried to reach. With many
+deaths those can crowd out a live node, which the lookup then never
+hears of. B1 with `SEED=4` shows answers that are complete (`k` live
+nodes) but miss one closer live node this way. Bucket refresh (Sec. 2.3)
+is the fix: it makes every node contact, and so test, its own contacts.
 
 Why this converges in `O(log n)` rounds rather than needing some fixed
 iteration count: each round that finds anything closer than what's
@@ -108,9 +117,11 @@ loop in `lookup.go`). Consequences:
 - A dead contact costs a full `rpcTimeout` for its round, even if the
   other two replied in a millisecond.
 - Since the lookup now keeps going past failures (above), a lookup that
-  meets many dead contacts pays for many rounds. In edge case B1, after
-  half the network died, lookups took 2–8 s, and a few ran out of the
-  console's 10 s limit.
+  meets many dead contacts pays for many rounds. In edge case B1, right
+  after half the network died, lookups took 2–8 s, and a few ran out of
+  the console's 10 s limit. Once the dead nodes are stale, lookups skip
+  them and are back to milliseconds, but the first lookups after a death
+  still pay.
 
 This was chosen because "collect a round, then merge" keeps all candidate
 bookkeeping in one goroutine and is easy to reason about and log. It's

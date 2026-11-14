@@ -5,23 +5,27 @@
 #
 #   N nodes (default 16), k=4, each joining through a randomly chosen
 #   running node (as in demo-big-network.sh), so lookups take several
-#   rounds. One surviving node (the querier) looks up the same TARGETS
-#   three times:
+#   rounds. One surviving node (the querier) looks up the same TARGETS:
 #
-#     pass 1  everyone alive              (the baseline)
+#     pass 1    everyone alive              (the baseline)
 #     --- KILL nodes are killed at once (SIGKILL), default 8 of 16 ---
-#     pass 2  right after the kill
-#     pass 3  the same lookups again
+#     pass 2    right after the kill
+#     pass 3..  the same lookups again, until a pass has no failed RPC
+#               (at most MAX_PASSES passes after the kill)
 #
 #   Every answer is compared with the brute-force k closest LIVE nodes.
 #
-# Prediction (from lookup.go and node.go):
+# Prediction (from lookup.go, node.go and stale.go):
 #   - pass 1: correct answers, no failed RPCs, milliseconds.
 #   - pass 2: failed RPCs, and each round that includes a dead contact
 #     waits a full --rpc-timeout (2s): rounds are synchronous.
-#   - pass 3: just as slow. A timeout never removes a contact from the
-#     routing table, so the querier asks the same dead nodes again. The
-#     network doesn't learn from failures.
+#   - the querier learns: a node that fails --stale-after RPCs in a row
+#     (default 5, paper Sec. 4.1) is stale, and lookups stop asking it,
+#     even when other nodes still mention it. So failed RPCs fall pass by
+#     pass, and some pass after pass 2 has none: lookups are back to
+#     milliseconds. With the paper's 5 that takes a few passes; with
+#     NODE_FLAGS="--stale-after 1" it's pass 3. (Before that fix, pass 3
+#     asked the same dead nodes again: see docs/EDGE-CASES.md.)
 #   - no answer is SHORT: every lookup that finishes returns k live nodes,
 #     because a failed candidate gives up its place to the next-closest
 #     one (lookup.go, paper Sec. 2.3). Before that fix, answers came back
@@ -29,13 +33,16 @@
 #   - reported, not asserted: an answer can still miss a live node that
 #     no survivor mentions. Survivors' tables keep their dead contacts,
 #     and a FIND_NODE reply carries only the k closest of them, so dead
-#     ones can crowd a live one out (SEED=4 shows it). And because the
-#     lookup keeps going past dead contacts, at 2s per round, some lookups
-#     can run out of the console's 10s.
+#     ones can crowd a live one out (SEED=4 shows it). Only bucket
+#     refresh fixes that: the survivors that hand out the dead contacts
+#     never send them an RPC themselves. And because the lookup keeps going
+#     past dead contacts, at 2s per round, some lookups can run out of the
+#     console's 10s.
 # The script PASSes when all of these hold.
 #
 # Usage: scripts/edge/b1-half-the-network-dies.sh
-#        (env: N=16 K=4 KILL=8 TARGETS=4 BASE_PORT=9500 SEED=1)
+#        (env: N=16 K=4 KILL=8 TARGETS=4 MAX_PASSES=10 BASE_PORT=9500 SEED=1 NODE_FLAGS=)
+#        NODE_FLAGS: extra flags for every node, e.g. "--stale-after 1"
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 . scripts/lib/nodes.sh
@@ -45,20 +52,25 @@ N="${N:-16}"
 K="${K:-4}"
 KILL="${KILL:-8}"
 TARGETS="${TARGETS:-4}"
+# Passes after the kill, at most. A dead node that only one lookup meets
+# fails once per pass, so it takes --stale-after (5) passes from the one
+# that first meets it; with SEED=1 that ends at pass 7 or 8.
+MAX_PASSES="${MAX_PASSES:-10}"
 BASE_PORT="${BASE_PORT:-9500}"
 SEED="${SEED:-1}"
 RANDOM="$SEED" # joins, the querier, the victims, and the targets all follow from SEED
 SEED_PREFIX=edgeb1-
+NODE_FLAGS="${NODE_FLAGS:-}" # word-split on purpose: several flags
 RPC_TIMEOUT_MS=2000 # the node's default --rpc-timeout
 
 nodes_init
 node_ids_init "$N"
 echo "Starting $N nodes on ports $BASE_PORT-$((BASE_PORT + N - 1)), k=$K, random joins (SEED=$SEED)..."
-start_node 0 "$BASE_PORT" - --k "$K"
+start_node 0 "$BASE_PORT" - --k "$K" $NODE_FLAGS
 JOINS="node0: first"
 for ((i = 1; i < N; i++)); do
 	via=$((RANDOM % i))
-	start_node "$i" $((BASE_PORT + i)) $((BASE_PORT + via)) --k "$K"
+	start_node "$i" $((BASE_PORT + i)) $((BASE_PORT + via)) --k "$K" $NODE_FLAGS
 	JOINS="$JOINS, node$i<-node$via"
 done
 echo "  joins: $JOINS"
@@ -148,21 +160,32 @@ for i in $VICTIMS; do
 done
 echo "  node$Q's routing table: $(grep 'contacts in .* non-empty buckets' "$WORK/node$Q.log" | tail -1 | cut -d';' -f1), $DEAD_KNOWN of them now dead"
 
-echo
-echo "=== Pass 2: the same lookups, right after the kill ==="
-run_pass 2 "pass 2" $ALIVE
-P2_FAILED=$PASS_FAILED P2_WRONG=$PASS_WRONG P2_MS=$PASS_MS P2_SLOW=$PASS_SLOW P2_SHORT=$PASS_SHORT P2_TIMEOUT=$PASS_TIMEOUT P2_FEW=$PASS_FEW
-
-echo
-echo "=== Pass 3: the same lookups once more ==="
-run_pass 3 "pass 3" $ALIVE
-P3_FAILED=$PASS_FAILED P3_WRONG=$PASS_WRONG P3_MS=$PASS_MS P3_SHORT=$PASS_SHORT P3_TIMEOUT=$PASS_TIMEOUT P3_FEW=$PASS_FEW
-
-REPEATED=0 # targets that hit dead nodes in pass 2 AND again in pass 3
-for ((t = 1; t <= TARGETS; t++)); do
-	eval "f2=\$FAILED_2_$t f3=\$FAILED_3_$t"
-	if [ "$f2" -gt 0 ] && [ "$f3" -gt 0 ]; then REPEATED=$((REPEATED + 1)); fi
+# After the kill: repeat the same lookups until a pass has no failed RPCs
+# (the querier has learned which nodes are dead), at most MAX_PASSES times.
+P2_FAILED=0 P2_MS=0 P2_SLOW=0
+FEW=0 TIMEOUTS=0 WRONG=0 LOOKUPS=0
+RECOVERED_AT="" RECOVERY="" ELAPSED_MS=0
+for ((p = 2; p <= MAX_PASSES + 1; p++)); do
+	echo
+	if [ "$p" -eq 2 ]; then
+		echo "=== Pass 2: the same lookups, right after the kill ==="
+	else
+		echo "=== Pass $p: the same lookups again ==="
+	fi
+	run_pass "$p" "pass $p" $ALIVE
+	if [ "$p" -eq 2 ]; then P2_FAILED=$PASS_FAILED P2_MS=$PASS_MS P2_SLOW=$PASS_SLOW; fi
+	FEW=$((FEW + PASS_FEW)) TIMEOUTS=$((TIMEOUTS + PASS_TIMEOUT)) WRONG=$((WRONG + PASS_WRONG))
+	LOOKUPS=$((LOOKUPS + TARGETS)) ELAPSED_MS=$((ELAPSED_MS + PASS_MS))
+	RECOVERY="$RECOVERY  pass $p: $PASS_FAILED failed, $(fmt_ms "$PASS_MS");"
+	if [ "$PASS_FAILED" -eq 0 ] && [ "$PASS_TIMEOUT" -eq 0 ]; then
+		RECOVERED_AT="$p" RECOVERED_MS="$PASS_MS"
+		break
+	fi
 done
+
+echo
+echo "=== Recovery: failed RPCs and time, pass by pass after the kill ==="
+echo "$RECOVERY" | tr ';' '\n' | sed '/^ *$/d'
 
 echo
 echo "=== Verdict ==="
@@ -174,16 +197,20 @@ check "$([ "$P1_FAILED" -eq 0 ] && [ "$P1_WRONG" -eq 0 ] && echo yes)" \
 	"pass 1 had $P1_FAILED failed RPCs and $P1_WRONG wrong answers ($(fmt_ms "$P1_MS") in total)"
 check "$([ "$P2_SLOW" -gt 0 ] && [ "$P2_MS" -ge $((P2_SLOW * RPC_TIMEOUT_MS)) ] && echo yes)" \
 	"pass 2: $P2_SLOW of $TARGETS lookups hit dead nodes, $P2_FAILED failed RPCs, $(fmt_ms "$P2_MS") in total (at least one ${RPC_TIMEOUT_MS}ms timeout each)"
-check "$([ "$P2_SLOW" -gt 0 ] && [ "$REPEATED" -eq "$P2_SLOW" ] && echo yes)" \
-	"pass 3: $REPEATED of those $P2_SLOW hit dead nodes again ($P3_FAILED failed RPCs, $(fmt_ms "$P3_MS")): nothing was learned"
-check "$([ $((P2_FEW + P3_FEW)) -eq 0 ] && [ $((P2_TIMEOUT + P3_TIMEOUT)) -lt $((2 * TARGETS)) ] && echo yes)" \
+if [ -n "$RECOVERED_AT" ]; then
+	check "$([ "$RECOVERED_AT" -gt 2 ] && echo yes)" \
+		"the querier learned: by pass $RECOVERED_AT no lookup asked a dead node ($(fmt_ms "$RECOVERED_MS") for $TARGETS lookups, $(fmt_ms "$ELAPSED_MS") of lookups after the kill)"
+else
+	check no "the querier learned: still asking dead nodes after $MAX_PASSES passes"
+fi
+check "$([ "$FEW" -eq 0 ] && [ "$TIMEOUTS" -lt "$LOOKUPS" ] && echo yes)" \
 	"no answer was short: every lookup that finished returned $K live nodes"
-echo "  reported, not asserted: $((P2_WRONG + P3_WRONG)) answer(s) missed a live node no survivor mentioned;" \
-	"$((P2_TIMEOUT + P3_TIMEOUT)) of $((2 * TARGETS)) lookups ran out of the console's time"
+echo "  reported, not asserted: $WRONG answer(s) missed a live node no survivor mentioned;" \
+	"$TIMEOUTS of $LOOKUPS lookups after the kill ran out of the console's time"
 
 echo
 if [ "$STATUS" -eq 0 ]; then
-	echo "PASS: after half the network died, no lookup came back short, but each paid an RPC timeout per dead contact, and paid it again on the repeat."
+	echo "PASS: after half the network died, lookups paid a timeout per dead node, but no answer came back short, and by pass $RECOVERED_AT the querier had stopped asking dead nodes."
 else
 	echo "FAIL (repeat this exact run with SEED=$SEED)"
 fi

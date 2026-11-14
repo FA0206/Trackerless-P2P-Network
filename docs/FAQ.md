@@ -237,13 +237,34 @@ as any reply arrives, so a dead node doesn't hold up the others. That's a
 known simplification here (see [05](05-iterative-parallel-lookup.md)).
 It's worth fixing before measuring latency or recovery time.
 
-It also doesn't get better with time. A timeout doesn't remove the dead
-contact from the routing table, so the next lookup asks it again and
-waits again. And the dead node keeps its place among the lookup's k
-closest candidates, so the answer comes back with fewer than k nodes.
+It does get better with time, and the answer is still complete:
+- **Complete:** a dead node gives up its place among the lookup's k
+  closest candidates to the next-closest one, so the answer has k live
+  nodes ([05](05-iterative-parallel-lookup.md)).
+- **Better with time:** after `--stale-after` timeouts in a row (default
+  5) a node is *stale*, and lookups stop asking it, even when other
+  nodes still mention it
+  ([02](02-routing-table-and-kbuckets.md#stale-contacts-a-node-that-stops-answering)).
+
 [EDGE-CASES.md, case B1](EDGE-CASES.md#b1--half-the-network-dies-at-once)
-kills half of a 16-node network. The same lookups go from ~130 ms to
-~10 s, stay there on a repeat, and every answer is short.
+kills half of a 16-node network. Right after, 4 lookups take ~26 s in
+all. After a few repeats (one with `--stale-after 1`) they're back to
+~30 ms. Before these fixes, repeats stayed slow and every answer was
+short ([FIXES.md](FIXES.md)).
+
+### What happens to a contact that stops answering?
+
+It stays in its k-bucket, flagged **stale** once it has failed
+`--stale-after` RPCs in a row (default 5, the paper's number, Sec. 4.1).
+Lookups and `FIND_NODE` replies skip it. The console's `table` marks it
+`(stale: lookups skip it)`, and `/api/table` shows `"stale": true`. Any
+message from it clears the flag. A new contact for a full bucket replaces
+a stale one straight away, without the usual ping.
+
+Why flag and not delete? The paper again: if a node's *own* network goes
+down for a while, every contact fails, and deleting them would leave it
+with an empty table. Here a lookup with no fresh contacts falls back to
+the stale ones. The first reply brings them back.
 
 ### How can a program (or the visual demo) see what a node knows?
 

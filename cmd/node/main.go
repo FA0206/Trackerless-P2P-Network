@@ -42,6 +42,7 @@ func run() error {
 	k := flag.Int("k", kademlia.DefaultK, "bucket size / replication parameter k")
 	alpha := flag.Int("alpha", kademlia.DefaultAlpha, "lookup concurrency parameter alpha")
 	rpcTimeout := flag.Duration("rpc-timeout", kademlia.DefaultRPCTimeout, "per-RPC timeout (raise this, e.g. to 5m, when pausing at breakpoints)")
+	staleAfter := flag.Int("stale-after", kademlia.DefaultStaleAfter, "failed RPCs in a row before a contact is stale: kept in the table, but lookups and replies skip it until it's heard from again")
 	maxInFlight := flag.Int("max-inflight", transfer.DefaultMaxInFlight, "most piece requests a download keeps in flight at once (always at most 1 per provider)")
 	debugServeDelay := flag.Duration("debug-serve-delay", 0, "DEBUG ONLY: wait this long before answering each piece request, so a demo can kill this node mid-transfer (0 = off)")
 	apiAddr := flag.String("api", "", "serve this node's state as JSON over HTTP on host:port, e.g. 127.0.0.1:8000 (off if empty; see docs/NODE-API.md)")
@@ -85,6 +86,7 @@ func run() error {
 		K:           *k,
 		Alpha:       *alpha,
 		RPCTimeout:  *rpcTimeout,
+		StaleAfter:  *staleAfter,
 		Logger:      logger,
 	})
 	if err != nil {

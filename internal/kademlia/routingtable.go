@@ -33,6 +33,17 @@ func NewRoutingTable(self ID, k int) *RoutingTable {
 	return rt
 }
 
+// setStaleCheck tells every bucket how to ask whether a contact is stale
+// (Node passes its staleTracker's isStale). Called once, before the node
+// handles any message. Without it, no contact is ever stale.
+func (rt *RoutingTable) setStaleCheck(isStale func(ID) bool) {
+	for _, b := range rt.buckets {
+		b.mu.Lock()
+		b.isStale = isStale
+		b.mu.Unlock()
+	}
+}
+
 // bucketFor returns the k-bucket that `other` belongs in.
 func (rt *RoutingTable) bucketFor(other ID) *Bucket {
 	return rt.buckets[BucketIndex(rt.self, other)]
@@ -68,10 +79,31 @@ func (rt *RoutingTable) ReplaceStale(stale, replacement Contact) bool {
 // every contact we know about and sort the whole thing. That's O(n log n)
 // instead of roughly O(k), which is fine at this scale and much simpler to
 // get right; see docs/02-routing-table-and-kbuckets.md.
+//
+// Stale contacts (stale.go) are left out: they failed several RPCs in a
+// row, so neither our lookups nor our FIND_NODE replies should send anyone
+// to them. ClosestIncludingStale is the fallback when nothing fresh is
+// left.
 func (rt *RoutingTable) Closest(target ID, count int) []Contact {
+	return rt.closest(target, count, false)
+}
+
+// ClosestIncludingStale is Closest with stale contacts included. A lookup
+// uses it only when there's no fresh contact at all, which is what
+// happens if this node's own network went down for a while: every contact
+// failed. The paper keeps the table rather than voiding it (Sec. 4.1).
+func (rt *RoutingTable) ClosestIncludingStale(target ID, count int) []Contact {
+	return rt.closest(target, count, true)
+}
+
+func (rt *RoutingTable) closest(target ID, count int, includeStale bool) []Contact {
 	var all []Contact
 	for _, b := range rt.buckets {
-		all = append(all, b.Contacts()...)
+		if includeStale {
+			all = append(all, b.Contacts()...)
+		} else {
+			all = append(all, b.Fresh()...)
+		}
 	}
 	sort.Slice(all, func(i, j int) bool {
 		return Less(Xor(all[i].ID, target), Xor(all[j].ID, target))

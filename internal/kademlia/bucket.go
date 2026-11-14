@@ -11,10 +11,16 @@ import "sync"
 // silently evict: when the bucket is full of contacts other than the one
 // being seen, it hands the caller the stale candidate and lets the caller
 // (Node, in node.go) ping it and report back via ReplaceStale or KeepAlive.
+//
+// isStale (set by RoutingTable; nil = never) says whether a contact failed
+// several RPCs in a row (stale.go). The bucket only reads it: Fresh leaves
+// stale contacts out, and a full bucket replaces a stale contact without
+// a ping.
 type Bucket struct {
 	mu       sync.Mutex
 	capacity int
 	contacts []Contact // index 0 = least recently seen, last = most recently seen
+	isStale  func(ID) bool
 }
 
 // NewBucket creates an empty bucket holding at most `capacity` contacts
@@ -35,12 +41,20 @@ const (
 	// contain this contact. The caller must ping StaleCandidate and then
 	// call ReplaceStale or KeepAlive with the result.
 	FullNeedsPing
+	// ReplacedStale means the bucket was full, but one of its contacts was
+	// already stale (it failed several RPCs in a row), so the new contact
+	// replaced it on the spot: no ping needed, the failures already showed
+	// it doesn't answer (paper Sec. 4.1). The second return value is the
+	// contact that was removed.
+	ReplacedStale
 )
 
 // Update records that `c` was just seen (a message arrived from it). Per
 // paper Sec. 2.2:
 //   - if c is already in the bucket, move it to the tail.
 //   - else if the bucket isn't full, insert it at the tail.
+//   - else, if a contact is stale, replace the oldest stale one with c and
+//     return ReplacedStale.
 //   - else return FullNeedsPing with the least-recently-seen contact, so the
 //     caller can ping it before deciding whether to evict it.
 func (b *Bucket) Update(c Contact) (outcome UpdateOutcome, staleCandidate Contact) {
@@ -60,7 +74,31 @@ func (b *Bucket) Update(c Contact) (outcome UpdateOutcome, staleCandidate Contac
 		return Seen, Contact{}
 	}
 
+	if b.isStale != nil {
+		for i, existing := range b.contacts { // oldest first
+			if b.isStale(existing.ID) {
+				b.contacts = append(b.contacts[:i], b.contacts[i+1:]...)
+				b.contacts = append(b.contacts, c)
+				return ReplacedStale, existing
+			}
+		}
+	}
+
 	return FullNeedsPing, b.contacts[0]
+}
+
+// Fresh returns the contacts that aren't stale, oldest first. Lookups and
+// FIND_NODE replies use these (through RoutingTable.Closest).
+func (b *Bucket) Fresh() []Contact {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make([]Contact, 0, len(b.contacts))
+	for _, c := range b.contacts {
+		if b.isStale == nil || !b.isStale(c.ID) {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // KeepAlive is called when a ping to the least-recently-seen contact (the

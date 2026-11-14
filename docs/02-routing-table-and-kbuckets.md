@@ -220,14 +220,63 @@ many* contacts are worth walking. Implementing the tree means replacing
 `RoutingTable`'s array with leaves keyed by prefix, and making `Update`
 split. `Bucket` itself (the update rule) is unchanged.
 
+## Stale contacts: a node that stops answering
+
+The update rule above only ever reacts to *incoming* messages. A contact
+that simply dies sends nothing, so it would stay in its bucket forever,
+and every lookup would keep paying an RPC timeout to it (edge case B1,
+[EDGE-CASES.md](EDGE-CASES.md#b1--half-the-network-dies-at-once)).
+
+The paper's answer (Sec. 4.1): "When a contact fails to respond to 5
+RPCs in a row, it is considered stale. If a k-bucket is not full or its
+replacement cache is empty, Kademlia merely flags stale contacts rather
+than remove them." This project does that:
+
+- **Counting** (`stale.go`, `staleTracker`): every RPC that times out
+  counts one failure against the node it went to, in the routing table
+  or not. After `--stale-after` failures in a row (default 5) it's
+  **stale**. Any message from it clears the count. It has answered, so
+  it's back.
+- **Flagged, not removed:** a stale contact keeps its bucket slot.
+  `Closest` leaves it out, so our lookups don't start from it and our
+  `FIND_NODE` replies don't hand it out. The console's `table` and
+  `/api/table` still show it, marked stale. Lookups also skip stale
+  nodes that *other* nodes mention ([05](05-iterative-parallel-lookup.md)).
+- **Replaced without a ping:** when a new contact arrives for a full
+  bucket that holds a stale contact, `Bucket.Update` replaces the oldest
+  stale one on the spot (`ReplacedStale`). The failures already showed
+  it doesn't answer. Otherwise the usual ping-then-evict rule applies.
+- **Not voided:** if this node's own network goes down, every contact
+  fails and goes stale. A lookup with nothing fresh falls back to the
+  stale contacts (`ClosestIncludingStale`), and the first reply clears
+  the flag. That's the paper's reason for flagging rather than removing.
+
+`bucket.go` and `stale.go` do no network I/O. `Node` reports failures
+from `sendAndWait` and successes from `touchContact`, and the bucket only
+reads the tracker (`isStale`).
+
+**SIMPLIFICATION:** the paper also keeps a **replacement cache** per
+bucket (contacts that arrived while it was full, ready to step in) and
+backs off exponentially before retrying an unresponsive contact. We have
+neither. A stale contact is replaced only when a new contact for its
+bucket next messages us, and lookups simply skip it until it speaks.
+Neither blocks the end goal. A replacement cache would refill a bucket
+faster after a mass death; bucket refresh (planned) does that too.
+
+The threshold is a trade-off. 5 tolerates a few lost UDP packets, the
+paper's concern on the Internet, but it takes several lookups to learn
+of a death. On a loss-free LAN `--stale-after 1` learns at once. B1
+measures both ([FIXES.md](FIXES.md#3-stale-contacts-b1-learning)).
+
 ## Where this lives in the code
 
 | Concept | Function | File |
 |---|---|---|
-| One bucket: capacity, ordering, the update rule | `Bucket`, `Update`, `KeepAlive`, `ReplaceStale` | `bucket.go` |
+| One bucket: capacity, ordering, the update rule | `Bucket`, `Update`, `KeepAlive`, `ReplaceStale`, `Fresh` | `bucket.go` |
 | 160 buckets together, indexed by `BucketIndex` | `RoutingTable`, `bucketFor` | `routingtable.go` |
-| Finding the k closest known contacts to a target | `RoutingTable.Closest` | `routingtable.go` |
+| Finding the k closest known contacts to a target | `RoutingTable.Closest` (fresh only), `ClosestIncludingStale` | `routingtable.go` |
 | Applying the update rule + async ping-then-evict | `Node.touchContact`, `Node.resolveEviction` | `node.go` |
+| Failed RPCs in a row, stale nodes | `staleTracker`; `Node.noteFailure`, `Node.IsStale` | `stale.go`, `node.go` |
 
 Tests: `internal/kademlia/bucket_test.go` covers every branch of the
 update rule in isolation (insert until full, re-seeing moves to tail,
@@ -235,6 +284,10 @@ update rule in isolation (insert until full, re-seeing moves to tail,
 explicitly — that a live node is never dropped just because new contacts
 keep arriving). `routingtable_test.go` covers that a node never stores
 itself, and that `Closest` returns contacts in the right order.
+`stale_test.go` covers stale contacts: the threshold, the reset on a
+message, `Fresh`/`Closest` leaving them out, replacement without a ping,
+repeated lookups after deaths reaching 0 failed RPCs, and the fallback
+when every contact is stale.
 
 ## What's next
 

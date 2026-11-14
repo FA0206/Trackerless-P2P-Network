@@ -14,6 +14,13 @@ import (
 // real subset of nodes, so FIND_VALUE has to actually search.
 func smallKNetwork(t *testing.T, size, k int) []*Node {
 	t.Helper()
+	return smallKNetworkWith(t, size, k, 0)
+}
+
+// smallKNetworkWith is smallKNetwork with Config.StaleAfter set (0 = the
+// default).
+func smallKNetworkWith(t *testing.T, size, k, staleAfter int) []*Node {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	nodes := make([]*Node, size)
@@ -23,7 +30,7 @@ func smallKNetwork(t *testing.T, size, k int) []*Node {
 		if os.Getenv("KADEMLIA_TEST_LOGS") != "" {
 			logger = NewLogger(id, slog.LevelDebug)
 		}
-		n, err := NewNode(Config{ID: id, K: k, RPCTimeout: 500 * time.Millisecond, Logger: logger})
+		n, err := NewNode(Config{ID: id, K: k, RPCTimeout: 500 * time.Millisecond, StaleAfter: staleAfter, Logger: logger})
 		if err != nil {
 			t.Fatalf("NewNode: %v", err)
 		}

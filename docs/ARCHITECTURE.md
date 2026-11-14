@@ -49,7 +49,7 @@ Each file depends only on files in lower layers:
            lookup.go ─── iterativeFind: the lookup for both FIND_NODE and FIND_VALUE
  Layer 3   node.go ───── RPC engine: send/wait, receive/dispatch, replies, bucket updates, Bootstrap
  Layer 2   routingtable.go   transport.go (→ internal/framing)   store.go   logging.go
- Layer 1   bucket.go   contact.go   messages.go
+ Layer 1   bucket.go   contact.go   messages.go   stale.go
  Layer 0   id.go         (pure functions on 160-bit IDs)
 ```
 
@@ -58,13 +58,14 @@ Each file depends only on files in lower layers:
 | `id.go` | `ID`, `Xor`, `Less`, `BucketIndex`, `HashID`, hex/JSON encoding | stdlib |
 | `contact.go` | `Contact` = (ID, IP, UDP port) | `id.go` |
 | `bucket.go` | one k-bucket and its update rule. **No I/O.** | `contact.go` |
-| `routingtable.go` | 160 buckets, `Closest`, `Snapshot` | `bucket.go`, `id.go` |
+| `stale.go` | `staleTracker`: failed RPCs in a row per node ID, stale after `--stale-after` (paper Sec. 4.1). **No I/O.** | `id.go` |
+| `routingtable.go` | 160 buckets, `Closest` (fresh contacts only), `ClosestIncludingStale`, `Snapshot`; hands each bucket the stale check | `bucket.go`, `id.go` |
 | `messages.go` | `Envelope`; payloads for all four RPCs and their replies | `id.go`, `contact.go` |
 | `transport.go` | UDP socket; frames via `internal/framing`; read loop → callback. **Knows no RPC semantics.** | `messages.go`, framing |
 | `store.go` | this node's share of the DHT's data; value size limits. **No I/O.** | `id.go` |
 | `logging.go` | slog logger tagged with the node ID | `id.go` |
 | `node.go` | `Node`, `Config`; matching replies to requests (`pending`); `handleMessage` dispatch; `replyFindNode/Store/FindValue`; eviction; `Bootstrap` | all of the above |
-| `lookup.go` | `iterativeFind` (alpha-parallel, synchronous rounds), `Lookup`, `LookupResult` | `node.go` |
+| `lookup.go` | `iterativeFind` (alpha-parallel, synchronous rounds; working set = k closest non-failed; skips stale nodes), `Lookup`, `LookupResult` | `node.go` |
 | `values.go` | `Store` (lookup + STORE to the k closest), `FindValue` (local, then lookup) | `lookup.go`, `node.go` |
 
 ## `internal/transfer`
@@ -215,7 +216,7 @@ way.
    placeholder. That's why `Bootstrap` PINGs first.
 3. **A node never stores or returns itself, and replies never return the
    requester** (`closestExcluding`).
-4. **`Bucket`, `valueStore`, `Manifest`, `Bitfield`, and `pickPiece` do
+4. **`Bucket`, `staleTracker`, `valueStore`, `Manifest`, `Bitfield`, and `pickPiece` do
    no network I/O.** Logic that's easy to get wrong stays unit-testable.
 5. **Register `pending[rpcID]` before sending.**
 6. **Every UDP message fits in one datagram** (`maxDatagramSize` = 8 KB).
@@ -262,6 +263,7 @@ way.
 |---|---|
 | Add a DHT RPC | `messages.go` (types), `node.go` (`handleMessage` case, `replyXxx`, an `xxxRPC` client), check it fits a datagram, docs `03`/`06`, FAQ |
 | Change the bucket rule | `bucket.go`, `bucket_test.go`, `node.go` (`touchContact`/`resolveEviction`), doc `02` |
+| Change when a contact is stale | `stale.go`, `stale_test.go`, `node.go` (`noteFailure` in `sendAndWait`, `heardFrom` in `touchContact`), `lookup.go` (`addCandidate`), doc `02`, `scripts/edge/b1-half-the-network-dies.sh` (its recovery numbers), EDGE-CASES.md B1, FIXES.md |
 | Change lookup termination / concurrency | `lookup.go`, `integration_test.go`, `values_test.go`, doc `05`, `DRY-RUN.md` numbers |
 | Change value limits or storage rules | `store.go`, `store_test.go`, doc `06` |
 | Change the TCP protocol | `protocol.go`, `server.go`, `client.go`, doc `07` (and `08` for `GET_BITFIELD`) |
@@ -269,7 +271,7 @@ way.
 | Change stall/rediscovery/bitfield timers | `download.go` constants, `TestDownloadGivesUpWhenNoOneHasTheRest`, doc `08` |
 | Change how pieces/keys are hashed | `manifest.go`, `manifest_test.go`, doc `07`, FAQ |
 | Change the join procedure | `node.go` `Bootstrap`, `TestBootstrap*`, doc `04`, `DRY-RUN.md` |
-| Change log or console text | `scripts/demo.sh` greps `"bootstrap complete"` and `"TRIGGERED LOOKUP RESULT"`; `scripts/demo-transfer.sh` greps `"bootstrap complete"`, `"put greeting"`, `"get greeting:"`, `"content key:"`, `"fetch"`, `msg="piece received"`; `scripts/lib/nodes.sh` (used by the newer demos) greps `"node started"`, `"bootstrap complete"`, and `msg="piece received"` with an `index=N` field; `scripts/demo-seeder-death.sh` also greps console lines starting `fetch` / `fetched ` / `fetch failed`; `scripts/demo-big-network.sh` parses the console's `lookup <hex>: rounds=…` line and the numbered `   N. <id>@ip:port` lines after it, plus `content key:` and `^fetch`; `scripts/demo-parallel.sh` parses `msg="piece requested"` / `msg="piece received"` (`index=`, `from=`, `inflight=`), `max_inflight=` in `msg="download complete"`, and the console's `N piece(s) from` lines; `scripts/edge/b2-record-holders-die.sh` greps `content key:`, `^fetch`, `^fetch failed: transfer: no providers found`, `^PONG from` / `^no reply from`, and the log messages `"value stored"`, `"lookup converged"`, `"store complete"`, `"find_value finished"` with their `key=`/`target=`, `closest_found=`, `stored_at=`/`stored_locally=` fields; `scripts/edge/b1-half-the-network-dies.sh` parses the console's `lookup <hex>: rounds=… rpcs_sent=… rpcs_failed=…` line, the numbered `   N. <id>@ip:port` lines after it, `lookup failed`, and `table`'s `<id>@` contact lines and `N contacts in M non-empty buckets`; `scripts/edge/a3-bridge-between-islands.sh` uses the same `lookup` and `table` lines (it expects `table` contacts indented by exactly 4 spaces) plus `^PONG from` / `^no reply from`; `scripts/edge/b3-late-joiners-hide-a-value.sh` parses `put <name> (key …): stored on N other node(s)` and the N contact lines after it (skipping interleaved `time=` log lines), `get <name>: N value(s) …` (a miss is `0 value(s)`), `get failed`, and `"value stored"` log lines, and relies on a repeated `--id-seed` flag taking its last value; `scripts/edge/a4-tiny-buckets.sh` relies on the same `--id-seed` rule and parses the `lookup` lines; `scripts/edge/a2-thundering-herd.sh` greps `bootstrap complete` with its `routing_table_size=` field, `^error:` (a failed join), the `lookup` lines, and the race detector's `WARNING: DATA RACE`; `scripts/edge/run-all.sh` takes each script's last line starting `PASS`/`FAIL` |
+| Change log or console text | `scripts/demo.sh` greps `"bootstrap complete"` and `"TRIGGERED LOOKUP RESULT"`; `scripts/demo-transfer.sh` greps `"bootstrap complete"`, `"put greeting"`, `"get greeting:"`, `"content key:"`, `"fetch"`, `msg="piece received"`; `scripts/lib/nodes.sh` (used by the newer demos) greps `"node started"`, `"bootstrap complete"`, and `msg="piece received"` with an `index=N` field; `scripts/demo-seeder-death.sh` also greps console lines starting `fetch` / `fetched ` / `fetch failed`; `scripts/demo-big-network.sh` parses the console's `lookup <hex>: rounds=…` line and the numbered `   N. <id>@ip:port` lines after it, plus `content key:` and `^fetch`; `scripts/demo-parallel.sh` parses `msg="piece requested"` / `msg="piece received"` (`index=`, `from=`, `inflight=`), `max_inflight=` in `msg="download complete"`, and the console's `N piece(s) from` lines; `scripts/edge/b2-record-holders-die.sh` greps `content key:`, `^fetch`, `^fetch failed: transfer: no providers found`, `^PONG from` / `^no reply from`, and the log messages `"value stored"`, `"lookup converged"`, `"store complete"`, `"find_value finished"` with their `key=`/`target=`, `closest_found=`, `stored_at=`/`stored_locally=` fields; `scripts/edge/b1-half-the-network-dies.sh` parses the console's `lookup <hex>: rounds=… rpcs_sent=… rpcs_failed=…` line, the numbered `   N. <id>@ip:port` lines after it, `lookup failed`, and `table`'s `<id>@` contact lines and `N contacts in M non-empty buckets`; `scripts/edge/a3-bridge-between-islands.sh` uses the same `lookup` and `table` lines (it expects `table` contacts indented by exactly 4 spaces; a stale contact's line ends with `  (stale: lookups skip it)`, so scripts match only the start of the line) plus `^PONG from` / `^no reply from`; `scripts/edge/b3-late-joiners-hide-a-value.sh` parses `put <name> (key …): stored on N other node(s)` and the N contact lines after it (skipping interleaved `time=` log lines), `get <name>: N value(s) …` (a miss is `0 value(s)`), `get failed`, and `"value stored"` log lines, and relies on a repeated `--id-seed` flag taking its last value; `scripts/edge/a4-tiny-buckets.sh` relies on the same `--id-seed` rule and parses the `lookup` lines; `scripts/edge/a2-thundering-herd.sh` greps `bootstrap complete` with its `routing_table_size=` field, `^error:` (a failed join), the `lookup` lines, and the race detector's `WARNING: DATA RACE`; `scripts/edge/run-all.sh` takes each script's last line starting `PASS`/`FAIL` |
 | Change how `--id-seed` maps to an ID | `scripts/demo.sh` recomputes IDs with `shasum` |
 | Add a CLI flag or console command | `cmd/node`, README, `DEBUGGING.md`, `.vscode/launch.json` if relevant; a new console command probably wants a matching control endpoint (`internal/nodeapi/control.go`, NODE-API.md) |
 | Add or change an HTTP API endpoint or field | `internal/nodeapi/api.go` and `api_test.go`, `docs/NODE-API.md` (with real output); the visual demo, once it exists, reads these JSON field names |

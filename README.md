@@ -29,7 +29,7 @@ evaluation includes performance graphs:
 | **Peer discovery (the DHT core):** 160-bit IDs, XOR metric, k-bucket routing table, `PING`/`FIND_NODE` over UDP, joining via one known node, iterative α-parallel lookup | ✅ Done | `main` — this README, [docs 01–05](#documentation) |
 | Unit + integration tests for the core; runnable demos (5-process chain, 20-node random joins with brute-force-checked lookups) | ✅ Done | `internal/kademlia/*_test.go`, `scripts/demo.sh`, `scripts/demo-big-network.sh` |
 | Debugging tooling: logs, per-node console, VSCode debug configs | ✅ Done | [docs/DEBUGGING.md](docs/DEBUGGING.md) |
-| Edge-case stress tests: node setups chosen to find what breaks | ✅ Done: 6 cases (A2 thundering herd, A3 bridge between islands, A4 tiny buckets, B1 half the network dies, B2 record holders die, B3 late joiners), ranked by fix priority. `scripts/edge/run-all.sh` runs them all. Fixing them, on `feature/edge-case-fixes`: lookups no longer come back short after deaths (B1, B2) | `scripts/edge/`, [docs/EDGE-CASES.md](docs/EDGE-CASES.md) |
+| Edge-case stress tests: node setups chosen to find what breaks | ✅ Done: 6 cases (A2 thundering herd, A3 bridge between islands, A4 tiny buckets, B1 half the network dies, B2 record holders die, B3 late joiners), ranked by fix priority. `scripts/edge/run-all.sh` runs them all. Fixing them, on `feature/edge-case-fixes` ([FIXES.md](docs/FIXES.md)): lookups no longer come back short after deaths (B1, B2), and nodes that stop answering are skipped once stale (B1) | `scripts/edge/`, [docs/EDGE-CASES.md](docs/EDGE-CASES.md) |
 | `STORE` / `FIND_VALUE` (the DHT holds "who has file X") | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/06](docs/06-store-and-find-value.md) |
 | File transfer over TCP: pieces, SHA-256 verification, content keys | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/07](docs/07-file-transfer-over-tcp.md) |
 | Share a file / download it from the CLI; transfer demo | ✅ Done | `share` / `fetch` console commands, `scripts/demo-transfer.sh` |
@@ -79,6 +79,9 @@ needed, and which function implements it.
 - [EDGE-CASES.md](docs/EDGE-CASES.md) — node setups that stress the
   code, each with a prediction, a script, real output, and what would
   fix it.
+- [FIXES.md](docs/FIXES.md) — how each edge-case problem is being
+  fixed: what we saw, how we found the cause, what changed, the
+  evidence, and what's still open.
 - [CLAUDE.md](CLAUDE.md) — project scope and ground rules, for AI
   assistants and new teammates alike.
 
@@ -288,20 +291,25 @@ islands through one bridge node and kills it. If nobody had looked
 anything up across the bridge, the islands are cut apart for good (0 of
 5 found, every time). If one lookup had crossed it, the islands survive.
 
-B1 kills 8 of 16 nodes. On the original code, every lookup afterwards
-returned fewer than the k closest live nodes. With the lookup fix
-(failed candidates give up their places), none is short. But lookups
-are slow (2–8 s, from ~20 ms) and don't get faster when repeated,
-because dead contacts stay in routing tables:
+B1 kills 8 of 16 nodes and repeats the same lookups until none asks a
+dead node. On the original code, every lookup afterwards returned fewer
+than the k closest live nodes, and repeats were no better. Now no answer
+is short (the lookup fix), and the querier learns: a node that fails 5
+RPCs in a row is stale and gets skipped (stale contacts):
 
 ```
-before the fix:
+before the fixes:
   pass 2  6da4c727…  rounds=2  rpcs=4   failed=3    2.06s  SHORT: got [0] want [0 3 6 8]
-with it:
-  pass 1  6da4c727…  rounds=2  rpcs=4   failed=0     21ms  ok
-  pass 2  6da4c727…  rounds=4  rpcs=8   failed=4    4.08s  ok
-  pass 3  6da4c727…  rounds=4  rpcs=8   failed=4    4.04s  ok
+with them (--stale-after 5, the default):
+  pass 1  total: 0 failed RPCs, 39ms for 4 lookups
+  pass 2: 15 failed, 26.41s      ← right after the kill
+  pass 3: 10 failed, 16.30s
+  pass 4: 2 failed, 4.33s
+  pass 7: 0 failed, 32ms         ← recovered
 ```
+
+With `--stale-after 1`, pass 3 is already clean. How each fix was found
+and checked: [FIXES.md](docs/FIXES.md).
 
 B2 kills the 3 nodes holding a file's provider record while the seeder
 stays up. The file can't be found. Before the lookup fix, re-sharing
@@ -357,6 +365,7 @@ Then type console commands into a node's terminal:
 | `--verbose` / `--quiet` | debug-level / warnings-only logging |
 | `--console` | read console commands from stdin (default true; use `--console=false` for background processes) |
 | `--k`, `--alpha`, `--rpc-timeout` | protocol parameters (20, 3, 2s); raise `--rpc-timeout` when using breakpoints |
+| `--stale-after <n>` | failed RPCs in a row before a contact is stale: kept in the table, but lookups and replies skip it until it's heard from again (default 5, the paper's number; negative = never) ([02](docs/02-routing-table-and-kbuckets.md#stale-contacts-a-node-that-stops-answering)) |
 
 ### Tests
 
@@ -408,7 +417,8 @@ internal/kademlia/   the DHT (see docs/ARCHITECTURE.md for dependencies)
   id.go              160-bit IDs, XOR distance, bucket index
   contact.go         (ID, IP, UDP port)
   bucket.go          one k-bucket and its update rule (no I/O)
-  routingtable.go    160 buckets, Closest()
+  routingtable.go    160 buckets, Closest() (skips stale contacts)
+  stale.go           failed RPCs in a row per node; stale nodes (no I/O)
   messages.go        envelope + payloads for PING, FIND_NODE, STORE, FIND_VALUE
   transport.go       UDP socket
   store.go           this node's share of stored values, size limits
@@ -457,7 +467,8 @@ Here is whether each one blocks the end goal:
 | JSON encoding | No, but it inflates the "control bytes" measurement. | Keep; say so in the evaluation. |
 | **Advertise IP set by hand** (`--advertise-ip`, default `127.0.0.1`; demos bootstrap via `127.0.0.1`) | **Yes, for multi-device.** Each node must be started with its LAN IP, and bootstrap via LAN addresses. No NAT traversal. | Before the multi-device demo: test on a LAN, maybe auto-detect the LAN IP. |
 | **Synchronous lookup rounds** ([05](docs/05-iterative-parallel-lookup.md)) | **Yes, for the latency and recovery graphs.** A dead node stalls a round by a full RPC timeout, and the seeder-kill scenario is exactly that. | Before measuring latency or recovery time. |
-| **No bucket refresh** — neither the post-join refresh nor the paper's hourly refresh ([04](docs/04-bootstrap-and-join.md)) | **Yes, for churn.** Dead contacts linger until a full bucket triggers a ping. Edge cases show more: a quiet island cut off by one death never reconnects (A3), and with k = 1, routing tables stay so empty that lookups go wrong with nobody dead (A4) ([EDGE-CASES](docs/EDGE-CASES.md)). | Before the seeder-kill experiments. Refresh traffic also belongs in the control-bytes count. |
+| Stale contacts: no replacement cache, no exponential backoff ([02](docs/02-routing-table-and-kbuckets.md#stale-contacts-a-node-that-stops-answering)) | No. A stale contact is replaced only when a new contact for its bucket messages us; lookups just skip it. | Keep; refresh refills buckets. |
+| **No bucket refresh** — neither the post-join refresh nor the paper's hourly refresh ([04](docs/04-bootstrap-and-join.md)) | **Yes, for churn.** A node that never sends an RPC to its dead contacts never marks them stale, and keeps handing them out in replies, where they can hide a live node (B1, SEED=4). Edge cases show more: a quiet island cut off by one death never reconnects (A3), and with k = 1, routing tables stay so empty that lookups go wrong with nobody dead (A4) ([EDGE-CASES](docs/EDGE-CASES.md)). | Before the seeder-kill experiments. Refresh traffic also belongs in the control-bytes count. |
 | No lookup early-exit heuristic ([05](docs/05-iterative-parallel-lookup.md)) | Slightly inflates RPC counts. | Optional, before the graphs. |
 | **Values never expire or get republished** ([06](docs/06-store-and-find-value.md)) | **Yes, for churn.** Dead providers' records linger (one wasted connection each), and records don't move to closer nodes that join later. Edge cases B2 and B3 show both ([EDGE-CASES](docs/EDGE-CASES.md)). | Before the seeder-kill and recovery experiments. |
 | No caching of found values ([06](docs/06-store-and-find-value.md)) | No. | Keep. |
@@ -469,17 +480,19 @@ Here is whether each one blocks the end goal:
 | No choking, upload limits, or fairness ([08](docs/08-swarming.md)) | Not in the goal list. | Later, if ever. |
 | No security (ID spoofing, Sybil, rate limits) | Not in the goal list. | Later, if at all. |
 
-**Found by the edge cases, and fixed:** lookups used to come back short
-after nodes died, because failed candidates kept their places among the
-k closest. A failed candidate now gives up its place to the next-closest
-one ([05](docs/05-iterative-parallel-lookup.md), edge cases
-[B1 and B2](docs/EDGE-CASES.md#fix-priority)).
+**Found by the edge cases, and fixed** ([FIXES.md](docs/FIXES.md)):
+- Lookups used to come back short after nodes died, because failed
+  candidates kept their places among the k closest. A failed candidate
+  now gives up its place to the next-closest one
+  ([05](docs/05-iterative-parallel-lookup.md), B1 and B2).
+- A node that stopped answering was asked again on every lookup. Now
+  it's stale after 5 failed RPCs in a row (`--stale-after`), and lookups
+  and replies skip it ([02](docs/02-routing-table-and-kbuckets.md), B1).
 
-**Found by the edge cases, not fixed yet:** a contact that times out
-stays in the routing table. Lookups keep paying a timeout for it, and
-nodes keep handing it out in replies, where it can crowd out a live node
-(B1). Fix: remove a contact after repeated failures (paper Sec. 4.1),
-next on the fix branch.
+**Found by the edge cases, not fixed yet:** a node only learns that a
+contact is dead by sending it an RPC. Nodes that just answer requests
+keep handing out their dead contacts, where they can hide a live node
+(B1, SEED=4). Bucket refresh fixes that (row above).
 
 **Bottom line:** per-piece availability, the first item that blocked the
 end goal, is done on this branch. Before the end-goal measurements, in

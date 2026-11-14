@@ -72,7 +72,7 @@ only downward; see `docs/ARCHITECTURE.md`.
    PINGs before its self-lookup.
 3. A node never stores or returns itself, and replies never return the
    requester (`closestExcluding`).
-4. `Bucket`, `valueStore`, `Manifest`, `Bitfield`, `pickPiece` (and
+4. `Bucket`, `staleTracker`, `valueStore`, `Manifest`, `Bitfield`, `pickPiece` (and
    `id.go`) do no network I/O; the eviction ping lives in `Node`.
 5. Register `pending[rpcID]` before sending a request.
 6. A lookup's candidate state, and a download's `swarmDownload` state,

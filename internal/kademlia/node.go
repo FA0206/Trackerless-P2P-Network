@@ -3,6 +3,7 @@ package kademlia
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -17,6 +18,9 @@ const (
 	DefaultK          = 20
 	DefaultAlpha      = 3
 	DefaultRPCTimeout = 2 * time.Second
+	// DefaultStaleAfter is the paper's number (Sec. 4.1): "When a contact
+	// fails to respond to 5 RPCs in a row, it is considered stale."
+	DefaultStaleAfter = 5
 )
 
 // Node is a running Kademlia participant: its identity, its routing table,
@@ -26,6 +30,7 @@ const (
 type Node struct {
 	ID          ID
 	rt          *RoutingTable
+	stale       *staleTracker // nodes that failed several RPCs in a row (stale.go)
 	store       *valueStore
 	transport   *Transport
 	logger      *slog.Logger
@@ -53,6 +58,7 @@ type Config struct {
 	K           int           // default DefaultK
 	Alpha       int           // default DefaultAlpha
 	RPCTimeout  time.Duration // default DefaultRPCTimeout
+	StaleAfter  int           // failed RPCs in a row before a node is stale; default DefaultStaleAfter, < 0 = never
 	Logger      *slog.Logger  // default NewLogger(ID, Info)
 }
 
@@ -74,13 +80,20 @@ func NewNode(cfg Config) (*Node, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = NewLogger(cfg.ID, slog.LevelInfo)
 	}
+	if cfg.StaleAfter == 0 {
+		cfg.StaleAfter = DefaultStaleAfter
+	}
 	transport, err := NewTransport(cfg.Port, cfg.Logger)
 	if err != nil {
 		return nil, err
 	}
+	stale := newStaleTracker(cfg.StaleAfter)
+	rt := NewRoutingTable(cfg.ID, cfg.K)
+	rt.setStaleCheck(stale.isStale)
 	return &Node{
 		ID:          cfg.ID,
-		rt:          NewRoutingTable(cfg.ID, cfg.K),
+		rt:          rt,
+		stale:       stale,
 		store:       newValueStore(),
 		transport:   transport,
 		logger:      cfg.Logger,
@@ -136,6 +149,14 @@ func (n *Node) RoutingTableSnapshot() map[int][]Contact {
 	return n.rt.Snapshot()
 }
 
+// IsStale reports whether a node is stale: it failed several RPCs in a
+// row (Config.StaleAfter) and hasn't been heard from since. Stale contacts
+// stay in the routing table (and in RoutingTableSnapshot), but lookups and
+// replies skip them. For display: the console's `table`, the API.
+func (n *Node) IsStale(id ID) bool {
+	return n.stale.isStale(id)
+}
+
 // handleMessage is the single entry point for every received packet: it
 // updates the routing table for whoever sent it (paper Sec. 2.2: "when a
 // node receives any message... it updates the appropriate k-bucket for the
@@ -167,10 +188,15 @@ func (n *Node) handleMessage(from *net.UDPAddr, env Envelope) {
 // eviction check (Sec. 2.2) asynchronously so handling this message never
 // blocks on a network round trip to some other contact entirely.
 func (n *Node) touchContact(c Contact) {
+	if n.stale.heardFrom(c.ID) { // it spoke: clear its failures first
+		n.logger.Info("stale contact answered again", "contact", c.String())
+	}
 	outcome, stale := n.rt.Update(c)
 	switch outcome {
 	case Seen:
 		n.logger.Debug("bucket updated", "contact", c.String())
+	case ReplacedStale:
+		n.logger.Info("stale contact replaced", "evicted", stale.String(), "replacement", c.String())
 	case FullNeedsPing:
 		n.logger.Debug("bucket full, pinging least-recently-seen contact before evicting",
 			"stale", stale.String(), "candidate", c.String())
@@ -223,7 +249,19 @@ func (n *Node) sendAndWait(ctx context.Context, target Contact, msgType MessageT
 		return resp, nil
 	case <-ctx.Done():
 		n.logger.Debug("rpc timed out", "type", string(msgType), "to", target.String(), "rpc_id", shortID(rpcID))
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			n.noteFailure(target) // no reply in time; a cancelled caller isn't the target's fault
+		}
 		return Envelope{}, ctx.Err()
+	}
+}
+
+// noteFailure counts one unanswered RPC to target (paper Sec. 4.1) and
+// logs the moment it becomes stale. It counts every node we send RPCs to,
+// in our routing table or not (see stale.go for why).
+func (n *Node) noteFailure(target Contact) {
+	if n.stale.failed(target.ID) {
+		n.logger.Info("contact marked stale", "contact", target.String())
 	}
 }
 

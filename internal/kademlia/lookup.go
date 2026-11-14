@@ -78,6 +78,20 @@ func (n *Node) iterativeFind(ctx context.Context, target ID, findValue bool) (*L
 	candidates := make(map[ID]*lookupCandidate)
 	var order []ID // candidate IDs, kept sorted nearest-to-target first
 
+	// Seed with the whole routing table, nearest first, not just the k
+	// closest: only the working set below is ever queried, so farther
+	// contacts cost nothing unless closer ones fail. Without them, a lookup
+	// whose k closest contacts are all dead has nothing left to try
+	// (edge case B1 found lookups returning nobody while half the network
+	// was alive). Stale contacts (stale.go) are left out, unless nothing
+	// fresh is left at all: then this node's own network was probably down,
+	// and the stale contacts are its best bet (paper Sec. 4.1).
+	seeds := n.rt.Closest(target, n.rt.Size())
+	useStale := len(seeds) == 0
+	if useStale {
+		seeds = n.rt.ClosestIncludingStale(target, n.rt.Size())
+	}
+
 	addCandidate := func(c Contact) {
 		if c.ID == n.ID {
 			return // never chase ourselves
@@ -85,16 +99,16 @@ func (n *Node) iterativeFind(ctx context.Context, target ID, findValue bool) (*L
 		if _, exists := candidates[c.ID]; exists {
 			return
 		}
+		if !useStale && n.stale.isStale(c.ID) {
+			// Another node still lists it, but it failed us several
+			// times in a row: don't spend a timeout on it again. The
+			// paper "avoids sending them any further RPCs" (Sec. 4.1).
+			return
+		}
 		candidates[c.ID] = &lookupCandidate{contact: c}
 		order = append(order, c.ID)
 	}
-	// Seed with the whole routing table, nearest first, not just the k
-	// closest: only the working set below is ever queried, so farther
-	// contacts cost nothing unless closer ones fail. Without them, a lookup
-	// whose k closest contacts are all dead has nothing left to try
-	// (edge case B1 found lookups returning nobody while half the network
-	// was alive).
-	for _, c := range n.rt.Closest(target, n.rt.Size()) {
+	for _, c := range seeds {
 		addCandidate(c)
 	}
 

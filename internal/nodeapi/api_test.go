@@ -134,6 +134,27 @@ func TestTableEndpointMatchesTheRoutingTable(t *testing.T) {
 	}
 }
 
+// A contact that stops answering stays in the table, flagged stale after
+// kademlia.DefaultStaleAfter failed RPCs in a row.
+func TestTableEndpointFlagsStaleContacts(t *testing.T) {
+	nodes := startNodes(t, 2)
+	dead := nodes[1].node.Self()
+	nodes[1].node.Close()
+	for i := 0; i < kademlia.DefaultStaleAfter; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		nodes[0].node.Ping(ctx, dead)
+		cancel()
+	}
+	var table Table
+	get(t, nodes[0], "/api/table", &table)
+	if table.Size != 1 || len(table.Buckets) != 1 || len(table.Buckets[0].Contacts) != 1 {
+		t.Fatalf("want the dead contact still listed, got %+v", table)
+	}
+	if c := table.Buckets[0].Contacts[0]; c.ID != dead.ID || !c.Stale {
+		t.Errorf("got %+v, want %s with stale=true", c, dead.ID)
+	}
+}
+
 func TestStoreEndpointShowsHeldValues(t *testing.T) {
 	nodes := startNodes(t, 4)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

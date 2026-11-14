@@ -92,7 +92,11 @@ func (c *consoleEnv) table() {
 	for _, i := range indexes {
 		fmt.Fprintf(c.out, "bucket %3d (distance in [2^%d, 2^%d)):\n", i, i, i+1)
 		for _, contact := range snapshot[i] {
-			fmt.Fprintf(c.out, "    %s\n", contact)
+			if c.node.IsStale(contact.ID) {
+				fmt.Fprintf(c.out, "    %s  (stale: lookups skip it)\n", contact)
+			} else {
+				fmt.Fprintf(c.out, "    %s\n", contact)
+			}
 			total++
 		}
 	}

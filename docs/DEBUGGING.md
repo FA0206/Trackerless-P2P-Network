@@ -83,7 +83,7 @@ Each node reads **console commands** from its terminal
 |---|---|
 | `help` | list commands |
 | `id` | this node's ID, UDP address, TCP port |
-| `table` | every non-empty k-bucket, contacts oldest → newest; how many keys it holds values for |
+| `table` | every non-empty k-bucket, contacts oldest → newest; how many keys it holds values for. A contact that failed `--stale-after` RPCs in a row ends with `(stale: lookups skip it)` |
 | `lookup <hex-id>` / `lookup self` | run an iterative lookup, print rounds, RPCs, and the closest nodes with their XOR distances |
 | `ping <host:port>` | PING an address, report the reply time |
 | `put <name> <text…>` | STORE the text under key SHA-1(name); prints which nodes kept it |

@@ -96,7 +96,8 @@ $ curl -s 127.0.0.1:8700/api/table
           "id": "db61277694fea41b42a8ac82cbb678baac683990",
           "ip": "127.0.0.1",
           "port": 9702,
-          "distance": "f0562dc1aafa8ff4806dc6109103690fbd02d508"
+          "distance": "f0562dc1aafa8ff4806dc6109103690fbd02d508",
+          "stale": true
         }
       ]
     },
@@ -107,13 +108,17 @@ $ curl -s 127.0.0.1:8700/api/table
           "id": "10f71961bd11dd33c1c95c771b98cf0e09d57b7c",
           "ip": "127.0.0.1",
           "port": 9701,
-          "distance": "3bc013d68315f6dc030c36e5412ddebb18bf97e4"
+          "distance": "3bc013d68315f6dc030c36e5412ddebb18bf97e4",
+          "stale": false
         }
       ]
     }
   ]
 }
 ```
+
+(This capture killed node2, then ran 5 lookups from node0 with
+`--rpc-timeout 300ms`, so node2 failed 5 RPCs in a row.)
 
 Only non-empty buckets are listed, **farthest first** (the console's
 `table` order). Within a bucket, contacts are **oldest first**: the first
@@ -123,6 +128,14 @@ why a distance starting `f0…` (top bit set) is in bucket 159, and one
 starting `3b…` (`0011 1011`, top bit two places lower) is in 157.
 `distance` is included so a visualizer doesn't need 160-bit XOR in
 JavaScript.
+
+**`stale: true`** means the contact failed `--stale-after` RPCs in a row
+(default 5) and hasn't been heard from since. It stays in its bucket,
+but this node's lookups and replies skip it
+([02](02-routing-table-and-kbuckets.md#stale-contacts-a-node-that-stops-answering)).
+A visualizer can draw it as a dead or fading link. Once node2 was
+restarted and messaged node0, the same contact read `"stale": false`
+again.
 
 ### `GET /api/store`: values held for the network
 
@@ -294,7 +307,10 @@ full list is every `logger.Debug/Info/Warn/Error` call in
 | `rpc received` | INFO | `type`, `from`, `rpc_id` | `node.go` `handleMessage` | any message arrived: a request, or a reply to one of ours (`*_RESP`, `PONG`) |
 | `rpc timed out` | DEBUG | `type`, `to`, `rpc_id` | `node.go` | no reply in `--rpc-timeout`: likely a dead node |
 | `bucket updated` | DEBUG | `contact` | `node.go` `touchContact` | a contact was added or moved to the tail of its bucket |
-| `bucket full, pinging…`, `stale contact still alive…`, `stale contact unresponsive, evicted` | DEBUG | `stale`, `candidate` / `kept` / `evicted`, `replacement` | `node.go` | the eviction check ([02](02-routing-table-and-kbuckets.md)) |
+| `bucket full, pinging…`, `stale contact still alive…`, `stale contact unresponsive, evicted` | DEBUG | `stale`, `candidate` / `kept` / `evicted`, `replacement` | `node.go` | the eviction check ([02](02-routing-table-and-kbuckets.md)). Here "stale" means the least-recently-seen contact, not a stale-flagged one |
+| `contact marked stale` | INFO | `contact` | `node.go` `noteFailure` | a node failed `--stale-after` RPCs in a row; lookups and replies skip it from now on |
+| `stale contact answered again` | INFO | `contact` | `node.go` `touchContact` | a stale node sent us a message, so it's back |
+| `stale contact replaced` | INFO | `evicted`, `replacement` | `node.go` `touchContact` | a new contact took a stale contact's slot in a full bucket, without a ping |
 | `lookup round starting` | DEBUG | `target`, `round`, `batch` | `lookup.go` | one α-wide round of a lookup |
 | `lookup converged` | INFO | `target`, `rounds`, `rpcs_sent`, `rpcs_failed`, `closest_found` | `lookup.go` | a FIND_NODE lookup finished |
 | `find_value finished` | INFO | `key`, `values_found`, `rounds`, … | `lookup.go` | a FIND_VALUE lookup finished |
@@ -599,7 +615,8 @@ viewers left, rule 2 applies again.
 start real nodes on loopback (like `transfer_test.go`), wired the same
 way `cmd/node` does. They check every endpoint against the node's own
 state:
-- table contacts in the right buckets, with the right distances;
+- table contacts in the right buckets, with the right distances, and a
+  dead contact flagged `stale` after 5 failed pings;
 - values on exactly the nodes a `Store` reached;
 - binary values without `text`;
 - a real PING appearing on the receiver's stream, with the right sender;

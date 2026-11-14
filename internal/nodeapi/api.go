@@ -202,12 +202,15 @@ type Bucket struct {
 }
 
 // TableContact is one routing-table entry plus its XOR distance from this
-// node, so a visualizer doesn't have to compute it.
+// node, so a visualizer doesn't have to compute it. Stale means it failed
+// several RPCs in a row (kademlia.Config.StaleAfter): it's still in the
+// table, but lookups and replies skip it until it's heard from again.
 type TableContact struct {
 	ID       kademlia.ID `json:"id"`
 	IP       string      `json:"ip"`
 	Port     int         `json:"port"`
 	Distance kademlia.ID `json:"distance"`
+	Stale    bool        `json:"stale"`
 }
 
 func (s *Server) handleTable(w http.ResponseWriter, r *http.Request) {
@@ -217,7 +220,8 @@ func (s *Server) handleTable(w http.ResponseWriter, r *http.Request) {
 	for index, contacts := range snapshot {
 		b := Bucket{Index: index, Contacts: make([]TableContact, len(contacts))}
 		for i, c := range contacts {
-			b.Contacts[i] = TableContact{ID: c.ID, IP: c.IP, Port: c.Port, Distance: kademlia.Xor(self, c.ID)}
+			b.Contacts[i] = TableContact{ID: c.ID, IP: c.IP, Port: c.Port, Distance: kademlia.Xor(self, c.ID),
+				Stale: s.cfg.Node.IsStale(c.ID)}
 		}
 		t.Buckets = append(t.Buckets, b)
 		t.Size += len(contacts)
