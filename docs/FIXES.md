@@ -22,7 +22,7 @@ Every fix follows the same steps:
 |---|---|---|---|
 | 1 | [B3's flaky FAIL](#1-b3s-flaky-fail-a-script-bug) | `1ec8628` | test script |
 | 2 | [Lookups skip dead candidates](#2-lookups-skip-dead-candidates-b1-b2) | `de5a42d` | `lookup.go` |
-| 3 | [Stale contacts](#3-stale-contacts-b1-learning) | "Stale contacts: …" (the commit after `de5a42d`) | `stale.go`, `bucket.go`, `routingtable.go`, `node.go`, `lookup.go` |
+| 3 | [Stale contacts](#3-stale-contacts-b1-learning) | `3606ea6` | `stale.go`, `bucket.go`, `routingtable.go`, `node.go`, `lookup.go` |
 
 ---
 
