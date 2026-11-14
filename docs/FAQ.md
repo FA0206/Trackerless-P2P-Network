@@ -288,6 +288,17 @@ the value only locally, where nobody else's lookup will look.
 [EDGE-CASES.md, case B2](EDGE-CASES.md#b2--the-provider-record-holders-all-die)
 shows this with real output and lists the fixes.
 
+### A node joins with an ID closer to a key than the nodes holding it. Does it get the value?
+
+No. A value stays on the nodes chosen when it was stored. Nothing copies
+it to newcomers, because there's no republish and no hand-over on join
+(the paper has both, Sec. 2.5). Worse, the newcomers can't *find* it.
+Their lookups start from their closest contacts, which are other
+newcomers, and with a small k they may never get past them to a holder.
+[EDGE-CASES.md, case B3](EDGE-CASES.md#b3--late-joiners-closer-to-a-key)
+shows 13 of 16 such lookups failing while the holders were alive, and a
+re-`put` fixing it.
+
 ## File transfer (TCP)
 
 ### How do I know which key to ask for? If I want an Ace Attorney file, what do I query?

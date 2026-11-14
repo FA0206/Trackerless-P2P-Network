@@ -27,6 +27,7 @@ Each case is a script in `scripts/edge/`. Every script:
 bash scripts/edge/a3-bridge-between-islands.sh # env: BASE_PORT=9450 (nothing random, no SEED)
 bash scripts/edge/b1-half-the-network-dies.sh  # env: N=16 K=4 KILL=8 TARGETS=4 BASE_PORT=9500 SEED=1
 bash scripts/edge/b2-record-holders-die.sh     # env: N=8 BASE_PORT=9525 SEED=1
+bash scripts/edge/b3-late-joiners-hide-a-value.sh  # env: N=8 LATE=4 BASE_PORT=9550 SEED=1
 ```
 
 **The main finding so far** (B1 and B2 both show it): a lookup only
@@ -35,6 +36,13 @@ that times out is never removed, and failed candidates keep their slots
 in the lookup's k-closest list. So once nodes die, lookups return
 **short answers** (live nodes missing), and in the worst case **nothing
 at all**, even though live nodes are known. Nothing improves on its own.
+
+**The second finding** (A3 and B3): nothing maintains the network in the
+background. Contacts spread only as a side effect of traffic, and values
+stay where they were first stored. A quiet island cut off from the rest
+never reconnects (A3). Nodes that join near a key can't see a value
+sitting on healthy holders (B3). The paper's bucket refresh and hourly
+republish (Sec. 2.3, 2.5) are what's missing.
 
 ## The catalogue
 
@@ -51,7 +59,7 @@ yet tested).
 | **B. Churn** | | | |
 | B1 | Kill half the nodes, then repeat the same lookups | +1 RPC timeout per round with a dead contact, the repeat is just as slow, and answers come back **short** | ✅ [below](#b1--half-the-network-dies-at-once) |
 | B2 | Every node holding a file's provider record dies; the seeder stays up | The file can't be found, and **re-sharing doesn't fix it** | ✅ [below](#b2--the-provider-record-holders-all-die) |
-| B3 | Late joiners with IDs closer to a key than its holders | `get` finds nothing: the value never moves to them | ⬜ |
+| B3 | Late joiners with IDs closer to a key than its holders | Newcomers' `get`s miss it, though the holders are alive; a re-`put` moves it to them | ✅ [below](#b3--late-joiners-closer-to-a-key) |
 | B4 | Seeder restarts with the same ID on a new port and re-shares | Every download wastes a connection on the stale record | ⬜ |
 | **C. Limits and identity** | | | |
 | C1 | Hot file: 18 downloaders | Only 16 provider records survive; the original seeder's goes first | ⬜ |
@@ -466,3 +474,156 @@ but the lookup only ever starts from its 3 closest contacts. So the
 third fix (refill from the routing table when candidates fail) has to
 come first, and republish then keeps records alive as holders die one
 by one.
+
+---
+
+## B3 — late joiners closer to a key
+
+**Script:** `scripts/edge/b3-late-joiners-hide-a-value.sh`
+
+### Setup
+
+8 nodes, `k = 2`, all joining via node0. node1 `put`s a short text. It's
+stored on the 2 nodes closest to the key SHA-1(name)
+([06](06-store-and-find-value.md)). Then 4 more nodes join, **each with
+an ID closer to the key than either holder**. Nobody dies.
+
+```
+  distance to the key ──►  (closer is left)
+
+  before:   ·  ·  ·  ·  ·  [H] [H]  ·  ·  ·  ·  ·     H = holds the value
+  after:    n  n  n  n  ·  [H] [H]  ·  ·  ·  ·  ·     n = newcomer, no value
+```
+
+How the script controls this:
+
+- **The key is picked in advance.** `put <name>` stores under
+  SHA-1(name), which bash computes with `shasum`. The script tries names
+  `b3-<SEED>-1`, `-2`, … until node1 isn't one of the 2 closest, so the
+  value lands on two *other* nodes, whose logs show it.
+- **Newcomer IDs are found by brute force.** The script tries seeds
+  `edgeb3-late-<SEED>-0`, `-1`, … and keeps those whose SHA-1 is closer
+  to the key than the nearer holder (50–210 tries per run). It starts
+  each newcomer with `--id-seed <that seed>`. `start_node` already
+  passes `--id-seed edgeb3-<i>`, but Go's `flag` package keeps the
+  **last** value of a repeated flag, so the second one wins.
+  `nodes.sh` doesn't change.
+
+### Steps and prediction
+
+| Step | What happens | Prediction |
+|---|---|---|
+| 1 | every other node `get`s it (control) | all find it |
+| 2 | 4 newcomers join, all closer to the key | the 2 closest nodes are now newcomers |
+| 3 | everyone `get`s it again | **newcomers miss it**, though both holders are alive |
+| 4 | node1 `put`s it again; the other newcomers `get` it | the value moves to the 2 closest (newcomers); all find it |
+
+**Why step 3 should fail.** A `get` is a FIND_VALUE lookup that starts
+from the k closest contacts in the querier's own routing table
+(`iterativeFind`, `lookup.go`). A newcomer's closest contacts are other
+newcomers, since they're closest to the key. They don't have the value,
+and they answer with the contacts *they* know closest to the key: more
+newcomers. With k = 2, the lookup can run out of unqueried candidates
+before it ever reaches a holder. Nothing moves the value toward the
+newcomers: values are never republished (`store.go`, `SIMPLIFICATION`).
+In the paper, holders republish every hour, and that is how a value
+reaches nodes that join closer to its key (Sec. 2.5). A newly joined
+node is also supposed to be handed the values it is now closest to
+(Sec. 2.5); there's no such step here either.
+
+### Real output (`SEED=1`)
+
+```
+=== node1 puts a value under SHA-1("b3-1-3") ===
+  key:                 0ead8775570a34b61555f59a29dfc0571fe6a88d
+  expected holders:    node7 node3  (brute force: the 2 closest IDs)
+  holders (from logs): node3 node7
+  as predicted: the value landed exactly on the 2 closest nodes
+
+=== Step 1 (control): every other node gets it ===
+    node0  found 1 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
+    …                                                   (node1, 2, 4, 5, 6 the same)
+  as predicted: 6 of 6 found it
+
+=== Step 2: 4 nodes join, each closer to the key than both holders ===
+    node8 joined: id 0eb1a3ae…  distance to key 001c24db…  (seed "edgeb3-late-1-50")
+    node9 joined: id 0f11c5bf…  distance to key 01bc42ca…  (seed "edgeb3-late-1-97")
+    node10 joined: id 0cc6589c…  distance to key 026bdfe9…  (seed "edgeb3-late-1-207")
+    node11 joined: id 0f7c0769…  distance to key 01d1801c…  (seed "edgeb3-late-1-209")
+    the bar: holder node7 is at distance 02bbf8c4…  (210 seeds tried)
+    the 2 closest nodes to the key are now: node8 node9
+
+=== Step 3: everyone gets it again (the holders are still alive) ===
+    node0  found 1 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
+    …                                                   (node1, 2, 4, 5, 6 the same)
+    node8  MISS  0 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
+    node9  MISS  0 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
+    node10 found 1 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
+    node11 MISS  0 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
+  original nodes: 6 of 6 found it (reported, not asserted)
+  as predicted: 3 of 4 newcomers missed it, though both holders are alive
+
+=== Step 4: node1 puts the same value again (a manual republish) ===
+  stored on:  node8 node9
+  as predicted: the re-put reached the 2 closest nodes, which are newcomers
+    node10 found 1 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
+    node11 found 1 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
+  as predicted: 2 of 2 other newcomers find it now
+
+PASS: newcomers closer to the key missed a value whose holders were alive; re-putting moved it to them.
+```
+
+**Seeds 1–4:**
+
+| SEED | newcomers that missed (step 3) | original nodes that found it (step 3) | newcomers that found it after the re-put |
+|---|---|---|---|
+| 1 | 3 of 4 | 6 of 6 | 2 of 2 |
+| 2 | 3 of 4 | 6 of 6 | 2 of 2 |
+| 3 | 3 of 4 | 6 of 6 | 2 of 2 |
+| 4 | 4 of 4 | 6 of 6 | 2 of 2 |
+
+### The prediction we got wrong: node10 found it
+
+The first version asserted that **every** newcomer misses. In `SEED=1`,
+node10 found the value. Its log shows why:
+
+```
+msg="rpc sent" type=FIND_VALUE to=0eb1a3ae…:9558      node8, a newcomer
+msg="rpc sent" type=FIND_VALUE to=0c167fb1…:9557      node7, a HOLDER
+msg="find_value finished" values_found=1 rounds=1 rpcs_sent=2 rpcs_failed=0
+```
+
+node10's 2 closest contacts to the key were node8 and **node7**, not
+node8 and node9. During its join, node10 got FIND_NODE replies from
+node0, node3, node4, node7 and node8, but **never heard of node9**.
+Every reply carries at most k = 2 contacts, and node9 was never among
+them. So for node10, a holder was still one of its 2 closest known
+nodes. node8, which did know node9 and node11, asked only those two and
+missed.
+
+So the rule is narrower: **a node misses the value when its k closest
+known contacts are all nodes without it.** Whether that's true depends
+on the partial routing tables a small k produces. The check is now "at
+least one newcomer misses". The original nodes all found it, in every
+seed. Their tables were filled before the newcomers arrived, so a holder
+is still among their closest contacts. Once they learn about the
+newcomers, they would start missing it too.
+
+### What it shows, and what would fix it
+
+A value is only as findable as its placement is up to date. Nodes that
+join near a key, which are exactly the nodes a lookup converges on, can
+be blind to it while it sits on two healthy holders. This is the "values
+don't move to closer nodes" half of the README's "Values never expire or
+get republished" simplification. B2 is the other half, "values vanish
+when their holders die".
+
+Step 4 shows the fix works when the lookup is healthy. Unlike B2, nobody
+is dead here, so the re-put's lookup finds the true 2 closest nodes, and
+the value moves to them.
+
+| Fix (not made here) | Where | Paper |
+|---|---|---|
+| Holders republish every hour, so values drift to whoever is closest now | `store.go`, `values.go` | Sec. 2.5 |
+| When a node learns of a newcomer closer to a key it holds, it STOREs the value there | `node.go` (`touchContact`) | Sec. 2.5 |
+| Caching: the searcher stores a found value at the closest node on its path that lacked it | `values.go` (`FindValue`) | Sec. 2.3 |

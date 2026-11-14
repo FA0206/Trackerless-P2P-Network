@@ -218,7 +218,7 @@ For `scripts/demo-big-network.sh` specifically:
 For the edge-case scripts (`scripts/edge/`, [EDGE-CASES.md](EDGE-CASES.md)):
 
 - **Ports.** Each case has its own block from 9400 up (A3: 9450…9471,
-  B1: 9500…9515, B2: 9525…9532);
+  B1: 9500…9515, B2: 9525…9532, B3: 9550…9561);
   the list is in EDGE-CASES.md. Check leftovers with
   `lsof -nP -i :9400-9699`.
 - **Extra helpers** live in `scripts/lib/edge.sh`, sourced after
@@ -232,6 +232,11 @@ For the edge-case scripts (`scripts/edge/`, [EDGE-CASES.md](EDGE-CASES.md)):
   target. `now_ms` is a monotonic clock for timing. Don't time with the
   wall clock: under WSL it gets re-synced mid-run, and a 2 s lookup once
   measured 1.34 s.
+- **A node with a hand-picked ID.** `start_node i port boot --id-seed
+  <seed>` overrides the default `<SEED_PREFIX><i>`, because Go's `flag`
+  package keeps the last value of a repeated flag. Set `ID<i>` to match
+  yourself. B3 uses this for nodes chosen by brute force to be close to
+  a key.
 - **A FAIL is information, not necessarily a bug in the script.** It
   means the code didn't behave as predicted. Read the node logs in the
   printed work directory, as for the demos.

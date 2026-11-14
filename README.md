@@ -29,7 +29,7 @@ evaluation includes performance graphs:
 | **Peer discovery (the DHT core):** 160-bit IDs, XOR metric, k-bucket routing table, `PING`/`FIND_NODE` over UDP, joining via one known node, iterative α-parallel lookup | ✅ Done | `main` — this README, [docs 01–05](#documentation) |
 | Unit + integration tests for the core; runnable demos (5-process chain, 20-node random joins with brute-force-checked lookups) | ✅ Done | `internal/kademlia/*_test.go`, `scripts/demo.sh`, `scripts/demo-big-network.sh` |
 | Debugging tooling: logs, per-node console, VSCode debug configs | ✅ Done | [docs/DEBUGGING.md](docs/DEBUGGING.md) |
-| Edge-case stress tests: node setups chosen to find what breaks | 🟡 In progress: 3 of 10 cases scripted (A3: bridge between islands dies; B1: half the network dies; B2: record holders die) | `scripts/edge/`, [docs/EDGE-CASES.md](docs/EDGE-CASES.md) |
+| Edge-case stress tests: node setups chosen to find what breaks | 🟡 In progress: 4 of 10 cases scripted (A3: bridge between islands dies; B1: half the network dies; B2: record holders die; B3: late joiners hide a value) | `scripts/edge/`, [docs/EDGE-CASES.md](docs/EDGE-CASES.md) |
 | `STORE` / `FIND_VALUE` (the DHT holds "who has file X") | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/06](docs/06-store-and-find-value.md) |
 | File transfer over TCP: pieces, SHA-256 verification, content keys | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/07](docs/07-file-transfer-over-tcp.md) |
 | Share a file / download it from the CLI; transfer demo | ✅ Done | `share` / `fetch` console commands, `scripts/demo-transfer.sh` |
@@ -234,6 +234,7 @@ repeat the same joins and targets. Walkthrough of a 3-round lookup:
 bash scripts/edge/a3-bridge-between-islands.sh # env: BASE_PORT=9450
 bash scripts/edge/b1-half-the-network-dies.sh  # env: N=16 K=4 KILL=8 TARGETS=4 BASE_PORT=9500 SEED=1
 bash scripts/edge/b2-record-holders-die.sh     # env: N=8 BASE_PORT=9525 SEED=1
+bash scripts/edge/b3-late-joiners-hide-a-value.sh  # env: N=8 LATE=4 BASE_PORT=9550 SEED=1
 ```
 
 Scripts in `scripts/edge/` set up specific node graphs to find the
@@ -242,9 +243,10 @@ prediction says, including "this breaks". A3 joins two separately built
 islands through one bridge node and kills it. If nobody had looked
 anything up across the bridge, the islands are cut apart for good (0 of
 5 found, every time). If one lookup had crossed it, the islands survive.
-B1 kills 8 of 16 nodes. The
-same 4 lookups go from 133 ms to ~10 s, don't get faster when repeated,
-and every one returns fewer than the k closest live nodes:
+
+B1 kills 8 of 16 nodes. The same 4 lookups go from 133 ms to ~10 s,
+don't get faster when repeated, and every one returns fewer than the k
+closest live nodes:
 
 ```
   pass 1  6da4c727…  rounds=2  rpcs=4   failed=0    111ms  ok
@@ -252,14 +254,22 @@ and every one returns fewer than the k closest live nodes:
   pass 3  6da4c727…  rounds=2  rpcs=4   failed=3    2.08s  SHORT: got [0] want [0 3 6 8]
 ```
 
-B2 kills the 3 nodes holding a
-file's provider record while the seeder stays up. The file can't be
-found, and re-sharing doesn't bring it back:
+B2 kills the 3 nodes holding a file's provider record while the seeder
+stays up. The file can't be found, and re-sharing doesn't bring it back:
 
 ```
   node4: fetch failed: transfer: no providers found for 93accc52…
   node1's re-announce lookup: rounds=1 rpcs_sent=3 rpcs_failed=3 closest_found=0
 PASS: with every record holder dead the file could not be found, though 2 providers were online, and re-sharing did not bring it back.
+```
+
+B3 adds 4 nodes whose IDs are closer to a stored value's key than its
+holders. Nobody dies, yet most newcomers can't find the value. A re-`put`
+moves it to them:
+
+```
+    node8  MISS  0 value(s) via network: rounds=1 rpcs_sent=2 rpcs_failed=0
+  as predicted: 3 of 4 newcomers missed it, though both holders are alive
 ```
 
 Catalogue, predictions and explanations: [docs/EDGE-CASES.md](docs/EDGE-CASES.md).
@@ -368,7 +378,7 @@ Here is whether each one blocks the end goal:
 | **Synchronous lookup rounds** ([05](docs/05-iterative-parallel-lookup.md)) | **Yes, for the latency and recovery graphs.** A dead node stalls a round by a full RPC timeout, and the seeder-kill scenario is exactly that. | Before measuring latency or recovery time. |
 | **No bucket refresh** — neither the post-join refresh nor the paper's hourly refresh ([04](docs/04-bootstrap-and-join.md)) | **Yes, for churn.** Dead contacts linger until a full bucket triggers a ping. | Before the seeder-kill experiments. Refresh traffic also belongs in the control-bytes count. |
 | No lookup early-exit heuristic ([05](docs/05-iterative-parallel-lookup.md)) | Slightly inflates RPC counts. | Optional, before the graphs. |
-| **Values never expire or get republished** ([06](docs/06-store-and-find-value.md)) | **Yes, for churn.** Dead providers' records linger (one wasted connection each), and records don't move to closer nodes that join later. | Before the seeder-kill and recovery experiments. |
+| **Values never expire or get republished** ([06](docs/06-store-and-find-value.md)) | **Yes, for churn.** Dead providers' records linger (one wasted connection each), and records don't move to closer nodes that join later. Edge cases B2 and B3 show both ([EDGE-CASES](docs/EDGE-CASES.md)). | Before the seeder-kill and recovery experiments. |
 | No caching of found values ([06](docs/06-store-and-find-value.md)) | No. | Keep. |
 | **Providers must have the whole file** ([07](docs/07-file-transfer-over-tcp.md)) | **Yes:** "no single node has the whole file" needs per-piece availability. | Next feature step. |
 | Pieces fetched one at a time ([07](docs/07-file-transfer-over-tcp.md)) | Not for correctness; matters for the download-time graph. | Before the download-time graph. |

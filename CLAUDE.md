@@ -51,6 +51,7 @@ bash scripts/demo-big-network.sh                # 20 nodes, random joins, lookup
 bash scripts/edge/a3-bridge-between-islands.sh  # edge case: two islands, one bridge dies; PASS = behaved as docs/EDGE-CASES.md predicts
 bash scripts/edge/b1-half-the-network-dies.sh   # edge case: half the nodes die; PASS = behaved as docs/EDGE-CASES.md predicts
 bash scripts/edge/b2-record-holders-die.sh      # edge case: record holders die; PASS = behaved as docs/EDGE-CASES.md predicts
+bash scripts/edge/b3-late-joiners-hide-a-value.sh  # edge case: closer nodes join late; PASS = behaved as docs/EDGE-CASES.md predicts
 ```
 
 Packages: `internal/kademlia` (the DHT, opaque values), `internal/transfer`
