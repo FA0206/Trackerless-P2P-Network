@@ -170,25 +170,37 @@ store. It was added for this API, and the DHT itself never calls it.
 
 ### `GET /api/files`: files this node can serve
 
+This is node2 halfway through downloading a 4-piece file (the seeder ran
+with `--debug-serve-delay 400ms` so the download is slow enough to catch):
+
 ```
-$ curl -s 127.0.0.1:8701/api/files
+$ curl -s 127.0.0.1:8722/api/files
 {
   "files": [
     {
-      "key": "d991d59dcf1f4055cc48f09016fd35a2b48a0e27",
-      "name": "notes.txt",
-      "size": 11,
-      "pieces": 1,
-      "path": "/tmp/tmp.TCTm6CXctj/notes.txt"
+      "key": "06c461bcbe27e57e7ef20e4654b89d62683ed400",
+      "name": "photo.bin",
+      "size": 200000,
+      "pieces": 4,
+      "have": 2,
+      "path": "/tmp/tmp.YkL1uMJUr9/copy.bin"
     }
   ]
 }
 ```
 
-The files the node shared, plus the ones it finished downloading
-(`Peer.Library().List()`), sorted by name. `key` is the content key
-others pass to `fetch`. With no files, it's `{"files": []}`, an empty
-list rather than `null`.
+The files the node shared, plus the ones it is downloading or has
+downloaded (`Peer.Library().List()`), sorted by name. `key` is the
+content key others pass to `fetch`. With no files, it's `{"files": []}`,
+an empty list rather than `null`.
+
+**`have` is how many pieces the node holds** and can serve. With partial
+seeding ([08](08-swarming.md)) a download enters the library as soon as
+it starts, and the node serves each piece once it's written, so
+`have < pieces` means "still downloading, already seeding what it has".
+A shared or finished file has `have == pieces`. Polling this is the
+simplest way to draw download progress; the `piece received` event
+below carries the same count as it changes.
 
 ### `GET /api/events`: what happens, as it happens
 
@@ -288,12 +300,16 @@ full list is every `logger.Debug/Info/Warn/Error` call in
 | `find_value finished` | INFO | `key`, `values_found`, `rounds`, … | `lookup.go` | a FIND_VALUE lookup finished |
 | `value stored` | INFO | `key`, `bytes` | `node.go` `replyStore` | this node now holds a value for the network |
 | `store complete` | INFO | `key`, `stored_at`, `stored_locally`, `failed` | `values.go` | this node finished publishing a value |
-| `provider announced` | INFO | `key`, `tcp_addr`, `replicas` | `peer.go` | this node is now a provider of a file |
-| `providers found`, `tcp connected to provider` | INFO | `key`, `count` / `provider` | `peer.go` | a download found providers / opened a connection |
-| `piece received` | INFO | `index`, `of`, `from`, `bytes` | `peer.go` | one verified piece arrived |
-| `provider failed, trying the next one` | WARN | `provider`, `error` | `peer.go` | a provider was dropped mid-download |
-| `download complete` | INFO | `key`, `name`, `bytes`, `pieces`, `providers`, `failed_providers`, `duration` | `peer.go` | a download finished |
-| `tcp request served` | INFO | `to`, `op`, `index`, `bytes` | `server.go` | this node served a manifest or a piece |
+| `provider announced` | INFO | `key`, `tcp_addr`, `replicas` | `peer.go` | this node is now a provider of a file: after `share`, and for a downloader after its first piece (partial seeding, [08](08-swarming.md)) |
+| `providers found`, `tcp connected to provider` | INFO | `key`, `count` / `provider` | `download.go` | a download found providers / opened a connection |
+| `new providers found` | INFO | `key`, `added`, `known` | `download.go` | a running download rediscovered more providers (it re-asks the DHT every second) |
+| `piece requested` | INFO | `index`, `from`, `inflight` | `download.go` | a piece request went out; draw it as an arrow in flight |
+| `piece received` | INFO | `index`, `of`, `from`, `bytes`, `have`, `inflight` | `download.go` | one verified piece arrived and is now served; `have` is the new count |
+| `provider failed, trying the next one` | WARN | `provider`, `error` | `download.go` | a provider was dropped mid-download |
+| `download stalled: no live provider has the missing pieces; looking for more` | WARN | `have`, `of` | `download.go` | nobody known has the missing pieces; the download gives up after 15 s of this |
+| `announce failed; will retry` | WARN | `key`, `error` | `download.go` | a downloader couldn't announce itself as a provider yet |
+| `download complete` | INFO | `key`, `name`, `bytes`, `pieces`, `providers`, `failed_providers`, `max_inflight`, `duration` | `download.go` | a download finished |
+| `tcp request served` | INFO, DEBUG for `bitfield` | `to`, `op`, `index`, `bytes` | `server.go` | this node served a manifest, a piece, or (polled every ~500 ms, so DEBUG) its bitfield |
 | `node started`, `bootstrap complete` | INFO | `id`, `addr` / `routing_table_size`, … | `cmd/node/main.go` | lifecycle. `node started` comes before the API is up, so no viewer ever sees it |
 
 **Because events are log records, log text is part of this API.**
@@ -434,37 +450,54 @@ value. A key nobody holds gives `"values": []` with status 200.
 ```
 $ curl -s -X POST -H 'Content-Type: application/json' -d '{"path":"/tmp/…/photo.bin"}' 127.0.0.1:8721/api/share
 {
-  "key": "f0fef057b96c598a7183c88bb2cebd774c5b6fe5",
+  "key": "06c461bcbe27e57e7ef20e4654b89d62683ed400",
   "name": "photo.bin",
   "size": 200000,
   "pieces": 4,
-  "path": "/tmp/…/photo.bin"
+  "have": 4,
+  "path": "/tmp/tmp.YkL1uMJUr9/photo.bin"
 }
 
-$ curl -s -X POST -H 'Content-Type: application/json' -d '{"key":"f0fef057…","out":"/tmp/…/copy.bin"}' 127.0.0.1:8722/api/fetch
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"key":"06c461bc…","out":"/tmp/…/copy.bin"}' 127.0.0.1:8722/api/fetch
 {
-  "key": "f0fef057b96c598a7183c88bb2cebd774c5b6fe5",
+  "key": "06c461bcbe27e57e7ef20e4654b89d62683ed400",
   "name": "photo.bin",
   "size": 200000,
   "pieces": 4,
-  "out": "/tmp/…/copy.bin",
+  "out": "/tmp/tmp.YkL1uMJUr9/copy.bin",
   "providers_found": 1,
   "pieces_from": {
     "127.0.0.1:9721": 4
   },
   "failed_providers": [],
-  "duration_ms": 6
+  "max_inflight": 1,
+  "duration_ms": 1610
 }
 ```
 
-`share` answers with the same shape as an `/api/files` entry. `fetch`'s
-`pieces_from` is keyed by each provider's TCP address. The copy was
-byte-for-byte identical. Running the same `fetch` again fails, because
+(This is the slow download from the `/api/files` example: 4 pieces at
+400 ms each.) `share` answers with the same shape as an `/api/files`
+entry. `fetch`'s `pieces_from` is keyed by each provider's TCP address,
+and `max_inflight` is the most piece requests it had outstanding at once:
+here 1, because a download keeps at most one request per provider
+([08](08-swarming.md)). The copy was byte-for-byte identical.
+
+A `fetch` can fail before any network traffic in two ways. On the same
+node again, the file is already in its library (shared, downloading, or
+downloaded):
+
+```
+{
+  "error": "fetch failed: transfer: 06c461bcbe27e57e7ef20e4654b89d62683ed400 is already in the library"
+}
+```
+
+On another node into the same `out` path, the path exists, and
 **downloads never overwrite** (`O_EXCL`, [07](07-file-transfer-over-tcp.md)):
 
 ```
 {
-  "error": "fetch failed: open /tmp/…/copy.bin: file exists"
+  "error": "fetch failed: open /tmp/tmp.YkL1uMJUr9/copy.bin: file exists"
 }
 ```
 
@@ -576,6 +609,8 @@ state:
 - `share` on one node, `fetch` on another, with the file compared byte
   for byte, and a second fetch refused without touching the existing
   file;
+- `/api/files` showing a slow download with `0 < have < pieces`, then
+  `have == pieces` once it's done;
 - `ping` of a live and a dead address;
 - the safety rules: 404 without `Control`, 415, an unknown field, a
   preflight approved only with `Control`;

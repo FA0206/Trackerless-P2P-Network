@@ -841,3 +841,15 @@ the value moves to them.
 | Holders republish every hour, so values drift to whoever is closest now | `store.go`, `values.go` | Sec. 2.5 |
 | When a node learns of a newcomer closer to a key it holds, it STOREs the value there | `node.go` (`touchContact`) | Sec. 2.5 |
 | Caching: the searcher stores a found value at the closest node on its path that lacked it | `values.go` (`FindValue`) | Sec. 2.3 |
+
+### Known flakiness: one unexplained FAIL
+
+After swarming and the node API were merged in, one `run-all.sh` run
+reported `b3-late-joiners-hide-a-value  7s  FAIL` with `SEED=1`. The
+next 15 runs of the same seed (13 alone or right after B2, plus 2 full
+`run-all.sh` runs) all passed with identical output. That run's logs
+were lost (WSL clears `/tmp`), so we don't know which assertion failed.
+B3's DHT code didn't change in that merge. A likely suspect is timing: a
+newcomer's `get`, or the re-put, racing its join. It's the first thing
+to look at on the fix branch, because a fix that flips B3 must be told
+apart from a flaky run.

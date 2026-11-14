@@ -326,7 +326,7 @@ func (s *Server) handleShare(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, f := range s.cfg.Peer.Library().List() {
 		if f.Key == key {
-			writeJSON(w, http.StatusOK, File{Key: f.Key, Name: f.Name, Size: f.Size, Pieces: f.Pieces, Path: f.Path})
+			writeJSON(w, http.StatusOK, fileOf(f))
 			return
 		}
 	}
@@ -350,6 +350,7 @@ type FetchResponse struct {
 	ProvidersFound  int            `json:"providers_found"`
 	PiecesFrom      map[string]int `json:"pieces_from"` // provider TCP address -> pieces
 	FailedProviders []string       `json:"failed_providers"`
+	MaxInFlight     int            `json:"max_inflight"` // most piece requests outstanding at once
 	DurationMS      int64          `json:"duration_ms"`
 }
 
@@ -381,7 +382,7 @@ func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, FetchResponse{Key: key, Name: res.Name, Size: res.Size, Pieces: res.Pieces, Out: req.Out,
 		ProvidersFound: res.ProvidersFound, PiecesFrom: res.PiecesFrom, FailedProviders: failedProviders,
-		DurationMS: res.Duration.Milliseconds()})
+		MaxInFlight: res.MaxInFlight, DurationMS: res.Duration.Milliseconds()})
 }
 
 // allowPreflight answers a browser's CORS preflight (OPTIONS) for the

@@ -37,7 +37,7 @@ evaluation includes performance graphs:
 | Pieces spread so **no single node has the whole file** | ✅ Done on branch `feature/parallel-partial-seeding`: peers serve and announce pieces before they're complete; the seeder can die once the leechers *together* hold every piece | [docs/08](docs/08-swarming.md), `scripts/demo-seeder-death.sh` (`main` has the failing "before" version) |
 | Runs across multiple devices / Wi-Fi | ⬜ Not started — `--advertise-ip` exists; untested off localhost | — |
 | Sending messages (as opposed to files) | ⬜ Not started — `put`/`get` store short text, but there's no messaging feature | — |
-| Per-node HTTP API (for the visual demo) | ✅ Done: `--api` serves node info, routing table, stored values, files as JSON, plus a live event stream (SSE) of every RPC, stored value and piece; `--api-control` adds POST lookup/ping/put/get/share/fetch | `internal/nodeapi`, [docs/NODE-API.md](docs/NODE-API.md) |
+| Per-node HTTP API (for the visual demo) | ✅ Done: `--api` serves node info, routing table, stored values, files (with download progress) as JSON, plus a live event stream (SSE) of every RPC, stored value and piece; `--api-control` adds POST lookup/ping/put/get/share/fetch | `internal/nodeapi`, [docs/NODE-API.md](docs/NODE-API.md) |
 | Visual demo | ⬜ Not started | — |
 | Performance graphs (the four above) | ⬜ Not started | — |
 | Merkle trees | ⬜ Not started — optional; see [FAQ](docs/FAQ.md#do-merkle-trees-make-sense-here) | — |
@@ -109,9 +109,10 @@ needed, and which function implements it.
    tcp_port}` under the key.
 6. **Download.** `Peer.Download` runs `FindValue(key)` to get provider
    records, opens TCP connections to them, and checks that the manifest
-   hashes to the key. It fetches pieces round-robin across providers,
-   checking each piece's hash and skipping any provider that fails. It
-   then announces itself as a provider ([07](docs/07-file-transfer-over-tcp.md)).
+   hashes to the key. It fetches pieces from several providers in
+   parallel, rarest first, checking each piece's hash and dropping any
+   provider that fails. After its first piece it announces itself as a
+   provider and serves the pieces it has ([07](docs/07-file-transfer-over-tcp.md), [08](docs/08-swarming.md)).
 
 Throughout, every received message updates the sender's k-bucket
 (move-to-tail, or ping-the-oldest-and-maybe-evict when full;

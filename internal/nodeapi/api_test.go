@@ -209,9 +209,58 @@ func TestFilesEndpointListsSharedFiles(t *testing.T) {
 	}
 	var files Files
 	get(t, nodes[0], "/api/files", &files)
-	want := File{Key: key, Name: "notes.txt", Size: int64(transfer.DefaultPieceSize + 1), Pieces: 2, Path: path}
+	want := File{Key: key, Name: "notes.txt", Size: int64(transfer.DefaultPieceSize + 1), Pieces: 2, Have: 2, Path: path}
 	if len(files.Files) != 1 || files.Files[0] != want {
 		t.Errorf("got %+v, want [%+v]", files.Files, want)
+	}
+}
+
+// With partial seeding, a download in progress is already in the library
+// (and served). The API must show it as partial, not as a complete file.
+func TestFilesEndpointShowsDownloadProgress(t *testing.T) {
+	nodes := startNodes(t, 2)
+	seeder, leecher := nodes[0], nodes[1]
+	dir := t.TempDir()
+	src := filepath.Join(dir, "big.bin")
+	if err := os.WriteFile(src, make([]byte, 3*transfer.DefaultPieceSize), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	key, err := seeder.peer.Share(ctx, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One provider means one request at a time, so with this delay the
+	// three pieces land about 300 ms apart.
+	seeder.peer.SetDebugServeDelay(300 * time.Millisecond)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := leecher.peer.Download(ctx, key, filepath.Join(dir, "copy.bin"))
+		done <- err
+	}()
+
+	sawPartial := false
+	for !sawPartial && ctx.Err() == nil {
+		var files Files
+		get(t, leecher, "/api/files", &files)
+		if len(files.Files) == 1 && files.Files[0].Pieces == 3 &&
+			files.Files[0].Have > 0 && files.Files[0].Have < 3 {
+			sawPartial = true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !sawPartial {
+		t.Error("never saw the download with 0 < have < pieces")
+	}
+	var files Files
+	get(t, leecher, "/api/files", &files)
+	if len(files.Files) != 1 || files.Files[0].Have != 3 {
+		t.Errorf("after the download: %+v, want have = 3", files.Files)
 	}
 }
 

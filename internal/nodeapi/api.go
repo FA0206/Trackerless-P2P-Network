@@ -260,8 +260,9 @@ func (s *Server) handleStore(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// Files is GET /api/files: the files this node can serve (shared or fully
-// downloaded), sorted by name.
+// Files is GET /api/files: the files this node can serve, sorted by name.
+// With partial seeding (docs/08-swarming.md) that includes downloads still
+// in progress: Have < Pieces until the last piece is written.
 type Files struct {
 	Files []File `json:"files"`
 }
@@ -273,14 +274,19 @@ type File struct {
 	Name   string      `json:"name"`
 	Size   int64       `json:"size"`
 	Pieces int         `json:"pieces"`
+	Have   int         `json:"have"` // pieces on disk and servable; == Pieces once complete
 	Path   string      `json:"path"`
+}
+
+func fileOf(f transfer.SharedFile) File {
+	return File{Key: f.Key, Name: f.Name, Size: f.Size, Pieces: f.Pieces, Have: f.Have, Path: f.Path}
 }
 
 func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
 	list := s.cfg.Peer.Library().List()
 	out := Files{Files: make([]File, len(list))}
 	for i, f := range list {
-		out.Files[i] = File{Key: f.Key, Name: f.Name, Size: f.Size, Pieces: f.Pieces, Path: f.Path}
+		out.Files[i] = fileOf(f)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

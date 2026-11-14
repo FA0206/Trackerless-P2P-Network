@@ -160,7 +160,7 @@ func TestShareOnOneNodeFetchOnAnother(t *testing.T) {
 	if st := post(t, nodes[1], "/api/share", ShareRequest{Path: src}, &shared); st != http.StatusOK {
 		t.Fatalf("share: status %d", st)
 	}
-	if shared.Name != "notes.txt" || shared.Size != int64(len(content)) || shared.Pieces != 3 || shared.Path != src {
+	if shared.Name != "notes.txt" || shared.Size != int64(len(content)) || shared.Pieces != 3 || shared.Have != 3 || shared.Path != src {
 		t.Fatalf("share: %+v", shared)
 	}
 
@@ -174,9 +174,10 @@ func TestShareOnOneNodeFetchOnAnother(t *testing.T) {
 		t.Fatalf("fetched file differs (err %v)", err)
 	}
 	seederAddr := "127.0.0.1:" + strconv.Itoa(nodes[1].peer.TCPPort()) // pieces_from is keyed by TCP address
+	// One provider: at most one request in flight (docs/08-swarming.md).
 	if fetched.Pieces != 3 || fetched.ProvidersFound != 1 || fetched.PiecesFrom[seederAddr] != 3 ||
-		fetched.FailedProviders == nil || len(fetched.FailedProviders) != 0 {
-		t.Errorf("fetch: %+v, want 3 pieces from the seeder at %s", fetched, seederAddr)
+		fetched.FailedProviders == nil || len(fetched.FailedProviders) != 0 || fetched.MaxInFlight != 1 {
+		t.Errorf("fetch: %+v, want 3 pieces from the seeder at %s, 1 in flight", fetched, seederAddr)
 	}
 
 	// Downloads never overwrite: fetching into an existing path fails and
