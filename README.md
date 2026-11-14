@@ -29,7 +29,7 @@ evaluation includes performance graphs:
 | **Peer discovery (the DHT core):** 160-bit IDs, XOR metric, k-bucket routing table, `PING`/`FIND_NODE` over UDP, joining via one known node, iterative α-parallel lookup | ✅ Done | `main` — this README, [docs 01–05](#documentation) |
 | Unit + integration tests for the core; runnable demos (5-process chain, 20-node random joins with brute-force-checked lookups) | ✅ Done | `internal/kademlia/*_test.go`, `scripts/demo.sh`, `scripts/demo-big-network.sh` |
 | Debugging tooling: logs, per-node console, VSCode debug configs | ✅ Done | [docs/DEBUGGING.md](docs/DEBUGGING.md) |
-| Edge-case stress tests: node setups chosen to find what breaks | ✅ Done: 6 cases (A2 thundering herd, A3 bridge between islands, A4 tiny buckets, B1 half the network dies, B2 record holders die, B3 late joiners); 4 planned ones dropped as covered or minor (reasons in the doc). `scripts/edge/run-all.sh` runs them all | `scripts/edge/`, [docs/EDGE-CASES.md](docs/EDGE-CASES.md) |
+| Edge-case stress tests: node setups chosen to find what breaks | ✅ Done: 6 cases (A2 thundering herd, A3 bridge between islands, A4 tiny buckets, B1 half the network dies, B2 record holders die, B3 late joiners), ranked by fix priority. `scripts/edge/run-all.sh` runs them all | `scripts/edge/`, [docs/EDGE-CASES.md](docs/EDGE-CASES.md) |
 | `STORE` / `FIND_VALUE` (the DHT holds "who has file X") | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/06](docs/06-store-and-find-value.md) |
 | File transfer over TCP: pieces, SHA-256 verification, content keys | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/07](docs/07-file-transfer-over-tcp.md) |
 | Share a file / download it from the CLI; transfer demo | ✅ Done | `share` / `fetch` console commands, `scripts/demo-transfer.sh` |
@@ -285,7 +285,9 @@ moves it to them:
   as predicted: 3 of 4 newcomers missed it, though both holders are alive
 ```
 
-Catalogue, predictions and explanations: [docs/EDGE-CASES.md](docs/EDGE-CASES.md).
+Catalogue, predictions, explanations, and the cases ranked by fix
+priority (lookup failure handling first, then republish, then bucket
+refresh): [docs/EDGE-CASES.md](docs/EDGE-CASES.md#fix-priority).
 
 ### One node at a time (e.g. in split VSCode terminals)
 

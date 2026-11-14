@@ -75,25 +75,44 @@ bucket refresh and hourly republish (Sec. 2.3, 2.5) are what's missing.
 node at the same instant, all built with the race detector, gave correct
 lookups and no data races (A2).
 
+## Fix priority
+
+Ranked by how much each problem blocks the end goal (README: downloads
+survive the seeder leaving, demo across real devices, evaluation graphs),
+and by how much else depends on fixing it first.
+
+| Rank | Case | Problem | Why this rank | Fix | Where |
+|---|---|---|---|---|---|
+| 1 | **B1** | Lookups around dead nodes are wrong (short answers) and slow, and don't improve | The root cause underneath B2. Every churn experiment runs into it, including the seeder-kill and time-to-recovery graph, and the answers are *wrong*, not just slow. A small change in one function | Drop failed candidates from the k-closest list so the lookup continues to live nodes; remove a contact after repeated RPC failures. For the latency graph: keep α RPCs in flight instead of synchronous rounds | `lookup.go`, `node.go`, `bucket.go` |
+| 2 | **B2** | A file becomes unfindable when its record holders die, even with providers online | Directly the end goal ("downloads keep working when nodes leave") and the recovery graph. Needs fix 1 first, or the republish lookup stalls on the same dead contacts | Republish values hourly; expire them after 24 h (Sec. 2.5) | `store.go`, `values.go` |
+| 3 | **B3** | Newcomers near a key can't see its value | Same family as B2, but nothing is lost: the holders are alive. Hourly republishing from fix 2 resolves it over time | Fix 2, plus: when a node meets a newcomer closer to a key it holds, it STOREs the value there (Sec. 2.5) | `node.go` (`touchContact`) |
+| 4 | **A3** | A quiet group cut off by one node's death never reconnects | Matters for the multi-device demo (two LANs started separately) and for long-idle networks. Busy networks connect themselves through traffic, so it rarely bites today | Bucket refresh: a lookup for a random ID in every bucket not used for a while (Sec. 2.3) | `node.go` |
+| 5 | **A4** | With k = 1, lookups go wrong with nobody dead | Only matters for k ≤ 2. Every demo uses k ≥ 3, where all lookups were correct. Shares its code with fix 4 | After joining, refresh every bucket farther away than the closest neighbor (Sec. 2.3) | `node.go` (`Bootstrap`) |
+| — | **A2** | — | Holds up; nothing to fix | — | — |
+
+**Three code changes cover all five.** In order: **(a)** lookup failure
+handling (fixes B1, unblocks B2); **(b)** republish and hand-over
+(B2, B3); **(c)** bucket refresh, periodic and after joining (A3, A4).
+Each will flip some of these scripts to FAIL. Then update that script's
+prediction and its section here in the same change, as
+`demo-seeder-death.sh` does on the partial-seeding branch.
+
 ## The catalogue
 
-Status: ✅ script written and passing · ✖ dropped (with the reason).
+Cases are grouped as **A** (how nodes join) and **B** (churn: nodes
+dying and arriving). Every case has a script that passes on the current
+code.
 
-| # | Setup | Prediction | Status |
+| # | Setup | Prediction | Details |
 |---|---|---|---|
 | **A. How nodes join** | | | |
-| A1 | Star: 15 nodes join via node0, then node0 is killed | Lookups stay correct; a new node bootstrapping via the dead hub fails | ✖ covered elsewhere: A3's "used" network shows a node everyone joined through dying harmlessly, and bootstrapping via a dead address is DEBUGGING.md exercise (e) |
-| A2 | Thundering herd: 20 nodes join via node0 at the same moment | Holds up: all join, lookups correct, no data races | ✅ [below](#a2--a-thundering-herd-of-joins) |
-| A3 | Two islands joined by one bridge node; the bridge is killed | If nobody used the bridge: split for good. If one lookup crossed it: no harm | ✅ [below](#a3--two-islands-and-one-bridge) |
-| A4 | Tiny buckets (k = 1, 2, 4) on the same 20 nodes | k = 1 returns wrong nodes with nothing dead; k = 4 doesn't | ✅ [below](#a4--tiny-buckets) |
+| A2 | Thundering herd: 20 nodes join via node0 at the same moment | Holds up: all join, lookups correct, no data races | [section](#a2--a-thundering-herd-of-joins) |
+| A3 | Two islands joined by one bridge node; the bridge is killed | If nobody used the bridge: split for good. If one lookup crossed it: no harm | [section](#a3--two-islands-and-one-bridge) |
+| A4 | Tiny buckets (k = 1, 2, 4) on the same 20 nodes | k = 1 returns wrong nodes with nothing dead; k = 4 doesn't | [section](#a4--tiny-buckets) |
 | **B. Churn** | | | |
-| B1 | Kill half the nodes, then repeat the same lookups | +1 RPC timeout per round with a dead contact, the repeat is just as slow, and answers come back **short** | ✅ [below](#b1--half-the-network-dies-at-once) |
-| B2 | Every node holding a file's provider record dies; the seeder stays up | The file can't be found, and **re-sharing doesn't fix it** | ✅ [below](#b2--the-provider-record-holders-all-die) |
-| B3 | Late joiners with IDs closer to a key than its holders | Newcomers' `get`s miss it, though the holders are alive; a re-`put` moves it to them | ✅ [below](#b3--late-joiners-closer-to-a-key) |
-| B4 | Seeder restarts with the same ID on a new port and re-shares | Every download wastes a connection on the stale record | ✖ minor and already documented: "dead providers' records linger (one wasted connection each)" is in the README simplifications table, and B2 shows the serious form of stale records |
-| **C. Limits and identity** | | | |
-| C1 | Hot file: 18 downloaders | Only 16 provider records survive; the original seeder's goes first | ✖ harmless: dropping the *oldest* record loses nothing while newer providers have the file. The cap exists for the 8 KB datagram limit, which `TestLargestFindValueReplyFitsInDatagram` already checks |
-| C2 | Two nodes with the same ID on different ports | Others' contact flips between the two addresses | ✖ a configuration mistake, not a network condition; the FAQ ("What if two nodes pick the same ID?") covers it |
+| B1 | Kill half the nodes, then repeat the same lookups | +1 RPC timeout per round with a dead contact, the repeat is just as slow, and answers come back **short** | [section](#b1--half-the-network-dies-at-once) |
+| B2 | Every node holding a file's provider record dies; the seeder stays up | The file can't be found, and **re-sharing doesn't fix it** | [section](#b2--the-provider-record-holders-all-die) |
+| B3 | Late joiners with IDs closer to a key than its holders | Newcomers' `get`s miss it, though the holders are alive; a re-`put` moves it to them | [section](#b3--late-joiners-closer-to-a-key) |
 
 **Ports.** Each case has its own block so they can run side by side with
 the demos: A2 9425, A3 9450, A4 9475, B1 9500, B2 9525, B3 9550 (override
