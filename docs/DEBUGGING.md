@@ -164,6 +164,25 @@ connection, and piece arrive.
 fails with "did not answer PING" after `--rpc-timeout`. Bootstrapping a
 node against its own port fails immediately.
 
+### Reading a node's state over HTTP: `--api`
+
+The console's `table` and `files` show one node at a time, in its own
+terminal. Start nodes with `--api` and you can read any of them from
+anywhere, as JSON ([NODE-API.md](NODE-API.md)):
+
+```sh
+go run ./cmd/node --port 9000 --id-seed demo0 --api 127.0.0.1:8000
+go run ./cmd/node --port 9001 --id-seed demo1 --bootstrap 127.0.0.1:9000 --api 127.0.0.1:8001
+
+curl -s 127.0.0.1:8000/api/table        # node0's buckets, with XOR distances
+curl -s 127.0.0.1:8001/api/store        # values node1 holds for the network
+```
+
+Handy for checking exercise (d) above: `/api/store` shows exactly which
+nodes hold a file's provider record. Pick API ports away from the node
+ports (8000s for APIs, 9000s for nodes): a node's UDP and TCP ports
+already use its own number.
+
 ### Slowing transfers down on purpose: `--debug-serve-delay`
 
 On localhost a 1 MiB file moves in ~20 ms, so you can't kill a seeder or

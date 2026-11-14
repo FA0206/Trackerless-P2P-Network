@@ -69,6 +69,23 @@ func (s *valueStore) get(key ID) [][]byte {
 	return out
 }
 
+// snapshot returns copies of every key's values, oldest first, for
+// inspection (the per-node HTTP API). Copies, like get, so a caller can't
+// change the store through the result.
+func (s *valueStore) snapshot() map[ID][][]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[ID][][]byte, len(s.values))
+	for key, vals := range s.values {
+		copies := make([][]byte, len(vals))
+		for i, v := range vals {
+			copies[i] = bytes.Clone(v)
+		}
+		out[key] = copies
+	}
+	return out
+}
+
 // keyCount returns how many distinct keys this node holds values for.
 func (s *valueStore) keyCount() int {
 	s.mu.Lock()

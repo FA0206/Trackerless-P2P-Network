@@ -9,8 +9,12 @@ something.
 
 ```
 cmd/node                 the executable: flags, console, process lifecycle
-   │ imports both
-   ├──────────────────────────────┐
+   │ imports all three
+   ├──────────────────────────────────────────────┐
+   │                                              ▼
+   │                                    internal/nodeapi     optional HTTP API (--api): JSON
+   │                                              │          snapshots via the public APIs below
+   ├──────────────────────────────┐ ◄─────────────┘
    ▼                              ▼
 internal/transfer   ──────►  internal/kademlia      file sharing uses the DHT's public API
    │                              │                 (Store, FindValue, Self) and nothing else
@@ -30,6 +34,8 @@ Dependencies only point downward:
   internals. To it, the DHT is "store bytes under a key, find bytes by
   key".
 - `internal/framing` knows nothing about either; it frames bytes.
+- `internal/nodeapi` reads `kademlia.Node` and `transfer.Peer` through
+  their public methods only. Neither of them knows it exists.
 
 Go's `internal/` rule means only code in this module can import these.
 
@@ -95,12 +101,17 @@ kademlia.NewNode(kademlia.Config{ID, Port, AdvertiseIP, K, Alpha, RPCTimeout, Lo
 (*Node).FindValue(ctx, key ID) (*LookupResult, error)        // result.Values
 (*Node).Ping(ctx, Contact) bool; FindNode(ctx, Contact, ID)   // single RPCs
 (*Node).Addr(), Self(), Logger(), RoutingTableSize(), RoutingTableSnapshot(), StoredKeyCount()
+(*Node).StoredValues() map[ID][][]byte                       // copies; for the HTTP API only
 
 // internal/transfer
 transfer.NewPeer(node, tcpPort, ioTimeout) (*Peer, error)
 (*Peer).Share(ctx, path) (contentKey kademlia.ID, error)
 (*Peer).Download(ctx, contentKey, outPath) (*DownloadResult, error)
 (*Peer).TCPPort(), Library().List(), Close()
+
+// internal/nodeapi
+nodeapi.New(nodeapi.Config{Node, Peer, K, Alpha, RPCTimeout}) *Server
+(*Server).Handler() http.Handler    // GET /api/node, /api/table, /api/store, /api/files
 
 // internal/framing
 framing.Encode / Decode     // one frame = one datagram
@@ -154,6 +165,7 @@ framing.Write / Read        // frames on a stream
 | TCP accept loop | `NewPeer` (`go srv.serve()`) | until `Peer.Close` | the listening socket |
 | TCP connection handler | `server.serve` | one connection | library (read-locked), the file on disk |
 | console | `cmd/node` | until stdin EOF | public `Node` / `Peer` API; runs downloads synchronously |
+| HTTP API server + one per request | `cmd/node` `startAPI`, only with `--api` | process | read-only snapshots through the public `Node` / `Peer` API (locked accessors) |
 
 Locks: `Bucket.mu`, `valueStore.mu`, `Node.pendingMu`, `Library.mu`
 (RW). A lookup's candidate state and a download's `downloader` state are
@@ -184,6 +196,10 @@ unlocked; each is used by a single goroutine. Keep it that way.
 8. **A download only ever creates a new file** (`O_EXCL`), and deletes it
    on failure. It never overwrites an existing path.
 9. **A lookup's or download's own state lives in one goroutine.**
+10. **The HTTP API is optional and only observes.** Without `--api`
+    nothing about a node changes. With it, handlers take copies through
+    the public accessors and hold no lock across a network write, so a
+    slow HTTP client can never stall the DHT or a transfer.
 
 ## If you change X, also touch Y
 
@@ -199,3 +215,4 @@ unlocked; each is used by a single goroutine. Keep it that way.
 | Change log or console text | `scripts/demo.sh` greps `"bootstrap complete"` and `"TRIGGERED LOOKUP RESULT"`; `scripts/demo-transfer.sh` greps `"bootstrap complete"`, `"put greeting"`, `"get greeting:"`, `"content key:"`, `"fetch"`, `msg="piece received"`; `scripts/lib/nodes.sh` (used by the newer demos) greps `"node started"`, `"bootstrap complete"`, and `msg="piece received"` with an `index=N` field; `scripts/demo-seeder-death.sh` also greps console lines starting `fetch` / `fetched ` / `fetch failed`; `scripts/demo-big-network.sh` parses the console's `lookup <hex>: rounds=…` line and the numbered `   N. <id>@ip:port` lines after it, plus `content key:` and `^fetch`; `scripts/edge/b2-record-holders-die.sh` greps `content key:`, `^fetch`, `^fetch failed: transfer: no providers found`, `^PONG from` / `^no reply from`, and the log messages `"value stored"`, `"lookup converged"`, `"store complete"`, `"find_value finished"` with their `key=`/`target=`, `closest_found=`, `stored_at=`/`stored_locally=` fields; `scripts/edge/b1-half-the-network-dies.sh` parses the console's `lookup <hex>: rounds=… rpcs_sent=… rpcs_failed=…` line, the numbered `   N. <id>@ip:port` lines after it, `lookup failed`, and `table`'s `<id>@` contact lines and `N contacts in M non-empty buckets`; `scripts/edge/a3-bridge-between-islands.sh` uses the same `lookup` and `table` lines (it expects `table` contacts indented by exactly 4 spaces) plus `^PONG from` / `^no reply from`; `scripts/edge/b3-late-joiners-hide-a-value.sh` parses `put <name> (key …)` and the contact lines after it, `get <name>: N value(s) …` (a miss is `0 value(s)`), `get failed`, and `"value stored"` log lines, and relies on a repeated `--id-seed` flag taking its last value; `scripts/edge/a4-tiny-buckets.sh` relies on the same `--id-seed` rule and parses the `lookup` lines; `scripts/edge/a2-thundering-herd.sh` greps `bootstrap complete` with its `routing_table_size=` field, `^error:` (a failed join), the `lookup` lines, and the race detector's `WARNING: DATA RACE`; `scripts/edge/run-all.sh` takes each script's last line starting `PASS`/`FAIL` |
 | Change how `--id-seed` maps to an ID | `scripts/demo.sh` recomputes IDs with `shasum` |
 | Add a CLI flag or console command | `cmd/node`, README, `DEBUGGING.md`, `.vscode/launch.json` if relevant |
+| Add or change an HTTP API endpoint or field | `internal/nodeapi/api.go` and `api_test.go`, `docs/NODE-API.md` (with real output); the visual demo, once it exists, reads these JSON field names |

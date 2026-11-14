@@ -245,6 +245,14 @@ closest candidates, so the answer comes back with fewer than k nodes.
 kills half of a 16-node network. The same lookups go from ~130 ms to
 ~10 s, stay there on a repeat, and every answer is short.
 
+### How can a program (or the visual demo) see what a node knows?
+
+Start the node with `--api 127.0.0.1:<port>`, and it serves its ID,
+routing table, stored values and files as JSON over HTTP
+([NODE-API.md](NODE-API.md)). It's off by default. With it off, the
+node behaves exactly as before. With it on, the API only reads copies
+through the node's public methods, so it can't change or slow the DHT.
+
 ## Wire protocol
 
 ### Doesn't UDP lack message boundaries? Isn't that why we length-prefix?

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"kademlia-demo/internal/kademlia"
+	"kademlia-demo/internal/nodeapi"
 	"kademlia-demo/internal/transfer"
 )
 
@@ -42,6 +43,7 @@ func run() error {
 	alpha := flag.Int("alpha", kademlia.DefaultAlpha, "lookup concurrency parameter alpha")
 	rpcTimeout := flag.Duration("rpc-timeout", kademlia.DefaultRPCTimeout, "per-RPC timeout (raise this, e.g. to 5m, when pausing at breakpoints)")
 	debugServeDelay := flag.Duration("debug-serve-delay", 0, "DEBUG ONLY: wait this long before answering each piece request, so a demo can kill this node mid-transfer (0 = off)")
+	apiAddr := flag.String("api", "", "serve this node's state as JSON over HTTP on host:port, e.g. 127.0.0.1:8000 (off if empty; see docs/NODE-API.md)")
 	flag.Parse()
 
 	id, err := resolveID(*idSeed)
@@ -92,6 +94,15 @@ func run() error {
 	}
 
 	logger.Info("node started", "id", id.String(), "addr", n.Addr().String(), "tcp_port", peer.TCPPort())
+
+	// Started before bootstrapping, so a viewer can watch the join itself.
+	if *apiAddr != "" {
+		stopAPI, err := startAPI(*apiAddr, nodeapi.Config{Node: n, Peer: peer, K: *k, Alpha: *alpha, RPCTimeout: *rpcTimeout}, logger)
+		if err != nil {
+			return fmt.Errorf("starting -api: %w", err)
+		}
+		defer stopAPI()
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

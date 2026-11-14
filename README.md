@@ -37,6 +37,7 @@ evaluation includes performance graphs:
 | Pieces spread so **no single node has the whole file** | ⬜ Not started — next step: per-piece availability | — |
 | Runs across multiple devices / Wi-Fi | ⬜ Not started — `--advertise-ip` exists; untested off localhost | — |
 | Sending messages (as opposed to files) | ⬜ Not started — `put`/`get` store short text, but there's no messaging feature | — |
+| Per-node HTTP API (for the visual demo) | 🟡 Increment 1 of 3 done: `--api` serves node info, routing table, stored values, files as JSON. Next: live event stream, then control endpoints | `internal/nodeapi`, [docs/NODE-API.md](docs/NODE-API.md) |
 | Visual demo | ⬜ Not started | — |
 | Performance graphs (the four above) | ⬜ Not started | — |
 | Merkle trees | ⬜ Not started — optional; see [FAQ](docs/FAQ.md#do-merkle-trees-make-sense-here) | — |
@@ -71,6 +72,8 @@ needed, and which function implements it.
   capture, plus hands-on exercises (forcing an eviction, killing a node).
 - [FAQ.md](docs/FAQ.md) — common confusions, how Kademlia output leads
   to a TCP connection, what a joining node needs, Merkle trees.
+- [NODE-API.md](docs/NODE-API.md) — the optional per-node HTTP API
+  (`--api`): every endpoint with real output, and how it's built.
 - [EDGE-CASES.md](docs/EDGE-CASES.md) — node setups that stress the
   code, each with a prediction, a script, real output, and what would
   fix it.
@@ -310,6 +313,7 @@ Then type console commands into a node's terminal:
 | `--port` | UDP port (default 9000) |
 | `--tcp-port` | TCP port for the file server (default: same number as `--port`) |
 | `--advertise-ip` | IP others should use to reach this node, put in provider records (default `127.0.0.1`) |
+| `--api <host:port>` | serve this node's state as JSON over HTTP, e.g. `127.0.0.1:8000`; off by default ([NODE-API.md](docs/NODE-API.md)) |
 | `--debug-serve-delay <dur>` | **DEBUG ONLY**, off by default: wait this long before answering each piece request, so a demo can kill a node mid-transfer |
 | `--id-seed <s>` | node ID = SHA-1(s); random if omitted |
 | `--bootstrap <host:port>` | join through this node |
@@ -327,7 +331,7 @@ go test ./... -race -count=1
 - `internal/kademlia/id_test.go` — XOR metric properties, ordering, bucket indexes
 - `internal/kademlia/bucket_test.go` — every branch of the k-bucket update rule
 - `internal/kademlia/routingtable_test.go` — never stores self; `Closest` ordering
-- `internal/kademlia/store_test.go` — values per key, limits, datagram fit
+- `internal/kademlia/store_test.go` — values per key, limits, datagram fit, snapshots are copies
 - `internal/kademlia/integration_test.go` — real nodes over real loopback
   UDP: joins, lookup, bootstrap failures, replies exclude the requester, ping
 - `internal/kademlia/values_test.go` — STORE lands on exactly the k
@@ -337,6 +341,9 @@ go test ./... -race -count=1
   and tampered manifests rejected
 - `internal/transfer/transfer_test.go` — real UDP + TCP: one and two
   providers, seeder shut down mid-way, corrupt provider skipped, unknown key
+- `internal/nodeapi/api_test.go` — every API endpoint against real nodes
+  on loopback: table buckets and distances, values on exactly the
+  nodes a STORE reached, binary values, files, CORS, 405/404
 
 `KADEMLIA_TEST_LOGS=1` shows the nodes' logs during tests.
 
@@ -346,6 +353,7 @@ go test ./... -race -count=1
 cmd/node/            the executable
   main.go            flags, node + file server startup, bootstrap, --lookup trigger, shutdown
   console.go         interactive commands (table, lookup, put, get, share, fetch, ...)
+  api.go             starts the per-node HTTP API when --api is given
 internal/kademlia/   the DHT (see docs/ARCHITECTURE.md for dependencies)
   id.go              160-bit IDs, XOR distance, bucket index
   contact.go         (ID, IP, UDP port)
@@ -367,6 +375,7 @@ internal/transfer/   file sharing on top of the DHT
   server.go          TCP server
   client.go          TCP client side
   peer.go            Share, Download (round-robin + failover), announce
+internal/nodeapi/    the optional per-node HTTP API: JSON snapshots of one node (docs/NODE-API.md)
 scripts/demo.sh            5 processes: joining and lookup
 scripts/demo-transfer.sh   5 processes: put/get, share, downloads, killed seeder
 scripts/demo-seeder-death.sh  seeder killed mid-download: the file is lost on main
