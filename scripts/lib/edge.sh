@@ -72,6 +72,40 @@ wait_for_count() {
 	done
 }
 
+# now_ms: milliseconds on the monotonic clock, for timing things. Not the
+# wall clock: that can be stepped while a script runs (WSL re-syncs it
+# with the host, which once made a 2s lookup measure 1.34s). perl because
+# macOS's date has no %N; shasum, which nodes.sh already needs, is perl too.
+now_ms() {
+	perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e 'printf "%d\n", clock_gettime(CLOCK_MONOTONIC) * 1000'
+}
+
+# fmt_ms <ms>: "12ms" or "6.04s".
+fmt_ms() {
+	if [ "$1" -lt 1000 ]; then echo "${1}ms"; else printf '%d.%02ds\n' $(($1 / 1000)) $(($1 % 1000 / 10)); fi
+}
+
+# index_of_id <hex-id> <n>: the node index (< n) with that ID, or "?".
+index_of_id() {
+	local i id
+	for ((i = 0; i < $2; i++)); do
+		eval "id=\$ID$i"
+		if [ "$id" = "$1" ]; then echo "$i"; return; fi
+	done
+	echo "?"
+}
+
+# lookup_answer <i> <target> <nth>: the contact IDs node i's console printed
+# for its nth `lookup <target>` (the numbered "  N. <id>@ip:port" lines),
+# nearest first. Same format scripts/demo-big-network.sh parses.
+lookup_answer() {
+	awk -v hdr="lookup $2:" -v nth="$3" '
+		index($0, hdr) == 1 { seen++; on = (seen == nth); next }
+		on && /^time=/ { next }                       # log lines can interleave
+		on && /^ +[0-9]+\. / { split($2, a, "@"); print a[1]; next }
+		on { exit }' "$WORK/node$1.log"
+}
+
 # holders_of <key> <n>: indexes of nodes (< n) that logged storing a value
 # under key, i.e. the nodes a STORE RPC for that key reached.
 holders_of() {

@@ -205,6 +205,14 @@ as any reply arrives, so a dead node doesn't hold up the others. That's a
 known simplification here (see [05](05-iterative-parallel-lookup.md)).
 It's worth fixing before measuring latency or recovery time.
 
+It also doesn't get better with time. A timeout doesn't remove the dead
+contact from the routing table, so the next lookup asks it again and
+waits again. And the dead node keeps its place among the lookup's k
+closest candidates, so the answer comes back with fewer than k nodes.
+[EDGE-CASES.md, case B1](EDGE-CASES.md#b1--half-the-network-dies-at-once)
+kills half of a 16-node network. The same lookups go from ~130 ms to
+~10 s, stay there on a repeat, and every answer is short.
+
 ## Wire protocol
 
 ### Doesn't UDP lack message boundaries? Isn't that why we length-prefix?

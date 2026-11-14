@@ -48,6 +48,7 @@ bash scripts/demo.sh                            # join + lookup demo; must print
 bash scripts/demo-transfer.sh                   # put/get + file transfer + killed seeder; must print PASS
 bash scripts/demo-seeder-death.sh               # seeder dies mid-download; on main PASS means the file was lost
 bash scripts/demo-big-network.sh                # 20 nodes, random joins, lookups vs brute force + transfer; must print PASS
+bash scripts/edge/b1-half-the-network-dies.sh   # edge case: half the nodes die; PASS = behaved as docs/EDGE-CASES.md predicts
 bash scripts/edge/b2-record-holders-die.sh      # edge case: record holders die; PASS = behaved as docs/EDGE-CASES.md predicts
 ```
 

@@ -217,7 +217,8 @@ For `scripts/demo-big-network.sh` specifically:
 
 For the edge-case scripts (`scripts/edge/`, [EDGE-CASES.md](EDGE-CASES.md)):
 
-- **Ports.** Each case has its own block from 9400 up (B2: 9525…9532);
+- **Ports.** Each case has its own block from 9400 up (B1: 9500…9515,
+  B2: 9525…9532);
   the list is in EDGE-CASES.md. Check leftovers with
   `lsof -nP -i :9400-9699`.
 - **Extra helpers** live in `scripts/lib/edge.sh`, sourced after
@@ -226,7 +227,11 @@ For the edge-case scripts (`scripts/edge/`, [EDGE-CASES.md](EDGE-CASES.md)):
   brute-force answer. `wait_for_count <file> <regex> <n> <s>` waits for
   the *n*-th match, for when one node runs the same command twice (plain
   `wait_for_log` would see the first, old line). `holders_of <key> <n>`
-  lists the nodes that logged `value stored` for a key.
+  lists the nodes that logged `value stored` for a key. `lookup_answer
+  <i> <target> <n>` reads the IDs from node i's *n*-th `lookup` of a
+  target. `now_ms` is a monotonic clock for timing. Don't time with the
+  wall clock: under WSL it gets re-synced mid-run, and a 2 s lookup once
+  measured 1.34 s.
 - **A FAIL is information, not necessarily a bug in the script.** It
   means the code didn't behave as predicted. Read the node logs in the
   printed work directory, as for the demos.

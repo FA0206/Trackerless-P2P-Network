@@ -29,7 +29,7 @@ evaluation includes performance graphs:
 | **Peer discovery (the DHT core):** 160-bit IDs, XOR metric, k-bucket routing table, `PING`/`FIND_NODE` over UDP, joining via one known node, iterative α-parallel lookup | ✅ Done | `main` — this README, [docs 01–05](#documentation) |
 | Unit + integration tests for the core; runnable demos (5-process chain, 20-node random joins with brute-force-checked lookups) | ✅ Done | `internal/kademlia/*_test.go`, `scripts/demo.sh`, `scripts/demo-big-network.sh` |
 | Debugging tooling: logs, per-node console, VSCode debug configs | ✅ Done | [docs/DEBUGGING.md](docs/DEBUGGING.md) |
-| Edge-case stress tests: node setups chosen to find what breaks | 🟡 In progress: 1 of 10 cases scripted (B2: record holders die) | `scripts/edge/`, [docs/EDGE-CASES.md](docs/EDGE-CASES.md) |
+| Edge-case stress tests: node setups chosen to find what breaks | 🟡 In progress: 2 of 10 cases scripted (B1: half the network dies; B2: record holders die) | `scripts/edge/`, [docs/EDGE-CASES.md](docs/EDGE-CASES.md) |
 | `STORE` / `FIND_VALUE` (the DHT holds "who has file X") | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/06](docs/06-store-and-find-value.md) |
 | File transfer over TCP: pieces, SHA-256 verification, content keys | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/07](docs/07-file-transfer-over-tcp.md) |
 | Share a file / download it from the CLI; transfer demo | ✅ Done | `share` / `fetch` console commands, `scripts/demo-transfer.sh` |
@@ -231,12 +231,23 @@ repeat the same joins and targets. Walkthrough of a 3-round lookup:
 ### Edge cases (what breaks)
 
 ```sh
+bash scripts/edge/b1-half-the-network-dies.sh  # env: N=16 K=4 KILL=8 TARGETS=4 BASE_PORT=9500 SEED=1
 bash scripts/edge/b2-record-holders-die.sh     # env: N=8 BASE_PORT=9525 SEED=1
 ```
 
 Scripts in `scripts/edge/` set up specific node graphs to find the
 code's limits. Each one PASSes when the code behaves as its documented
-prediction says, including "this breaks". B2 kills the 3 nodes holding a
+prediction says, including "this breaks". B1 kills 8 of 16 nodes. The
+same 4 lookups go from 133 ms to ~10 s, don't get faster when repeated,
+and every one returns fewer than the k closest live nodes:
+
+```
+  pass 1  6da4c727…  rounds=2  rpcs=4   failed=0    111ms  ok
+  pass 2  6da4c727…  rounds=2  rpcs=4   failed=3    2.06s  SHORT: got [0] want [0 3 6 8]
+  pass 3  6da4c727…  rounds=2  rpcs=4   failed=3    2.08s  SHORT: got [0] want [0 3 6 8]
+```
+
+B2 kills the 3 nodes holding a
 file's provider record while the seeder stays up. The file can't be
 found, and re-sharing doesn't bring it back:
 
@@ -361,10 +372,13 @@ Here is whether each one blocks the end goal:
 
 **Found by the edge cases, not (yet) a labeled simplification:** a
 lookup starts from only the k closest contacts in the routing table, and
-a contact that times out stays there. When all of those are dead, the
-lookup stops with nothing, even though the node knows live nodes farther
-away. Edge case B2 shows this losing a file whose seeder is still
-online ([EDGE-CASES.md](docs/EDGE-CASES.md#b2--the-provider-record-holders-all-die)).
+a contact that times out stays there, and failed candidates keep their
+slots in the lookup's k-closest list. After nodes die, lookups return
+short answers, or nothing, even though the node knows live nodes farther
+away. Edge case B1 shows every lookup coming back short after half the
+network dies ([EDGE-CASES.md](docs/EDGE-CASES.md#b1--half-the-network-dies-at-once)).
+B2 shows it losing a file whose seeder is still online
+([EDGE-CASES.md](docs/EDGE-CASES.md#b2--the-provider-record-holders-all-die)).
 It blocks the churn and recovery experiments. Fix it in `lookup.go`
 together with republishing, before measuring recovery.
 

@@ -24,8 +24,16 @@ Each case is a script in `scripts/edge/`. Every script:
   their console, using `scripts/lib/nodes.sh` plus `scripts/lib/edge.sh`.
 
 ```sh
+bash scripts/edge/b1-half-the-network-dies.sh  # env: N=16 K=4 KILL=8 TARGETS=4 BASE_PORT=9500 SEED=1
 bash scripts/edge/b2-record-holders-die.sh     # env: N=8 BASE_PORT=9525 SEED=1
 ```
+
+**The main finding so far** (B1 and B2 both show it): a lookup only
+ever starts from the k closest contacts in the routing table, a contact
+that times out is never removed, and failed candidates keep their slots
+in the lookup's k-closest list. So once nodes die, lookups return
+**short answers** (live nodes missing), and in the worst case **nothing
+at all**, even though live nodes are known. Nothing improves on its own.
 
 ## The catalogue
 
@@ -40,7 +48,7 @@ yet tested).
 | A3 | Two islands joined by one bridge node; the bridge is killed | Cross-island lookups work, then never heal (no bucket refresh) | ⬜ |
 | A4 | Tiny buckets (k = 1, 2) at N = 20 | Some lookups miss the true closest nodes | ⬜ |
 | **B. Churn** | | | |
-| B1 | Kill half the nodes, then repeat the same lookups | +1 RPC timeout per round with a dead contact, and the repeat is just as slow (dead contacts are never removed) | ⬜ |
+| B1 | Kill half the nodes, then repeat the same lookups | +1 RPC timeout per round with a dead contact, the repeat is just as slow, and answers come back **short** | ✅ [below](#b1--half-the-network-dies-at-once) |
 | B2 | Every node holding a file's provider record dies; the seeder stays up | The file can't be found, and **re-sharing doesn't fix it** | ✅ [below](#b2--the-provider-record-holders-all-die) |
 | B3 | Late joiners with IDs closer to a key than its holders | `get` finds nothing: the value never moves to them | ⬜ |
 | B4 | Seeder restarts with the same ID on a new port and re-shares | Every download wastes a connection on the stale record | ⬜ |
@@ -51,6 +59,137 @@ yet tested).
 **Ports.** Each case has its own block so they can run side by side with
 the demos: A1 9400, A2 9425, A3 9450, A4 9475, B1 9500, B2 9525, B3 9550,
 B4 9575, C1 9600, C2 9625 (override with `BASE_PORT`).
+
+---
+
+## B1 — half the network dies at once
+
+**Script:** `scripts/edge/b1-half-the-network-dies.sh`
+
+### Setup
+
+16 nodes, `k = 4`, each joining through a randomly chosen running node
+(as in `demo-big-network.sh`), so lookups take 2–3 rounds. One node, the
+**querier**, looks up 4 random targets three times:
+
+```
+pass 1   all 16 alive                         baseline
+         ── 8 random nodes killed at once (SIGKILL) ──
+pass 2   8 alive                              right after the kill
+pass 3   8 alive                              the same lookups again
+```
+
+The querier, the victims and the targets all come from `SEED`. Each
+answer is compared with the brute-force 4 closest **live** nodes. Each
+lookup is timed on the monotonic clock (`now_ms` in `edge.sh`).
+
+### Prediction
+
+| Pass | Predicted | Why |
+|---|---|---|
+| 1 | correct, 0 failed RPCs, milliseconds | nothing's dead |
+| 2 | failed RPCs; ≥ 2 s for every lookup that meets a dead contact | rounds are synchronous: a round waits for its slowest RPC, and a dead one takes the full `--rpc-timeout` (2 s) ([05](05-iterative-parallel-lookup.md)) |
+| 3 | the **same** dead contacts asked again; just as slow | a timeout never removes a contact from the routing table ([02](02-routing-table-and-kbuckets.md)), so nothing is learned |
+| 2, 3 | answers **short**: right nodes, right order, but live ones missing | failed candidates keep their k-closest slots (see below). **Learned from the first runs**, not predicted up front |
+
+### Real output (`SEED=1`)
+
+```
+  querier: node10;  to be killed: node5 node7 node9 node11 node12 node13 node14 node15
+
+=== Pass 1: node10 looks up 4 targets, everyone alive ===
+  pass 1  6da4c727…  rounds=2  rpcs=4   failed=0    111ms  ok
+  pass 1  d4183492…  rounds=3  rpcs=7   failed=0      7ms  ok
+  pass 1  64416b78…  rounds=2  rpcs=4   failed=0      7ms  ok
+  pass 1  e66a18d1…  rounds=2  rpcs=4   failed=0      8ms  ok
+  pass 1  total: 0 failed RPCs, 133ms for 4 lookups, 0 wrong answer(s), 0 of them short
+
+=== Killing 8 of 16 nodes at once (SIGKILL) ===
+  alive:  node0 node1 node2 node3 node4 node6 node8 node10
+  node10's routing table: 10 contacts in 4 non-empty buckets, 5 of them now dead
+
+=== Pass 2: the same lookups, right after the kill ===
+  pass 2  6da4c727…  rounds=2  rpcs=4   failed=3    2.06s  SHORT: got [0] want [0 3 6 8]
+  pass 2  d4183492…  rounds=2  rpcs=4   failed=2    2.10s  SHORT: got [2 8] want [2 8 1 4]
+  pass 2  64416b78…  rounds=2  rpcs=4   failed=3    2.11s  SHORT: got [0] want [0 3 6 8]
+  pass 2  e66a18d1…  rounds=2  rpcs=4   failed=2    4.06s  SHORT: got [8 2] want [8 2 4 1]
+  pass 2  total: 10 failed RPCs, 10.35s for 4 lookups, 4 wrong answer(s), 4 of them short
+
+=== Pass 3: the same lookups once more ===
+  pass 3  6da4c727…  rounds=2  rpcs=4   failed=3    2.08s  SHORT: got [0] want [0 3 6 8]
+  pass 3  d4183492…  rounds=2  rpcs=4   failed=2    2.08s  SHORT: got [2 8] want [2 8 1 4]
+  pass 3  64416b78…  rounds=2  rpcs=4   failed=3    2.08s  SHORT: got [0] want [0 3 6 8]
+  pass 3  e66a18d1…  rounds=2  rpcs=4   failed=2    4.17s  SHORT: got [8 2] want [8 2 4 1]
+  pass 3  total: 10 failed RPCs, 10.43s for 4 lookups, 4 wrong answer(s), 4 of them short
+
+PASS: after half the network died, lookups paid an RPC timeout per dead contact, paid it again on the repeat, and returned short answers.
+```
+
+`got [0] want [0 3 6 8]` means: the querier got back node0 only; the
+true 4 closest live nodes are node0, node3, node6, node8. In node index
+terms, `got` is always the start of `want`.
+
+**Seeds 1–4 (64 lookups after the kill) all give the same picture:**
+
+| SEED | pass 1 | pass 2 | pass 3 | short answers (pass 2 / 3) |
+|---|---|---|---|---|
+| 1 | 133 ms | 10.35 s, 10 failed | 10.43 s, 10 failed | 4/4 · 4/4 |
+| 2 | 137 ms | 12.16 s, 9 failed | 10.64 s, 9 failed | 4/4 · 4/4 |
+| 3 | 150 ms | 12.44 s, 8 failed | 12.45 s, 8 failed | 4/4 · 4/4 |
+| 4 | 27 ms | 10.30 s, 11 failed | 14.53 s, 11 failed | 4/4 · 4/4 |
+
+Seed 4 includes `SHORT: got [] want [2 1 7 12]`: a lookup that found
+**no node at all** while 8 were alive. The failed-RPC counts repeat
+exactly from pass 2 to pass 3. The time can differ: it depends on whether
+a lookup's dead contacts land in one round (one 2 s wait) or two.
+
+### Why the answers are short: one lookup, round by round
+
+One lookup from `SEED=2` (querier node5, target `62433a6b…`), pass 2,
+from node5's log (timestamps kept, IDs shortened):
+
+```
+01.166  rpc sent      FIND_NODE to=4e07e18a…:9511        round 1: the 3 closest known
+01.166  rpc sent      FIND_NODE to=798cecdb…:9509
+01.166  rpc sent      FIND_NODE to=21efa2ee…:9500
+01.167  rpc received  FIND_NODE_RESP ×3                   all alive, answered in 1 ms
+01.167  rpc sent      FIND_NODE to=4d9ff77f…:9510        round 2: the not-yet-asked
+01.167  rpc sent      FIND_NODE to=69352a7f…:9512          candidates among the k closest
+03.169  lookup converged rounds=2 rpcs_sent=5 rpcs_failed=2 closest_found=2
+```
+
+`:9510` and `:9512` are dead. Round 2 waits the full 2 s for them, and
+then the lookup **stops**. In `iterativeFind` (`lookup.go`) the
+candidate list is trimmed to the k = 4 closest after every round, and
+the two dead nodes are among those 4. All 4 are now "queried", so the
+loop ends. The result leaves out failed candidates, so 2 nodes come back.
+The live nodes that should fill those 2 slots were trimmed away earlier,
+or never added, because the dead ones were closer.
+
+The paper's rule is the opposite: nodes that fail to respond "are
+removed from consideration until and unless they do respond" (Sec. 2.3).
+The lookup should keep going until it has heard back from k live nodes.
+
+### What it shows, and what would fix it
+
+After churn, the network is **slow**: about 2 s per round that meets a
+dead contact, against ~10 ms before. It **doesn't recover**: pass 3 asks
+the same dead nodes. And it's **wrong**: every lookup after the kill
+returned fewer than the k closest live nodes. Since `Store` and
+`FindValue` are built on the same lookup, B2's lost file is the same
+problem one level up.
+
+Fixes, none made here (they change core code):
+
+| Problem | Fix | Where | Paper |
+|---|---|---|---|
+| short answers | drop failed candidates from the k-closest list, so the lookup keeps going until k live nodes answered | `lookup.go` | Sec. 2.3 |
+| 2 s per round | keep α RPCs in flight instead of synchronous rounds | `lookup.go` | Sec. 2.3 |
+| no learning | remove a contact after repeated RPC failures | `node.go`, `bucket.go` | Sec. 4.1 |
+
+The first fix also turns this script's "short" assertion into a FAIL.
+At that point, flip the prediction, the way `demo-seeder-death.sh` flips
+on the partial-seeding branch.
 
 ---
 
@@ -175,7 +314,9 @@ trims its candidate list to the k closest (`lookup.go`, after each
 round), **failed candidates still take up slots**. A live node that is
 slightly farther away gets trimmed even though a dead one is kept. The
 paper says nodes that fail to respond "are removed from consideration
-until and unless they do respond" (Sec. 2.3).
+until and unless they do respond" (Sec. 2.3). [B1](#b1--half-the-network-dies-at-once)
+shows this across a whole network: every lookup after the kill came
+back short.
 
 ### What it shows, and what would fix it
 
