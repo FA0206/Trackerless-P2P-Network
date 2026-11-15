@@ -3,22 +3,28 @@
 # Edge case A4: does a small k alone, with no failures, break lookups?
 # (docs/EDGE-CASES.md, case A4)
 #
-#   The SAME 20-node network is built three times, once each with k = 1,
-#   2 and 4: same node IDs, same random joins (each node bootstraps
-#   through a randomly chosen running node), same lookups. Only k differs.
+#   The SAME 20-node network is built four times: k = 1 without the
+#   refresh at join (--join-refresh=false, the original code's join), then
+#   k = 1, 2 and 4 with it. Same node IDs, same random joins (each node
+#   bootstraps through a randomly chosen running node), same lookups.
 #   QUERIERS nodes each look up TARGETS random IDs, and every answer is
 #   compared with the brute-force k closest nodes (as in
 #   demo-big-network.sh). Nobody dies.
 #
 # Prediction:
 #   - k = 4: every lookup is correct (demo-big-network.sh's setting).
-#   - k = 1: some lookups return the wrong node. A k-bucket then holds a
-#     single contact (paper Sec. 2.2), a FIND_NODE reply carries a single
-#     contact, and the lookup stops as soon as its one best candidate has
-#     been asked. One unlucky reply and it settles on a node that isn't
-#     the closest.
-#   - k = 2: in between (reported, not asserted).
-# The script PASSes when the k = 4 and k = 1 predictions hold.
+#   - k = 1 without the join refresh: some lookups return the wrong node.
+#     A k-bucket then holds a single contact (paper Sec. 2.2), a FIND_NODE
+#     reply carries a single contact, and the lookup stops as soon as its
+#     one best candidate has been asked. With nearly empty routing tables,
+#     one unlucky reply and it settles on a node that isn't the closest.
+#   - k = 1 with the join refresh (paper Sec. 2.3; refresh.go): at least
+#     as many correct. Each newcomer looks up a random ID in every bucket
+#     farther than its closest neighbor, so its table fills up, and every
+#     node it asks learns of it. Not necessarily all correct: k = 1 is
+#     still one contact per bucket and per reply.
+#   - k = 2: reported, not asserted.
+# The script PASSes when these hold.
 #
 # Usage: scripts/edge/a4-tiny-buckets.sh
 #        (env: N=20 QUERIERS=5 TARGETS=4 BASE_PORT=9475 SEED=1)
@@ -33,7 +39,8 @@ TARGETS="${TARGETS:-4}"
 BASE_PORT="${BASE_PORT:-9475}"
 SEED="${SEED:-1}"
 SEED_PREFIX=edgea4-
-KS="1 2 4"
+# k:join-refresh. The first is the original code's join, for comparison.
+RUNS="1:off 1:on 2:on 4:on"
 
 nodes_init
 node_ids_init "$N" # ID0..ID<N-1>; network g's node o+i reuses ID<i>
@@ -44,16 +51,19 @@ check() { # check <ok?> <text>
 }
 
 g=0
-for K in $KS; do
+for RUN in $RUNS; do
+	K="${RUN%%:*}" JR="${RUN##*:}"
+	JRFLAG=""
+	[ "$JR" = on ] || JRFLAG="--join-refresh=false"
 	o=$((g * N)) # node indexes o..o+N-1 (each needs its own FIFO); ports are reused
 	RANDOM="$SEED" # identical joins, queriers and targets in every network
 	echo
-	echo "=== k=$K: $N nodes on ports $BASE_PORT-$((BASE_PORT + N - 1)), random joins (SEED=$SEED) ==="
-	start_node "$o" "$BASE_PORT" - --k "$K" --id-seed "${SEED_PREFIX}0"
+	echo "=== k=$K, join refresh $JR: $N nodes on ports $BASE_PORT-$((BASE_PORT + N - 1)), random joins (SEED=$SEED) ==="
+	start_node "$o" "$BASE_PORT" - --k "$K" --id-seed "${SEED_PREFIX}0" $JRFLAG
 	eval "ID$o=\$ID0"
 	for ((i = 1; i < N; i++)); do
 		via=$((RANDOM % i))
-		start_node $((o + i)) $((BASE_PORT + i)) $((BASE_PORT + via)) --k "$K" --id-seed "$SEED_PREFIX$i"
+		start_node $((o + i)) $((BASE_PORT + i)) $((BASE_PORT + via)) --k "$K" --id-seed "$SEED_PREFIX$i" $JRFLAG
 		eval "ID$((o + i))=\$ID$i"
 	done
 	MEMBERS="$(seq "$o" $((o + N - 1)) | tr '\n' ' ')"
@@ -84,23 +94,25 @@ for K in $KS; do
 			fi
 		done
 	done
-	printf '  k=%s: %d of %d lookups correct, %d.%d rounds on average\n' "$K" "$OK" "$TOTAL" \
+	printf '  k=%s, join refresh %s: %d of %d lookups correct, %d.%d rounds on average\n' "$K" "$JR" "$OK" "$TOTAL" \
 		$((ROUNDS / TOTAL)) $((ROUNDS * 10 / TOTAL % 10))
 	printf "$WRONG_LINES"
-	eval "OK_$K=$OK"
+	eval "OK_${K}_$JR=$OK"
 	for i in $MEMBERS; do kill_node "$i"; done # free the ports for the next k
 	g=$((g + 1))
 done
 
 echo
 echo "=== Verdict ==="
-check "$([ "$OK_4" -eq $((QUERIERS * TARGETS)) ] && echo yes)" "k=4: $OK_4 of $((QUERIERS * TARGETS)) correct"
-check "$([ "$OK_1" -lt $((QUERIERS * TARGETS)) ] && echo yes)" "k=1: $OK_1 of $((QUERIERS * TARGETS)) correct, so a small k alone can return the wrong node"
-echo "  k=2: $OK_2 of $((QUERIERS * TARGETS)) correct (reported, not asserted)"
+ALL=$((QUERIERS * TARGETS))
+check "$([ "$OK_4_on" -eq "$ALL" ] && echo yes)" "k=4: $OK_4_on of $ALL correct"
+check "$([ "$OK_1_off" -lt "$ALL" ] && echo yes)" "k=1 without the join refresh: $OK_1_off of $ALL correct, so a small k alone can return the wrong node"
+check "$([ "$OK_1_on" -ge "$OK_1_off" ] && echo yes)" "k=1 with the join refresh: $OK_1_on of $ALL correct (was $OK_1_off)"
+echo "  k=2: $OK_2_on of $ALL correct (reported, not asserted)"
 
 echo
 if [ "$STATUS" -eq 0 ]; then
-	echo "PASS: with nothing dead, k=4 lookups were all correct and k=1 lookups were not."
+	echo "PASS: with nothing dead, k=4 lookups were all correct; k=1 got $OK_1_off of $ALL right without the join refresh and $OK_1_on with it."
 else
 	echo "FAIL (repeat this exact run with SEED=$SEED)"
 fi

@@ -24,31 +24,31 @@ Each case is a script in `scripts/edge/`. Every script:
   their console, using `scripts/lib/nodes.sh` plus `scripts/lib/edge.sh`.
 
 ```sh
-bash scripts/edge/run-all.sh                   # every case, one verdict line each (~2 min)
+bash scripts/edge/run-all.sh                   # every case, one verdict line each (~3 min)
 
 bash scripts/edge/a2-thundering-herd.sh        # env: N=20 K=4 QUERIERS=4 TARGETS=3 BASE_PORT=9425 SEED=1 RACE=1
-bash scripts/edge/a3-bridge-between-islands.sh # env: BASE_PORT=9450 (nothing random, no SEED)
+bash scripts/edge/a3-bridge-between-islands.sh # env: BASE_PORT=9450 REFRESH=3s (nothing random, no SEED)
 bash scripts/edge/a4-tiny-buckets.sh           # env: N=20 QUERIERS=5 TARGETS=4 BASE_PORT=9475 SEED=1
 bash scripts/edge/b1-half-the-network-dies.sh  # env: N=16 K=4 KILL=8 TARGETS=4 MAX_PASSES=10 BASE_PORT=9500 SEED=1 NODE_FLAGS=
 bash scripts/edge/b2-record-holders-die.sh     # env: N=8 BASE_PORT=9525 SEED=1 REPUBLISH=15s
 bash scripts/edge/b3-late-joiners-hide-a-value.sh  # env: N=8 LATE=4 BASE_PORT=9550 SEED=1 REPUBLISH=20s
 ```
 
-`run-all.sh` on the current code (with the lookup fix, stale contacts
-and republishing; B1, B2 and B3's predictions changed with them, see
-their sections and [FIXES.md](FIXES.md)):
+`run-all.sh` on the current code (with the lookup fix, stale contacts,
+republishing and bucket refresh; every case's prediction except A2's
+changed with them, see their sections and [FIXES.md](FIXES.md)):
 
 ```
-a2-thundering-herd                  7s  PASS: 19 nodes joined through one node at once; lookups were correct and no data race was reported.
-a3-bridge-between-islands          22s  PASS: an unused bridge's death split the network for good; a bridge that had carried one lookup each way could die harmlessly.
-a4-tiny-buckets                    14s  PASS: with nothing dead, k=4 lookups were all correct and k=1 lookups were not.
-b1-half-the-network-dies           59s  PASS: after half the network died, lookups paid a timeout per dead node, but no answer came back short, and by pass 7 the querier had stopped asking dead nodes.
-b2-record-holders-die              41s  PASS: with every record holder dead the file could not be found, though 2 providers were online, until the seeder's next republish brought it back.
-b3-late-joiners-hide-a-value       42s  PASS: newcomers closer to the key missed a value whose holders were alive, until the putter's next republish moved it to them.
+a2-thundering-herd                  6s  PASS: 19 nodes joined through one node at once; lookups were correct and no data race was reported.
+a3-bridge-between-islands          37s  PASS: an unused bridge's death split the network for good, unless one lookup had crossed it or bucket refresh had run; then it could die harmlessly.
+a4-tiny-buckets                    16s  PASS: with nothing dead, k=4 lookups were all correct; k=1 got 11 of 20 right without the join refresh and 15 with it.
+b1-half-the-network-dies           37s  PASS: after half the network died, lookups paid a timeout per dead node, but no answer came back short, and by pass 5 the querier had stopped asking dead nodes.
+b2-record-holders-die              37s  PASS: with every record holder dead the file could not be found, though 2 providers were online, until the seeder's next republish brought it back.
+b3-late-joiners-hide-a-value       41s  PASS: newcomers closer to the key missed a value whose holders were alive, until the putter's next republish moved it to them.
 ```
 
-B2 and B3 take ~40 s because they wait for real republishes (15 s and
-20 s intervals).
+A3, B2 and B3 take ~40 s because they wait for real refreshes and
+republishes (3 s, 15 s and 20 s intervals).
 
 The cases were written before swarming ([08](08-swarming.md)) was merged
 in, and re-run after it with the same verdicts. Swarming changes only
@@ -60,8 +60,8 @@ still fails at once with the same message, so B2's file case is unchanged.
 | Case | Holds up or breaks? | Headline number | Root cause | Fix |
 |---|---|---|---|---|
 | A2 thundering herd | **holds up** | 19/19 joins, 12/12 lookups correct, 0 data races in 20 race-detector processes | — | — |
-| A3 bridge between islands | **breaks if quiet** | quiet: 0 of 5 found across, forever; used: 5 of 5 | no bucket refresh | bucket refresh (Sec. 2.3) |
-| A4 tiny buckets | **breaks at k = 1** | k=1: 9–14 of 20 correct; k=4: 20 of 20 | thin routing tables: no post-join refresh | post-join bucket refresh (Sec. 2.3) |
+| A3 bridge between islands | **breaks if quiet and no refresh ran** | quiet: 0 of 5 found across, forever; used: 5 of 5; refreshed (3 s): 5 of 5, every A node knew all of B | contacts spread only through traffic | **done:** bucket refresh (Sec. 2.3); it has to run before the bridge dies (default every 1 h) |
+| A4 tiny buckets | **imperfect at k = 1** | k=1: 9–14 of 20 correct without the join refresh, 15–20 with it; k=4: 20 of 20 | thin routing tables after joining | **done:** join refresh (Sec. 2.3). k = 1 stays imperfect by nature |
 | B1 half the network dies | **slow at first, recovers; was wrong** | was: every answer short, and repeats no better. Now: none short; 2–8 s per lookup right after the kill, back to ms after 1 repeat (`--stale-after 1`) or 3–6 (default 5); SEED=4 still misses a live node | dead contacts in other nodes' tables (own shortlists and learning fixed) | **done:** drop failed candidates (Sec. 2.3), stale contacts (Sec. 4.1). Planned: bucket refresh |
 | B2 record holders die | **breaks until the next republish** | file unfindable with 2 providers online until the seeder's next republish (13–15 s later with a 15 s interval), which brings it back by itself | records written only at share time (fixed: republish) | **done:** lookup fix, republish (Sec. 2.5). Not yet: expiry |
 | B3 late joiners | **breaks until the next republish** | 13 of 16 newcomer `get`s miss; holders alive; the next republish moves the value to them | values move to closer nodes only at a republish | **done:** republish (Sec. 2.5). Not yet: hand-over on join |
@@ -88,7 +88,7 @@ that lookups stop at nodes with empty buckets (A4). Nodes that join near
 a key can't see a value sitting on healthy holders (B3). The paper's
 bucket refresh and hourly republish (Sec. 2.3, 2.5) were what was
 missing. **Republish is built now** (B2 and B3 recover at the next
-republish); bucket refresh is next.
+republish), and so is bucket refresh (A3's quiet bridge survives if a refresh ran first; A4's k = 1 tables fill up).
 
 **What holds up:** concurrency. Twenty processes joining through one
 node at the same instant, all built with the race detector, gave correct
@@ -105,8 +105,8 @@ and by how much else depends on fixing it first.
 | 1 | **B1** | Lookups around dead nodes are wrong (short answers) and slow, and don't improve. **Short answers and not improving: fixed.** Slow right after a death, and dead contacts in other nodes' replies: open | The root cause underneath B2. Every churn experiment runs into it, including the seeder-kill and time-to-recovery graph, and the answers are *wrong*, not just slow. A small change in one function | Drop failed candidates from the k-closest list so the lookup continues to live nodes; remove a contact after repeated RPC failures. For the latency graph: keep α RPCs in flight instead of synchronous rounds | `lookup.go`, `node.go`, `bucket.go` |
 | 2 | **B2** | A file becomes unfindable when its record holders die, even with providers online. **Fixed: the next republish brings it back** | Directly the end goal ("downloads keep working when nodes leave") and the recovery graph. Needs fix 1 first, or the republish lookup stalls on the same dead contacts | Republish values hourly; expire them after 24 h (Sec. 2.5) | `store.go`, `values.go` |
 | 3 | **B3** | Newcomers near a key can't see its value. **Fixed one interval late by republishing**; hand-over on join: open | Same family as B2, but nothing is lost: the holders are alive. Hourly republishing from fix 2 resolves it over time | Fix 2, plus: when a node meets a newcomer closer to a key it holds, it STOREs the value there (Sec. 2.5) | `node.go` (`touchContact`) |
-| 4 | **A3** | A quiet group cut off by one node's death never reconnects | Matters for the multi-device demo (two LANs started separately) and for long-idle networks. Busy networks connect themselves through traffic, so it rarely bites today | Bucket refresh: a lookup for a random ID in every bucket not used for a while (Sec. 2.3) | `node.go` |
-| 5 | **A4** | With k = 1, lookups go wrong with nobody dead | Only matters for k ≤ 2. Every demo uses k ≥ 3, where all lookups were correct. Shares its code with fix 4 | After joining, refresh every bucket farther away than the closest neighbor (Sec. 2.3) | `node.go` (`Bootstrap`) |
+| 4 | **A3** | A quiet group cut off by one node's death never reconnects. **Fixed by bucket refresh, if it runs before the death** | Matters for the multi-device demo (two LANs started separately) and for long-idle networks. Busy networks connect themselves through traffic, so it rarely bites today | Bucket refresh: a lookup for a random ID in every bucket not used for a while (Sec. 2.3) | `node.go` |
+| 5 | **A4** | With k = 1, lookups go wrong with nobody dead. **Much better with the join refresh** (15–20 of 20) | Only matters for k ≤ 2. Every demo uses k ≥ 3, where all lookups were correct. Shares its code with fix 4 | After joining, refresh every bucket farther away than the closest neighbor (Sec. 2.3) | `node.go` (`Bootstrap`) |
 | — | **A2** | — | Holds up; nothing to fix | — | — |
 
 **Three code changes cover all five.** In order: **(a)** lookup failure
@@ -127,8 +127,14 @@ handling (fixes B1, unblocks B2); **(b)** republish and hand-over
   step 4 (a manual re-share or re-`put`) became "wait for the next
   republish". Hand-over on join (B3 at once, not one interval later) and
   expiry are not built.
-- **next:** (c) bucket refresh. Each step's investigation, change and
-  evidence is in [FIXES.md](FIXES.md).
+- **(c), bucket refresh, done:** at join, every bucket farther than the
+  closest neighbor; every `--refresh-interval`, every idle bucket (paper
+  Sec. 2.3). A3 gained a third, "refreshed" network that survives the
+  bridge's death. A4 compares k = 1 with and without the join refresh.
+  With `--refresh-interval 5s`, B1's missed live nodes went away.
+- **All three code changes are in.** Still open: value expiry, hand-over
+  on join, and synchronous lookup rounds. Each step's investigation,
+  change and evidence is in [FIXES.md](FIXES.md).
 
 Each fix will flip some of these scripts to FAIL. Then update that script's
 prediction and its section here in the same change, as
@@ -145,8 +151,8 @@ code.
 |---|---|---|---|
 | **A. How nodes join** | | | |
 | A2 | Thundering herd: 20 nodes join via node0 at the same moment | Holds up: all join, lookups correct, no data races | [section](#a2--a-thundering-herd-of-joins) |
-| A3 | Two islands joined by one bridge node; the bridge is killed | If nobody used the bridge: split for good. If one lookup crossed it: no harm | [section](#a3--two-islands-and-one-bridge) |
-| A4 | Tiny buckets (k = 1, 2, 4) on the same 20 nodes | k = 1 returns wrong nodes with nothing dead; k = 4 doesn't | [section](#a4--tiny-buckets) |
+| A3 | Two islands joined by one bridge node; the bridge is killed | If nobody used the bridge: split for good. If one lookup crossed it, or bucket refresh ran: no harm | [section](#a3--two-islands-and-one-bridge) |
+| A4 | Tiny buckets (k = 1, 2, 4) on the same 20 nodes, k = 1 with and without the join refresh | k = 1 returns wrong nodes with nothing dead, fewer with the join refresh; k = 4 doesn't | [section](#a4--tiny-buckets) |
 | **B. Churn** | | | |
 | B1 | Kill half the nodes, then repeat the same lookups until none asks a dead node | +1 RPC timeout per round with a dead contact at first; the querier **learns** (stale contacts) and gets back to milliseconds. No answer is **short** (they were before the lookup fix) | [section](#b1--half-the-network-dies-at-once) |
 | B2 | Every node holding a file's provider record dies; the seeder stays up | The file can't be found until the seeder's **next republish** brings it back by itself | [section](#b2--the-provider-record-holders-all-die) |
@@ -208,6 +214,12 @@ PASS: 19 nodes joined through one node at once; lookups were correct and no data
 Seeds 2 and 3: the same verdict. Joins took 269 ms and 209 ms, and the
 smallest routing table right after joining held 1 and 2 contacts.
 
+**With the join refresh** ([04](04-bootstrap-and-join.md), [FIXES.md](FIXES.md#5-bucket-refresh-a3-a4-b1)),
+the same run reports `routing table size right after joining: min 9,
+median 12, max 14`, against `min 2, median 5, max 6` above. Each
+newcomer's refresh lookups reach most of the network, and the verdict is
+unchanged.
+
 ### What it shows
 
 The concurrency design holds. One detail is worth noticing: a node that
@@ -256,13 +268,20 @@ same counts.
 - **quiet:** `table` shows that the only cross-island knowledge is the 4
   A nodes knowing X and b0 knowing X. After X dies, lookups find **0**
   nodes on the other island, pay a 2 s timeout on the dead X, and the
-  repeat is the same. Nothing reconnects the islands: there's no bucket
-  refresh ([04](04-bootstrap-and-join.md)), and no node ever tries
-  another bootstrap.
+  repeat is the same. Nothing reconnects the islands: the periodic bucket
+  refresh is hourly by default, so none runs before X dies, and once X
+  is dead no refresh could help, because no path is left.
 - **used:** the islands **survive** losing X. b3's lookup through the
   bridge sent FIND_NODE to every A node directly, and each recorded b3
   (`handleMessage` → `touchContact`, [02](02-routing-table-and-kbuckets.md)).
   After that, the islands no longer depend on X.
+- **refreshed** (added with bucket refresh): the quiet setup again, on
+  the quiet network's ports once it's gone, but every node runs
+  `--refresh-interval 3s` (`REFRESH`). The script waits until every node
+  has done two periodic refreshes, then kills X. Prediction: the islands
+  **survive**, like "used", though nobody looked anything up. X's refresh
+  lookups ask b0 and so learn island B, and the A nodes' refreshes then
+  ask X and reach B directly ([02](02-routing-table-and-kbuckets.md#bucket-refresh-keeping-quiet-buckets-alive)).
 
 ### Real output
 
@@ -280,27 +299,38 @@ same counts.
   as predicted: each A node knows only X across the gap (4 in total from a1-a4, b1-b4); among B only b0 knows X
 
 === used: one lookup across the bridge from each side, before it dies ===
-    b3 looks up a3: rounds=4 rpcs_sent=10 rpcs_failed=0   124ms  found 5 of 5 on the other island, 10 nodes in all
-    a3 looks up b3: rounds=4 rpcs_sent=10 rpcs_failed=0   129ms  found 5 of 5 on the other island, 10 nodes in all
+    b3 looks up a3: rounds=4 rpcs_sent=10 rpcs_failed=0     9ms  found 5 of 5 on the other island, 10 nodes in all
+    a3 looks up b3: rounds=4 rpcs_sent=10 rpcs_failed=0     9ms  found 5 of 5 on the other island, 10 nodes in all
   as predicted: the bridge works: both lookups found all 5 nodes on the other island
 
 === Killing the bridge X in both networks (SIGKILL) ===
 
 === quiet: lookups across the gap, twice ===
     b3 looks up a3: rounds=2 rpcs_sent=5 rpcs_failed=1   2.07s  found 0 of 5 on the other island, 4 nodes in all
-    a3 looks up b3: rounds=2 rpcs_sent=5 rpcs_failed=1   2.05s  found 0 of 5 on the other island, 4 nodes in all
-    b3 looks up a3: rounds=2 rpcs_sent=5 rpcs_failed=1   2.06s  found 0 of 5 on the other island, 4 nodes in all
+    a3 looks up b3: rounds=2 rpcs_sent=5 rpcs_failed=1   2.06s  found 0 of 5 on the other island, 4 nodes in all
+    b3 looks up a3: rounds=2 rpcs_sent=5 rpcs_failed=1   2.07s  found 0 of 5 on the other island, 4 nodes in all
     a3 looks up b3: rounds=2 rpcs_sent=5 rpcs_failed=1   2.07s  found 0 of 5 on the other island, 4 nodes in all
   as predicted: 4 lookups found 0 nodes across the gap: the islands are cut apart, and stay that way
 
 === used: the same lookups ===
-    b3 looks up a3: rounds=4 rpcs_sent=10 rpcs_failed=1   2.06s  found 5 of 5 on the other island, 9 nodes in all
+    b3 looks up a3: rounds=4 rpcs_sent=10 rpcs_failed=1   2.08s  found 5 of 5 on the other island, 9 nodes in all
     a3 looks up b3: rounds=4 rpcs_sent=10 rpcs_failed=1   2.07s  found 5 of 5 on the other island, 9 nodes in all
     b3 looks up a3: rounds=4 rpcs_sent=10 rpcs_failed=1   2.07s  found 5 of 5 on the other island, 9 nodes in all
     a3 looks up b3: rounds=4 rpcs_sent=10 rpcs_failed=1   2.07s  found 5 of 5 on the other island, 9 nodes in all
   as predicted: 4 lookups found 20 of 20 possible across the gap: one lookup through the bridge had already connected the islands
 
-PASS: an unused bridge's death split the network for good; a bridge that had carried one lookup each way could die harmlessly.
+=== refreshed: the quiet setup again, with --refresh-interval 3s, and nobody looking anything up ===
+  [refreshed] island A: ports 9450-9454, island B: 9455-9459, bridge X: 9460
+    every node has refreshed twice: buckets=3 rpcs_sent=30 rpcs_failed=0 routing_table_size=10 learned=0 (a3's latest)
+    a1-a4 now know 20 of the 20 (a, b) pairs across the gap (quiet: 0)
+    killed the bridge X
+    b3 looks up a3: rounds=4 rpcs_sent=10 rpcs_failed=1   2.09s  found 5 of 5 on the other island, 9 nodes in all
+    a3 looks up b3: rounds=4 rpcs_sent=10 rpcs_failed=1   2.11s  found 5 of 5 on the other island, 9 nodes in all
+    b3 looks up a3: rounds=4 rpcs_sent=10 rpcs_failed=1   2.08s  found 5 of 5 on the other island, 9 nodes in all
+    a3 looks up b3: rounds=4 rpcs_sent=10 rpcs_failed=1   2.07s  found 5 of 5 on the other island, 9 nodes in all
+  as predicted: 4 lookups found 20 of 20 possible across the gap: refresh had connected the islands before the bridge died
+
+PASS: an unused bridge's death split the network for good, unless one lookup had crossed it or bucket refresh had run; then it could die harmlessly.
 ```
 
 How to read the counts:
@@ -312,9 +342,12 @@ How to read the counts:
 - **used, before the kill: "10 nodes in all"** = everyone except the
   querier, X included. After the kill, **9** = every live node except the
   querier. That's the correct answer.
-- **used, after the kill: still 2 s each.** The islands are fine, but
-  every node still has dead X in its table and asks it on every lookup
-  (B1's "nothing is learned", again).
+- **used and refreshed, after the kill: still 2 s each.** The islands are
+  fine, but each querier still has dead X in its table and asks it, until
+  X fails 5 RPCs and goes stale ([02](02-routing-table-and-kbuckets.md#stale-contacts-a-node-that-stops-answering)).
+- **refreshed: "20 of the 20 (a, b) pairs".** Before X died, every A node
+  (a1–a4) knew every B node (b0–b4), from refreshing alone. In the quiet
+  network that count was 0.
 
 ### What it shows
 
@@ -323,21 +356,20 @@ How to read the counts:
   islands for good. That's the "every message updates the sender's
   bucket" rule ([02](02-routing-table-and-kbuckets.md)) doing what the
   paper intends.
-- **Without traffic, nothing spreads.** A quiet island stays one node
-  deep, and a single death cuts it off with no way back. In the paper,
-  bucket refresh would eventually send a lookup into every distant bucket
-  (Sec. 2.3), and X's island-mates would learn b0 that way, *before* X
-  died. Here there is no refresh (README simplifications table, "No
-  bucket refresh").
+- **Without traffic, nothing spreads, so refresh makes traffic.** A quiet
+  island stays one node deep, and a single death cuts it off with no way
+  back. Bucket refresh sends a lookup into every idle bucket (paper
+  Sec. 2.3), and in the "refreshed" network two passes connected the
+  islands completely before X died. It only helps if it runs before the
+  death, so the refresh interval sets how long a fresh bridge is a single
+  point of failure. That's 1 h by default, the paper's choice.
 - **A real network is mostly "used".** Real nodes join through one
   well-known node and then do lookups all the time, so a true one-node
   bridge is rare. It does happen with separately started groups that
   meet late, for example two LANs in the multi-device demo.
 
-Fix (core code, not made here): bucket refresh, i.e. a periodic lookup
-for a random ID in each bucket not used recently (`node.go`;
-paper Sec. 2.3). It also fills the quiet island's tables before the
-bridge dies.
+Fix: bucket refresh, a periodic lookup for a random ID in each bucket
+not used recently (paper Sec. 2.3). **Done** (`refresh.go`; [FIXES.md](FIXES.md#5-bucket-refresh-a3-a4-b1)).
 
 ---
 
@@ -347,52 +379,72 @@ bridge dies.
 
 ### Setup
 
-The **same** 20-node network is built three times, with k = 1, 2 and 4:
-the same node IDs, the same random joins (each node bootstraps through a
-random running node, re-seeded from `SEED` each time), and the same
-lookups (5 queriers × 4 random targets). Only k differs. Nobody dies.
-Every answer is compared with the brute-force k closest. The three
-networks run one after another on the same ports.
+The **same** 20-node network is built four times: k = 1 **without** the
+refresh at join (`--join-refresh=false`, which is how the original code
+joined), then k = 1, 2 and 4 **with** it. Same node IDs, same random
+joins (each node bootstraps through a random running node, re-seeded
+from `SEED` each time), same lookups (5 queriers × 4 random targets).
+Nobody dies. Every answer is compared with the brute-force k closest.
+The networks run one after another on the same ports. (The first
+version built three networks, k = 1, 2, 4, all without a join refresh,
+because there wasn't one.)
 
 ### Prediction
 
 - **k = 4:** every lookup correct (`demo-big-network.sh` runs this
   setting).
-- **k = 1:** some lookups return the wrong node. Each bucket holds one
-  contact, each FIND_NODE reply carries one contact, and the lookup stops
-  once its single best candidate has been asked.
-- **k = 2:** in between; reported, not asserted.
+- **k = 1 without the join refresh:** some lookups return the wrong
+  node. Each bucket holds one contact, each FIND_NODE reply carries one
+  contact, and the lookup stops once its single best candidate has been
+  asked. With nearly empty tables (see "Why" below), one unlucky reply is
+  enough.
+- **k = 1 with the join refresh:** at least as many correct. A newcomer
+  looks up a random ID in every bucket farther than its closest
+  neighbor, so its table fills, and every node it asks learns about it.
+  Not necessarily all correct: k = 1 is still one contact per bucket and
+  per reply.
+- **k = 2:** reported, not asserted.
 
 ### Real output (`SEED=1`)
 
 ```
-=== k=1: 20 nodes on ports 9475-9494, random joins (SEED=1) ===
-  k=1: 11 of 20 lookups correct, 1.8 rounds on average
+=== k=1, join refresh off: 20 nodes on ports 9475-9494, random joins (SEED=1) ===
+  k=1, join refresh off: 11 of 20 lookups correct, 1.8 rounds on average
     node7 -> 729dbc18…  rounds=1  got [8] want [19]
     node13 -> 25cdfbf6…  rounds=3  got [12] want [18]
     node13 -> 1753323d…  rounds=1  got [5] want [17]
     …                                                   (9 wrong in all)
 
-=== k=2: 20 nodes on ports 9475-9494, random joins (SEED=1) ===
-  k=2: 11 of 20 lookups correct, 1.6 rounds on average
-    node13 -> 1753323d…  rounds=1  got [5 12] want [17 7]
-    …                                                   (9 wrong in all)
+=== k=1, join refresh on: 20 nodes on ports 9475-9494, random joins (SEED=1) ===
+  k=1, join refresh on: 19 of 20 lookups correct, 1.8 rounds on average
+    node6 -> 637ff4aa…  rounds=3  got [19] want [5]
 
-=== k=4: 20 nodes on ports 9475-9494, random joins (SEED=1) ===
-  k=4: 20 of 20 lookups correct, 2.1 rounds on average
+=== k=2, join refresh on: 20 nodes on ports 9475-9494, random joins (SEED=1) ===
+  k=2, join refresh on: 20 of 20 lookups correct, 1.8 rounds on average
 
-PASS: with nothing dead, k=4 lookups were all correct and k=1 lookups were not.
+=== k=4, join refresh on: 20 nodes on ports 9475-9494, random joins (SEED=1) ===
+  k=4, join refresh on: 20 of 20 lookups correct, 2.0 rounds on average
+
+=== Verdict ===
+  as predicted: k=4: 20 of 20 correct
+  as predicted: k=1 without the join refresh: 11 of 20 correct, so a small k alone can return the wrong node
+  as predicted: k=1 with the join refresh: 19 of 20 correct (was 11)
+  k=2: 20 of 20 correct (reported, not asserted)
+
+PASS: with nothing dead, k=4 lookups were all correct; k=1 got 11 of 20 right without the join refresh and 19 with it.
 ```
 
-| SEED | k = 1 | k = 2 | k = 4 |
-|---|---|---|---|
-| 1 | 11 of 20 | 11 of 20 | 20 of 20 |
-| 2 | 9 of 20 | 20 of 20 | 20 of 20 |
-| 3 | 14 of 20 | 20 of 20 | 20 of 20 |
+| SEED | k = 1, no join refresh | k = 1 | k = 2 | k = 4 |
+|---|---|---|---|---|
+| 1 | 11 of 20 | 19 of 20 (15 in another run) | 20 of 20 | 20 of 20 |
+| 2 | 9 of 20 | 17 of 20 (20 in another run) | 19 of 20 | 20 of 20 |
+| 3 | 14 of 20 | 18 of 20 | 20 of 20 | 20 of 20 |
 
-So k = 1 gets about half its lookups wrong, more than "some". k = 2
-depends on the network: perfect for two seeds, and as bad as k = 1 for
-the other.
+Without the join refresh the counts are the original ones (9–14 of 20).
+With it, k = 1 gets 15–20 of 20. The exact count varies a little from run
+to run, because concurrent joins don't fill tables identically, which is
+why the check is "at least as many". Before the join refresh, k = 2 was
+as bad as k = 1 for SEED=1 (11 of 20). Now it gets 19–20.
 
 ### Why: the routing tables are nearly empty
 
@@ -420,10 +472,11 @@ step, and with k = 1 every reply carries a single contact. A join
 reaches a handful of nodes, and only those learn about the newcomer.
 The paper adds a step for exactly this: after its self-lookup, a joining
 node **refreshes every bucket farther away than its closest neighbor**,
-doing one lookup into each (Sec. 2.3). That step is skipped here (README
-simplifications table, "No bucket refresh", and
-[04](04-bootstrap-and-join.md)). At k = 4 and above, replies carry
-enough contacts that it hasn't mattered so far. At k = 1 it does.
+doing one lookup into each (Sec. 2.3). The original code skipped that
+step. At k = 4 and above, replies carry enough contacts that it didn't
+matter. At k = 1 it did. It's built now ([04](04-bootstrap-and-join.md)),
+and the "no join refresh" network above reproduces the old join for
+comparison. (The node5 analysis above is from that run.)
 
 ### What it shows
 
@@ -431,10 +484,16 @@ Lookup correctness depends on routing-table *coverage*: a contact in
 every bucket where nodes exist. Small k removes the redundancy that
 hides missing coverage. The demos use k = 3 (the 5-node transfer and
 seeder-death demos, where every node is within a lookup or two anyway),
-4 or 20. Treat the post-join refresh as the fix if experiments ever need
-a small k on a bigger network. Before the evaluation graphs, it's worth adding
-anyway: it makes the lookup-latency results less dependent on join
-order.
+4 or 20.
+
+The join refresh **is** that fix, and it's built: k = 1 went from 9–14
+to 15–20 of 20 correct. It can't make k = 1 perfect, since one contact
+per bucket and per reply leaves no redundancy. It also makes
+lookup-latency results less dependent on join order, which matters for
+the evaluation graphs. A2 shows the same effect at k = 4: routing tables
+right after joining grew from a median of 5 contacts to 12. Periodic
+refresh (`--refresh-interval`) keeps that coverage up as nodes come and
+go ([FIXES.md](FIXES.md#5-bucket-refresh-a3-a4-b1)).
 
 ---
 
@@ -580,7 +639,8 @@ fails once per pass, so it takes 5 passes from the first meeting. With 1,
 every dead node is skipped after its first timeout. Even pass 2 is
 cheaper (6–8 failed RPCs instead of 14–17), because the first lookups'
 failures spare the later ones. SEED=4's wrong answers don't go away with
-either threshold: see "Why SEED=4 misses a live node" below.
+either threshold: see "Why SEED=4 misses a live node" below, and "With
+bucket refresh" for what does fix them.
 
 ### After the lookup fix, before stale contacts
 
@@ -710,6 +770,31 @@ requests, so it never counts a failure. What would fix it is traffic
 from node2 itself: **bucket refresh** (Sec. 2.3), a lookup for a random
 ID in each bucket, which makes node2 test its own contacts.
 
+### With bucket refresh
+
+Bucket refresh is built now ([FIXES.md](FIXES.md#5-bucket-refresh-a3-a4-b1)).
+B1 runs its nodes with the defaults, so only the **join** refresh
+happens within the script. That alone changes the tables enough that
+SEED=4's misses are gone (0 of 24). But SEED=1 now has 2 misses in pass
+2 (`WRONG: got [0 3 6 4] want [0 3 6 8]`). Fuller tables also hold more
+of the soon-dead nodes, and the cause is unchanged: survivors still hand
+out contacts they never test.
+
+**Periodic** refresh removes the cause. With
+`NODE_FLAGS="--refresh-interval 5s"` every survivor refreshes, and so
+tests, its own contacts every 5 s:
+
+| SEED | refresh | failed RPCs, pass 2 → … | clean at | lookup time after the kill | missed a live node |
+|---|---|---|---|---|---|
+| 1 | join only (default) | 17 → 9 → 4 → 0 | pass 5 | 37.02 s | 2 |
+| 4 | join only (default) | 18 → 12 → 2 → 1 → 1 → 0 | pass 7 | 51.76 s | 0 |
+| 1 | every 5 s | 6 → 4 → 0 | pass 4 | 22.52 s | 0 |
+| 4 | every 5 s | 16 → 8 → 0 | pass 4 | 30.53 s | 0 |
+
+With periodic refresh, nothing was missed and recovery came sooner.
+Survivors had marked the dead nodes stale themselves, so they stopped
+handing them out.
+
 ### What it shows, and what would fix it
 
 After churn the network is **slow** at first: about 2 s per round that
@@ -724,7 +809,7 @@ out of other nodes' replies.
 |---|---|---|---|---|
 | short answers | failed candidates give up their places; seed from the whole table | **done** | `lookup.go` | Sec. 2.3 |
 | no learning: the same dead nodes asked on every repeat | stale after N failed RPCs in a row; lookups and replies skip stale nodes | **done** | `stale.go`, `node.go`, `bucket.go`, `lookup.go` | Sec. 4.1 |
-| dead contacts in *other* nodes' replies hide a live node (SEED=4) | bucket refresh, so every node tests its own contacts | planned | `node.go` | Sec. 2.3 |
+| dead contacts in *other* nodes' replies hide a live node (SEED=4) | bucket refresh, so every node tests its own contacts | **done** (needs the periodic refresh to have run; default every 1 h) | `refresh.go` | Sec. 2.3 |
 | 2 s per round right after a death, so lookups can run out of time | keep α RPCs in flight instead of synchronous rounds | later | `lookup.go` | Sec. 2.3 |
 
 How each fix was found and checked: [FIXES.md](FIXES.md).

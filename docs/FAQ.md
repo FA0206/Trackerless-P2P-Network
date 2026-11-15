@@ -41,10 +41,17 @@ The bootstrap node is just one of them.
 The exception is a node that is the *only* link between two groups.
 Knowledge spreads only through messages: a node learns of you when you
 send it something. If two groups were built separately and only one node
-talks to both, its death splits the network for good, because nothing
-here re-bootstraps or refreshes buckets. But if anyone has done even one
-lookup across that node, the lookup contacted the far side directly, and
-those nodes recorded the querier. Then the link node can die harmlessly.
+talks to both, its death splits the network for good, unless something
+crossed it before. Two things do:
+- **a lookup:** if anyone has done even one lookup across that node, the
+  lookup contacted the far side directly, and those nodes recorded the
+  querier;
+- **bucket refresh** (`--refresh-interval`, default 1 h;
+  [02](02-routing-table-and-kbuckets.md#bucket-refresh-keeping-quiet-buckets-alive)),
+  which does such lookups by itself.
+
+Either way, the link node can then die harmlessly. Once it's dead,
+nothing can reconnect the groups.
 [EDGE-CASES.md, case A3](EDGE-CASES.md#a3--two-islands-and-one-bridge)
 shows both.
 
@@ -188,9 +195,11 @@ few others, and most of its buckets stay empty. A lookup that reaches a
 node with an empty bucket in the target's direction stops there, at the
 wrong node.
 [EDGE-CASES.md, case A4](EDGE-CASES.md#a4--tiny-buckets) builds the same
-20-node network three times: k = 1 got 9–14 of 20 lookups right, and
-k = 4 got all 20. The paper's post-join bucket refresh, skipped here,
-is what fixes it. The demos use k = 3 or more; A4 didn't test k = 3.
+20-node network several times: k = 1 got 9–14 of 20 lookups right, and
+k = 4 got all 20. The paper's join refresh (look up a random ID in every
+bucket farther than your closest neighbor, [04](04-bootstrap-and-join.md))
+fills those buckets: with it, k = 1 gets 15–19 of 20 right. Not all,
+because k = 1 is still one contact per bucket and per reply. The demos use k = 3 or more; A4 didn't test k = 3.
 
 ### Is it safe for many nodes to join at once?
 
@@ -625,7 +634,7 @@ The two layers compare separately.
 | Storing "I have X" | `STORE(key, any value ≤ 256 B)`; the IP comes from `--advertise-ip` | `announce_peer(info_hash, port, token)`: the storing node records the sender's **source IP**; it needs a `token` from an earlier `get_peers` |
 | Finding | `FIND_VALUE` → values or contacts | `get_peers` → `values` (6-byte compact peers) or `nodes`, plus a `token` |
 | Errors | `STORE_RESP {stored:false, reason}` only | `e` = `[code, message]`, codes 201–204 |
-| Routing table | flat 160 buckets, no refresh | splitting buckets, refresh after 15 min idle, good/questionable/bad nodes |
+| Routing table | flat 160 buckets, refresh after 1 h idle (`--refresh-interval`), stale after 5 failed RPCs | splitting buckets, refresh after 15 min idle, good/questionable/bad nodes |
 
 Conceptually `FIND_VALUE` ≈ `get_peers`, and `STORE` of a provider
 record ≈ `announce_peer`. The routing table, bucket rule, and iterative

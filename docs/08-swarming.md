@@ -185,6 +185,8 @@ connections and `Peer.Close` closes them all.
   death can lag by ≥ 2 s per lookup.
 - **No bucket refresh:** the dead seeder stays in routing tables, so it
   keeps being chosen for lookups, and each time costs that 2 s timeout.
+  *(On `feature/edge-case-fixes`, it goes stale after 5 failed RPCs and
+  is skipped, and buckets are refreshed: [FIXES.md](FIXES.md).)*
 - **Provider records never expire:** every rediscovery returns the dead
   seeder's record again. The downloader already marked it dead, so this
   costs nothing beyond the first failed connection (instant on
@@ -269,8 +271,8 @@ the three known gaps had to be fixed. What the real runs did turn up:
 ## What's next
 
 Per-piece availability is done, so the remaining items before the
-end-goal measurements are the known gaps: synchronous lookup rounds,
-bucket refresh, and record expiry. Republishing is done on
-`feature/edge-case-fixes` ([FIXES.md](FIXES.md)). After those come
+end-goal measurements are the known gaps: synchronous lookup rounds and
+record expiry. Republishing, stale contacts and bucket refresh are done
+on `feature/edge-case-fixes` ([FIXES.md](FIXES.md)). After those come
 instrumentation and the evaluation harness. See the README's
 simplifications table.

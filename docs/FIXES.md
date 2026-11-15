@@ -24,6 +24,7 @@ Every fix follows the same steps:
 | 2 | [Lookups skip dead candidates](#2-lookups-skip-dead-candidates-b1-b2) | `de5a42d` | `lookup.go` |
 | 3 | [Stale contacts](#3-stale-contacts-b1-learning) | `3606ea6` | `stale.go`, `bucket.go`, `routingtable.go`, `node.go`, `lookup.go` |
 | 4 | [Republishing](#4-republishing-b2-b3) | `ffdb038` | `republish.go`, `values.go`, `store.go`, `node.go` |
+| 5 | [Bucket refresh](#5-bucket-refresh-a3-a4-b1) | the commit after `b9995a9` | `refresh.go`, `node.go` (`Bootstrap`), `lookup.go` |
 
 ---
 
@@ -298,4 +299,86 @@ default 1 h interval, no republish happens while they run.
   The paper accepts that: it chooses k so that k nodes rarely all fail
   within an hour.
 - **Plan step 4: bucket refresh.** It fixes A3 and A4, and the dead
-  contacts that other nodes hand out (B1, SEED=4).
+  contacts that other nodes hand out (B1, SEED=4). *Done in
+  [fix 5](#5-bucket-refresh-a3-a4-b1).*
+
+---
+
+## 5. Bucket refresh (A3, A4, B1)
+
+**Seen:** buckets filled only as a side effect of lookups.
+- **A3:** two islands joined by a bridge that nobody looks anything up
+  through never learn of each other, and are cut apart for good when the
+  bridge dies.
+- **A4:** with k = 1, newcomers knew almost nobody, and 9–14 of 20
+  lookups were correct with nothing dead.
+- **B1, SEED=4:** survivors kept handing out dead contacts they never
+  tested themselves, which hid a live node.
+
+**The paper** (Sec. 2.3, read from the PDF):
+- at join: "u refreshes all k-buckets further away than its closest
+  neighbor";
+- periodically: "each node refreshes any bucket to which it has not
+  performed a node lookup in the past hour. Refreshing means picking a
+  random ID in the bucket's range and performing a node search for that
+  ID."
+
+**Change** (`refresh.go`):
+- `RandomIDInBucket(self, i)`: a random ID whose XOR distance from
+  `self` has its top bit at position i.
+- `bucketLookups`: every lookup records its target's bucket (`noteLookup`
+  in `iterativeFind`), so buckets that traffic keeps fresh are skipped.
+- `refreshBuckets`: one lookup per bucket, from the closest neighbor's
+  bucket up to 159. Lower buckets would need a node closer than our
+  closest neighbor; the paper's split tree never creates them. One
+  `buckets refreshed` log line per pass (`reason`, `buckets`, RPCs,
+  `learned`).
+- `Bootstrap` ends with a join refresh. `refreshLoop` runs every
+  `--refresh-interval` (default 1 h) for buckets that were idle that
+  long.
+- `--join-refresh=false` (`Config.SkipJoinRefresh`) turns the join
+  refresh off. It exists only so experiments can compare, which A4 does.
+
+**Measured before writing predictions:**
+- **A2:** routing tables right after joining grew from min 2 / median 5
+  / max 6 to 9 / 12 / 14.
+- **A4:** k = 1 went from 9–14 to 15–20 of 20 correct. That's better but
+  not perfect, so A4's old "k = 1 gets some wrong" didn't reliably hold.
+  It became a comparison within one run: k = 1 without the join refresh
+  (some wrong) against k = 1 with it (at least as many right).
+- **A3:** refresh can't reconnect islands *after* the bridge died, since
+  no path is left. It connects them *before*. So A3 gained a third
+  network, "refreshed": quiet, but with `--refresh-interval 3s`, and the
+  bridge dies after every node has refreshed twice. To stay inside A3's
+  port block, it reuses the quiet network's ports once that test is done.
+- **B1:** at the defaults only the join refresh runs. It made SEED=4's
+  misses disappear but caused 2 new ones in SEED=1, because fuller
+  tables also hold more soon-dead nodes. With `--refresh-interval 5s`,
+  no misses in either seed, and recovery by pass 4 instead of 5–7. This
+  is reported in EDGE-CASES.md; B1 itself still runs the defaults.
+
+**Tests** (`refresh_test.go`, 3 runs under `-race`):
+- `RandomIDInBucket` lands in the right bucket for all 160;
+- the per-bucket lookup bookkeeping;
+- the join refresh looks up every bucket above the closest neighbor,
+  and none with `SkipJoinRefresh`;
+- **A3 in Go:** with periodic refresh, an island-A node learns all of
+  island B, and a lookup still crosses after the bridge is closed.
+
+**Verified:**
+
+| Case | Result |
+|---|---|
+| A3 | quiet: 0 of 5 found across after the kill (as before); used: 5 of 5; **refreshed: a1–a4 knew all 20 cross-island pairs before the kill, and 5 of 5 found after it** |
+| A4 | k = 1: 11 / 9 / 14 of 20 without the join refresh, 19 / 17 / 18 with it (seeds 1–3); k = 4: 20 of 20 |
+| B1 | default: PASS, recovered by pass 5–7; `--refresh-interval 5s`: no missed live nodes, recovered by pass 4 |
+| demos | all pass; `demo.sh`'s lookup is unchanged (2 rounds, 4 RPCs). Each join now logs a `buckets refreshed` line (DRY-RUN.md, part 2c) |
+
+**Still open:**
+- **The refresh interval decides how long a new bridge is a single
+  point of failure** (A3). The paper's 1 h is a trade-off against
+  traffic. Count refresh traffic in the control-bytes graph.
+- **k = 1 stays imperfect.** That's inherent; the demos use k ≥ 3.
+- **Not built:** value expiry, hand-over on join, and synchronous lookup
+  rounds (the first lookups after a mass death still take 2 s per round
+  with a dead node).

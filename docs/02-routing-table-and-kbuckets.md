@@ -268,10 +268,61 @@ paper's concern on the Internet, but it takes several lookups to learn
 of a death. On a loss-free LAN `--stale-after 1` learns at once. B1
 measures both ([FIXES.md](FIXES.md#3-stale-contacts-b1-learning)).
 
+## Bucket refresh: keeping quiet buckets alive
+
+Buckets fill only as a side effect of messages. A part of the ID space
+that no lookup ever targets stays unvisited. Its bucket keeps whatever
+it had, dead or alive, and the node never hears of new nodes there.
+Three edge cases show what that costs ([EDGE-CASES.md](EDGE-CASES.md)):
+
+- **A3:** two groups joined by one bridge node that nobody looks
+  anything up through never learn of each other, and are cut apart for
+  good when the bridge dies;
+- **A4:** with k = 1, newcomers know almost nobody;
+- **B1:** a node never tests its dead contacts, so it keeps handing
+  them out.
+
+The paper's answer (Sec. 2.3): "each node refreshes any bucket to which
+it has not performed a node lookup in the past hour. Refreshing means
+picking a random ID in the bucket's range and performing a node search
+for that ID." `refresh.go` does that:
+
+- **Every lookup records its target's bucket** (`noteLookup`, called by
+  `iterativeFind`), so buckets that normal traffic keeps fresh cost
+  nothing.
+- **Every `--refresh-interval`** (default 1 h), each bucket from the one
+  holding our closest neighbor up to 159 that no lookup touched during
+  the interval gets a lookup for a random ID in its range
+  (`RandomIDInBucket`). Lower buckets would need a node closer to us
+  than our closest neighbor, and the paper's split tree never creates
+  them, so they're skipped.
+- **At join**, the same thing for every bucket above the closest
+  neighbor ([04](04-bootstrap-and-join.md)).
+- **One log line per refresh pass:**
+
+  ```
+  msg="buckets refreshed" reason=periodic buckets=3 rpcs_sent=30 rpcs_failed=0 routing_table_size=10 learned=0
+  ```
+
+A refresh lookup does three useful things at once:
+1. It fills the bucket.
+2. Every node it asks learns about us (they record the sender).
+3. Its RPCs test the contacts it meets. Dead ones fail and go stale
+   (see above), so a node stops handing out contacts it never otherwise
+   talks to.
+
+In A3, with a 3 s interval, two refresh passes were enough for every
+island-A node to know all of island B, so the bridge could die harmlessly.
+
+**SIMPLIFICATION:** one refresh timer per node, not one per bucket.
+Every interval, a single pass refreshes each bucket idle for that long,
+so a bucket can wait up to two intervals. Harmless at this scale.
+
 ## Where this lives in the code
 
 | Concept | Function | File |
 |---|---|---|
+| Bucket refresh (periodic and at join) | `refreshBuckets`, `refreshLoop`, `RandomIDInBucket`, `bucketLookups` | `refresh.go` |
 | One bucket: capacity, ordering, the update rule | `Bucket`, `Update`, `KeepAlive`, `ReplaceStale`, `Fresh` | `bucket.go` |
 | 160 buckets together, indexed by `BucketIndex` | `RoutingTable`, `bucketFor` | `routingtable.go` |
 | Finding the k closest known contacts to a target | `RoutingTable.Closest` (fresh only), `ClosestIncludingStale` | `routingtable.go` |

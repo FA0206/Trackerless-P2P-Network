@@ -185,6 +185,27 @@ lookup.go       sort; round 2: nothing unqueried in the working set → break
 Result: 1 round, 1 RPC, closest = [node0]. With only two nodes, there's
 nothing else to find.
 
+### 2c. Join refresh
+
+Before `Bootstrap` returns, node1 refreshes every bucket farther away than
+its closest neighbor (paper Sec. 2.3; `refreshBuckets`, `refresh.go`).
+Its closest neighbor is node0, in bucket 157, so it looks up one random
+ID in bucket 158 and one in bucket 159:
+
+```
+[node1] msg="rpc sent" type=FIND_NODE to=2b370ab7…@127.0.0.1:9000
+[node1] msg="lookup converged" target=f4c25d1a… rounds=1 rpcs_sent=1 rpcs_failed=0 closest_found=1
+[node1] msg="rpc sent" type=FIND_NODE to=2b370ab7…@127.0.0.1:9000
+[node1] msg="lookup converged" target=55b549a4… rounds=1 rpcs_sent=1 rpcs_failed=0 closest_found=1
+[node1] msg="buckets refreshed" reason=join buckets=2 rpcs_sent=2 rpcs_failed=0 routing_table_size=1 learned=0
+[node1] msg="bootstrap complete" routing_table_size=1 self_lookup_rounds=1 self_lookup_rpcs=1
+```
+
+The targets are random, so they differ every run. With two nodes there's
+nobody to learn (`learned=0`); in a bigger network these lookups fill the
+far buckets the self-lookup never visits. `bootstrap complete` still
+reports only the self-lookup's numbers.
+
 ## Phase 3 — node2 and node3 join
 
 The script waits for `"bootstrap complete"` in each log before starting
@@ -227,7 +248,15 @@ before merging.
 node4's join (via node3) is the worked example in
 [04-bootstrap-and-join.md](04-bootstrap-and-join.md): round 1 asks
 node3, round 2 asks nodes 2, 0, and 1 in parallel. That takes 2 rounds
-and 4 RPCs, and node4's table is complete.
+and 4 RPCs, and node4's table is complete. Its join refresh then covers
+buckets 157–159 (its closest neighbor is in 156): 3 lookups, 12 RPCs,
+nothing new to learn:
+
+```
+[node4] msg="buckets refreshed" reason=join buckets=3 rpcs_sent=12 rpcs_failed=0 routing_table_size=4 learned=0
+```
+
+Every join in this demo works the same way (nodes 2 and 3 included).
 
 Then `main.go`'s `--lookup` goroutine waits `--lookup-after` (300 ms) and
 calls `n.Lookup(ctx, node2's ID)`.

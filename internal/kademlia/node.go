@@ -34,6 +34,9 @@ type Node struct {
 	store       *valueStore
 	published   *publications // what this node itself Stored, for republishing
 	republish   time.Duration // republish interval; <= 0 = off (republish.go)
+	refresh     time.Duration // periodic bucket refresh interval; <= 0 = off (refresh.go)
+	joinRefresh bool          // refresh buckets at the end of Bootstrap (refresh.go)
+	lookups     bucketLookups // when a lookup last targeted each bucket (refresh.go)
 	stop        chan struct{} // closed by Close: stops the republish loop
 	stopOnce    sync.Once
 	transport   *Transport
@@ -67,7 +70,15 @@ type Config struct {
 	// published and what it holds (republish.go, paper Sec. 2.5).
 	// Default DefaultRepublishInterval (1 h); < 0 turns republishing off.
 	RepublishInterval time.Duration
-	Logger            *slog.Logger // default NewLogger(ID, Info)
+	// RefreshInterval: how often to refresh buckets no lookup touched
+	// during the interval (refresh.go, paper Sec. 2.3). Default
+	// DefaultRefreshInterval (1 h); < 0 turns the periodic refresh off.
+	// The refresh at join (Bootstrap) runs regardless.
+	RefreshInterval time.Duration
+	// SkipJoinRefresh turns off the refresh at the end of Bootstrap. Only
+	// for experiments that compare with and without it (edge case A4).
+	SkipJoinRefresh bool
+	Logger          *slog.Logger // default NewLogger(ID, Info)
 }
 
 // NewNode creates a node listening on cfg.Port. Call Start to begin
@@ -94,6 +105,9 @@ func NewNode(cfg Config) (*Node, error) {
 	if cfg.RepublishInterval == 0 {
 		cfg.RepublishInterval = DefaultRepublishInterval
 	}
+	if cfg.RefreshInterval == 0 {
+		cfg.RefreshInterval = DefaultRefreshInterval
+	}
 	transport, err := NewTransport(cfg.Port, cfg.Logger)
 	if err != nil {
 		return nil, err
@@ -107,6 +121,8 @@ func NewNode(cfg Config) (*Node, error) {
 		stale:       stale,
 		published:   newPublications(),
 		republish:   cfg.RepublishInterval,
+		refresh:     cfg.RefreshInterval,
+		joinRefresh: !cfg.SkipJoinRefresh,
 		stop:        make(chan struct{}),
 		store:       newValueStore(),
 		transport:   transport,
@@ -146,6 +162,9 @@ func (n *Node) Start() {
 	}()
 	if n.republish > 0 {
 		go n.republishLoop(n.republish)
+	}
+	if n.refresh > 0 {
+		go n.refreshLoop(n.refresh)
 	}
 }
 
@@ -471,5 +490,15 @@ func (n *Node) Bootstrap(ctx context.Context, addr *net.UDPAddr) (*LookupResult,
 		return nil, fmt.Errorf("kademlia: bootstrap address %s is this node itself", addr)
 	}
 	n.logger.Info("bootstrap node identified", "id", pong.SenderID.String(), "addr", addr.String())
-	return n.Lookup(ctx, n.ID)
+	self, err := n.Lookup(ctx, n.ID)
+	if err != nil {
+		return self, err
+	}
+	// Paper Sec. 2.3: "Finally, u refreshes all k-buckets further away than
+	// its closest neighbor" (refresh.go). Best effort: a failed refresh
+	// lookup doesn't fail the join.
+	if n.joinRefresh {
+		n.refreshBuckets(ctx, n.closestNeighborBucket(), time.Time{}, "join")
+	}
+	return self, nil
 }

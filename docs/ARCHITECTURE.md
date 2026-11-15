@@ -47,6 +47,7 @@ Each file depends only on files in lower layers:
 ```
  Layer 4   values.go ─── Store / FindValue (built on the lookup)
            republish.go  republish loop: Store's storeOnClosest, every interval
+           refresh.go    bucket refresh: lookups for random IDs, at join and every interval
            lookup.go ─── iterativeFind: the lookup for both FIND_NODE and FIND_VALUE
  Layer 3   node.go ───── RPC engine: send/wait, receive/dispatch, replies, bucket updates, Bootstrap
  Layer 2   routingtable.go   transport.go (→ internal/framing)   store.go   logging.go
@@ -68,6 +69,7 @@ Each file depends only on files in lower layers:
 | `node.go` | `Node`, `Config`; matching replies to requests (`pending`); `handleMessage` dispatch; `replyFindNode/Store/FindValue`; eviction; `Bootstrap` | all of the above |
 | `lookup.go` | `iterativeFind` (alpha-parallel, synchronous rounds; working set = k closest non-failed; skips stale nodes), `Lookup`, `LookupResult` | `node.go` |
 | `values.go` | `Store` (remember the publication, lookup + `storeOnClosest`), `FindValue` (local, then lookup) | `lookup.go`, `node.go` |
+| `refresh.go` | `RandomIDInBucket`; `bucketLookups` (when a lookup last targeted each bucket); `refreshBuckets` (at join, from `Bootstrap`) and `refreshLoop` (every `RefreshInterval`) (paper Sec. 2.3) | `lookup.go`, `routingtable.go` |
 | `republish.go` | `publications` (what this node published); `republishLoop`: every `RepublishInterval`, the publisher pass and the holder pass (paper Sec. 2.5) | `values.go`, `lookup.go`, `store.go` |
 
 ## `internal/transfer`
@@ -190,6 +192,7 @@ Each worker talks to the provider's server like this:
 | lookup RPC | `iterativeFind` | one RPC | sends one outcome on the round's channel, nothing else |
 | store RPC | `Node.Store` | one RPC | sends one outcome on a channel |
 | eviction check | `Node.touchContact` | one ping | routing table (locked) |
+| refresh loop | `Node.Start` (if `RefreshInterval` > 0) | until `Close` | `bucketLookups` (locked); runs lookups like any caller of `Lookup` |
 | republish loop | `Node.Start` (if `RepublishInterval` > 0) | until `Close` | `publications` and `valueStore` (locked, through copies); runs lookups and STOREs like any caller of `Store` |
 | TCP accept loop | `NewPeer` (`go srv.serve()`) | until `Peer.Close` | the listening socket |
 | TCP connection handler | `server.serve` | one connection | library (read-locked), the file on disk, `server.conns` (locked) |
@@ -269,6 +272,7 @@ way.
 | Change when a contact is stale | `stale.go`, `stale_test.go`, `node.go` (`noteFailure` in `sendAndWait`, `heardFrom` in `touchContact`), `lookup.go` (`addCandidate`), doc `02`, `scripts/edge/b1-half-the-network-dies.sh` (its recovery numbers), EDGE-CASES.md B1, FIXES.md |
 | Change lookup termination / concurrency | `lookup.go`, `integration_test.go`, `values_test.go`, doc `05`, `DRY-RUN.md` numbers |
 | Change value limits or storage rules | `store.go`, `store_test.go`, doc `06` |
+| Change bucket refresh | `refresh.go`, `refresh_test.go`, `lookup.go` (`noteLookup`), `node.go` (`Bootstrap` calls `refreshBuckets`), docs `02` and `04`, `DRY-RUN.md` part 2c (join log lines), `scripts/edge/a3-bridge-between-islands.sh` (waits for `msg="buckets refreshed" … reason=periodic`), `scripts/edge/a4-tiny-buckets.sh` (`--join-refresh=false`), EDGE-CASES.md A3/A4, FIXES.md |
 | Change republishing | `republish.go`, `republish_test.go`, `values.go` (`Store` records publications), `store.go` (`refreshed`), doc `06`, `scripts/edge/b2-record-holders-die.sh` and `b3-late-joiners-hide-a-value.sh` (they wait for `msg="republish complete" … key=<key> reason=publisher`), EDGE-CASES.md B2/B3, FIXES.md |
 | Change the TCP protocol | `protocol.go`, `server.go`, `client.go`, doc `07` (and `08` for `GET_BITFIELD`) |
 | Change piece selection or concurrency | `picker.go` (+ `swarm_unit_test.go`), `download.go` `schedule`, `swarm_test.go`, doc `08`, `DRY-RUN.md` part 5, `scripts/demo-seeder-death.sh` (its kill-window reasoning depends on `--max-inflight 1`) |

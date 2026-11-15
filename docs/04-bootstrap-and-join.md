@@ -43,10 +43,11 @@ The paper's recipe (Sec. 2.3, "To join the network..."):
 
 > To join the network, a node `u` must have a contact to an already
 > participating node `w`. `u` inserts `w` into the appropriate k-bucket.
-> `u` then performs a node lookup for its own node ID.
+> `u` then performs a node lookup for its own node ID. Finally, `u`
+> refreshes all k-buckets further away than its closest neighbor.
 
 This project implements it in `Node.Bootstrap`
-([`node.go`](../internal/kademlia/node.go)) as two steps. Below is real
+([`node.go`](../internal/kademlia/node.go)) in three steps. The first two follow; step 3 has its own section below. Here is real
 log output from `scripts/demo.sh`, node4 (`3fb55a72…`, port 9004)
 joining via node3's address (port 9003). Timestamps are stripped; the
 full trace for every node is in [DRY-RUN.md](DRY-RUN.md).
@@ -140,22 +141,42 @@ PINGing first removes the placeholder entirely. The lookup only ever
 sees real IDs. `TestBootstrapLearnsRealSeedID` in
 `internal/kademlia/integration_test.go` guards against regressions.
 
-## SIMPLIFICATION we made here: no extra post-join bucket refresh
+## Step 3 of the join: refresh the far buckets
 
 The paper's full join has one more step (Sec. 2.3): "`u` refreshes all
 k-buckets further away than its closest neighbor." A self-lookup mostly
 finds nodes near you. To fill a far bucket, you need to look up a
-random ID inside that bucket's range.
+random ID inside that bucket's range (`RandomIDInBucket`, `refresh.go`).
+So after the self-lookup, `Bootstrap` finds its closest neighbor's
+bucket and looks up one random ID in every bucket above it. In a
+20-node network that's about 4 lookups, and in `demo.sh` 2 or 3
+([DRY-RUN.md](DRY-RUN.md), part 2c):
 
-This project skips that pass. At a few dozen nodes, the self-lookup
-reaches essentially everyone anyway. It matters once the network is much
-larger than `k` — see the README's simplifications table.
+```
+[node1] msg="buckets refreshed" reason=join buckets=2 rpcs_sent=2 rpcs_failed=0 routing_table_size=1 learned=0
+```
+
+It's best effort: a failed refresh lookup doesn't fail the join.
+
+The first version skipped this step ("at a few dozen nodes the
+self-lookup reaches essentially everyone"). Edge case A4 showed that's
+wrong for a small k. With k = 1, nodes joined knowing almost nobody, and
+9–14 of 20 lookups were correct. With the join refresh it's 15–19 of 20
+([EDGE-CASES.md](EDGE-CASES.md#a4--tiny-buckets)). `--join-refresh=false`
+turns it off, only so experiments like A4 can compare.
+
+Every refresh lookup also makes the nodes it asks learn about the
+newcomer (they record the sender), so the join announces it to the far
+side of the network too. After joining, a node keeps refreshing buckets
+no lookup has touched for `--refresh-interval` (default 1 h): see
+[02](02-routing-table-and-kbuckets.md#bucket-refresh-keeping-quiet-buckets-alive).
 
 ## Where this lives in the code
 
 | Concept | Function | File |
 |---|---|---|
-| Join: PING the address, then self-lookup | `Node.Bootstrap` | `node.go` |
+| Join: PING the address, then self-lookup, then refresh | `Node.Bootstrap` | `node.go` |
+| Refreshing buckets (at join and periodically) | `refreshBuckets`, `RandomIDInBucket`, `refreshLoop` | `refresh.go` |
 | The lookup itself | `Node.Lookup` | `lookup.go` |
 | Recording senders (how both sides learn about each other) | `Node.handleMessage`, `Node.touchContact` | `node.go` |
 | CLI flag `--bootstrap host:port` | `run` | `cmd/node/main.go` |
@@ -164,6 +185,9 @@ Tests in `internal/kademlia/integration_test.go`:
 `TestEndToEndBootstrapAndLookup` (a chain of five joins, then a lookup),
 `TestBootstrapLearnsRealSeedID` (no placeholder leaks; one RPC per real
 node), and `TestBootstrapFailures` (unreachable address, own address).
+`refresh_test.go`: `TestJoinRefreshLooksUpEveryFartherBucket` (every
+bucket above the closest neighbor gets a lookup, and none with
+`SkipJoinRefresh`) and `TestRandomIDInBucketLandsInThatBucket`.
 
 ## What's next
 

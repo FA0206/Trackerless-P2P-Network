@@ -315,6 +315,7 @@ full list is every `logger.Debug/Info/Warn/Error` call in
 | `lookup converged` | INFO | `target`, `rounds`, `rpcs_sent`, `rpcs_failed`, `closest_found` | `lookup.go` | a FIND_NODE lookup finished |
 | `find_value finished` | INFO | `key`, `values_found`, `rounds`, … | `lookup.go` | a FIND_VALUE lookup finished |
 | `value stored` | INFO | `key`, `bytes` | `node.go` `replyStore` | this node now holds a value for the network |
+| `buckets refreshed` | INFO | `reason` (`join` / `periodic`), `buckets`, `rpcs_sent`, `rpcs_failed`, `routing_table_size`, `learned` | `refresh.go` | one bucket-refresh pass: a lookup for a random ID in each idle bucket. Each lookup also produces its own `lookup converged` |
 | `republish complete` | INFO | `key`, `reason` (`publisher` / `holder`), `values`, `stored_at`, `stored_locally`, `failed` | `republish.go` | this node stored a key's values again on the k closest nodes (every `--republish-interval`) |
 | `republish failed` | WARN | `key`, `reason`, `error` | `republish.go` | the republish lookup failed (e.g. nobody answered) |
 | `store complete` | INFO | `key`, `stored_at`, `stored_locally`, `failed` | `values.go` | this node finished publishing a value |

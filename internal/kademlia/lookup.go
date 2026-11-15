@@ -74,6 +74,7 @@ func (n *Node) Lookup(ctx context.Context, target ID) (*LookupResult, error) {
 // lookup stops after the first round in which any node returned values.
 func (n *Node) iterativeFind(ctx context.Context, target ID, findValue bool) (*LookupResult, error) {
 	result := &LookupResult{Target: target}
+	n.noteLookup(target) // this bucket needs no refresh for a while (refresh.go)
 
 	candidates := make(map[ID]*lookupCandidate)
 	var order []ID // candidate IDs, kept sorted nearest-to-target first

@@ -43,6 +43,8 @@ func run() error {
 	alpha := flag.Int("alpha", kademlia.DefaultAlpha, "lookup concurrency parameter alpha")
 	rpcTimeout := flag.Duration("rpc-timeout", kademlia.DefaultRPCTimeout, "per-RPC timeout (raise this, e.g. to 5m, when pausing at breakpoints)")
 	republishInterval := flag.Duration("republish-interval", kademlia.DefaultRepublishInterval, "how often to store again what this node published and what it holds for others (paper: 1h; demos use seconds; negative = off)")
+	refreshInterval := flag.Duration("refresh-interval", kademlia.DefaultRefreshInterval, "how often to refresh k-buckets no lookup touched in that time, by looking up a random ID in each (paper: 1h; negative = off; the refresh at join always runs)")
+	joinRefresh := flag.Bool("join-refresh", true, "after joining, refresh every k-bucket farther than the closest neighbor (paper Sec. 2.3); false only for experiments")
 	staleAfter := flag.Int("stale-after", kademlia.DefaultStaleAfter, "failed RPCs in a row before a contact is stale: kept in the table, but lookups and replies skip it until it's heard from again")
 	maxInFlight := flag.Int("max-inflight", transfer.DefaultMaxInFlight, "most piece requests a download keeps in flight at once (always at most 1 per provider)")
 	debugServeDelay := flag.Duration("debug-serve-delay", 0, "DEBUG ONLY: wait this long before answering each piece request, so a demo can kill this node mid-transfer (0 = off)")
@@ -89,6 +91,8 @@ func run() error {
 		RPCTimeout:        *rpcTimeout,
 		StaleAfter:        *staleAfter,
 		RepublishInterval: *republishInterval,
+		RefreshInterval:   *refreshInterval,
+		SkipJoinRefresh:   !*joinRefresh,
 		Logger:            logger,
 	})
 	if err != nil {

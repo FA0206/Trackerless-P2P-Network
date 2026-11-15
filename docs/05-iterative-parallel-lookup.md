@@ -87,6 +87,8 @@ deaths those can crowd out a live node, which the lookup then never
 hears of. B1 with `SEED=4` shows answers that are complete (`k` live
 nodes) but miss one closer live node this way. Bucket refresh (Sec. 2.3)
 is the fix: it makes every node contact, and so test, its own contacts.
+With `--refresh-interval 5s`, B1's runs had no such misses
+([EDGE-CASES.md](EDGE-CASES.md#b1--half-the-network-dies-at-once)).
 
 Why this converges in `O(log n)` rounds rather than needing some fixed
 iteration count: each round that finds anything closer than what's
