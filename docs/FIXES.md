@@ -184,7 +184,23 @@ don't want to wake up with an empty address book.
 - **`lookup.go`:** skips a stale node even when another node's reply
   mentions it. If *every* contact is stale (our own network was
   probably down), it uses them anyway.
-- **You can see it:** log events `contact marked stale`,
+- **Second chances, with a growing wait** (added later, after reviewing
+  where we differed from the paper). The paper "locks" an unresponsive
+  contact for "an exponentially increasing backoff interval" and then
+  tries it again.
+  - Going stale locks a node for 30 s (`--stale-backoff`).
+  - After that, the next lookup that needs it asks it again. If it
+    answers, all is forgiven.
+  - If not, it's locked for 60 s, then 120 s, and so on, up to 1 hour.
+
+  Think of a friend who didn't pick up five times. You stop calling for
+  a while, but you do try again later, and you wait longer each time
+  they don't answer. Without this, a node that was only *briefly*
+  unreachable (a few lost Wi-Fi packets) would stay skipped until it
+  happened to message us. `TestWronglyStaleNodeIsRetriedAfterTheBackoff`
+  checks exactly that case.
+- **You can see it:** log events `contact marked stale` (with
+  `retry_in`),
   `stale contact answered again` and `stale contact replaced`; stale
   contacts are marked in the console's `table`; `/api/table` shows
   `"stale": true`.
@@ -200,6 +216,9 @@ against. Now every node we send a request to is counted.
 
 - Tests in `stale_test.go`:
   - the counting rules;
+  - the back-off doubling up to its cap, with a fake clock;
+  - a live node marked stale by mistake being asked again, and found,
+    once its lock runs out;
   - a bucket replacing a stale contact;
   - repeated lookups after deaths reaching zero failures;
   - the fallback when every contact is stale.
@@ -213,7 +232,11 @@ against. Now every node we send a request to is counted.
 | 1 | 1 | 8–10 s |
 
 5 tolerates the odd lost packet on a real network; 1 suits a reliable
-LAN. The flag lets the evaluation compare both.
+LAN. The flag lets the evaluation compare both. With the back-off added,
+B1 recovers the same way (seeds 1–4 clean by pass 5–7). Its passes end
+before the first 30-second lock runs out, so the later retries of dead
+nodes don't show up in B1. They cost one timeout per dead node at
+30 s, 60 s, 120 s, ….
 
 ### What's still open
 
@@ -364,7 +387,7 @@ can show the before and after side by side.
 | Case | Before | After |
 |---|---|---|
 | A3 | an unused bridge's death split the network forever | a third test network refreshes every 3 s: within two refreshes every node on one side knew every node on the other, and the bridge died harmlessly |
-| A4 | k = 1: 9–14 of 20 lookups right | 15–20 of 20 with the join refresh |
+| A4 | k = 1: 9–14 of 20 lookups right | 14–20 of 20 with the join refresh |
 | A2 | address book right after joining: about 5 contacts | about 12 |
 | B1, SEED=4 | survivors hid a live node behind dead contacts | with a 5 s refresh: nothing hidden, and recovery after 2 repeats instead of 3–5 |
 
@@ -396,8 +419,8 @@ another.
 |---|---|---|---|---|
 | 1 | A lookup "starts by picking α nodes from its closest non-empty k-bucket" (Sec. 2.3) | start from the whole routing table, sorted by distance, and fall back to farther contacts as closer ones fail | the paper doesn't say what to do when the closest contacts are all dead; we needed the lookup to keep going (B1) | nothing when nobody's dead: the first round asks the same α nodes. After deaths, the lookup can reach live nodes the paper's version might never try |
 | 2 | stale = 5 failures in a row for a **contact** (a routing-table entry) (Sec. 4.1) | count failures for **every** node we send a request to, in our table or not | most dead nodes a lookup meets were never in our table (they came from other nodes' replies); counting only table entries barely helped (measured) | lookups learn to skip dead nodes they only heard about secondhand. The notebook is capped at 4096 nodes |
-| 2 | an unresponsive contact gets no RPCs for "an exponentially increasing backoff interval", then is tried again (Sec. 4.1) | a stale node is never asked again until **it** sends us a message | simpler, and a live node normally messages us again soon (its own lookups and refreshes reach us) | a node that was briefly unreachable, and then never talks to us, stays skipped. The fallback (all contacts stale → use them) still protects a node whose own network dropped |
-| 2 | says nothing about stale contacts in replies | leave stale contacts **out of our FIND_NODE replies** | pointing others at a node we know doesn't answer just costs them a timeout | others get fewer dead pointers from us |
+| 2 | an unresponsive contact gets no RPCs for "an exponentially increasing backoff interval", then is tried again (Sec. 4.1), **with no numbers given** | the same rule, with our own numbers: locked 30 s, doubling on each failed retry, up to 1 h (`--stale-backoff`). The retry happens when a lookup next needs the node; there's no separate ping | the paper leaves the numbers open. 30 s brings a wrongly flagged node back quickly; the 1 h cap matches the refresh interval | a dead node costs one timeout per lock, forever, ever more rarely. *(The first version had no back-off at all: a briefly unreachable node stayed skipped until it messaged us. Fixed after this review.)* |
+| 2 | says nothing about stale contacts in replies | leave stale contacts **out of our FIND_NODE replies** | pointing others at a node we know doesn't answer just costs them a timeout | others get fewer dead pointers from us. If we flag a live node by mistake, we hide it from others too, but only until its lock runs out (30 s at first) |
 | 2 | a full bucket's stale entry is replaced from a **replacement cache** (Sec. 4.1) | replace it with the next new contact that messages us, without a ping | there's no replacement cache (see simplifications) | refilling a bucket waits for the next new contact instead of using a stored spare |
 | 3 | the **original publisher** republishes every **24 h**; holders every hour (Sec. 2.3, 2.5) | the publisher republishes at the **same** interval as holders (1 h by default) | one setting is simpler, and it's what lets B2 recover within one interval | more republish traffic from publishers; faster recovery when all holders die |
 | 3 | values **expire** 24 h after publication (Sec. 2.3) | values **never expire** | expiry needs each STORE to carry the value's remaining lifetime (a change to the message format); B2 and B3 didn't need it | records of providers that left linger; a downloader wastes one failed connection on each |
@@ -409,7 +432,7 @@ another.
 
 | Simplification | Where | Paper | Effect |
 |---|---|---|---|
-| No replacement cache, no exponential backoff | `stale.go` | Sec. 4.1 | see the table above |
+| No replacement cache | `stale.go`, `bucket.go` | Sec. 4.1 | see the table above |
 | One republish interval for publisher and holders; no expiry | `republish.go`, `store.go` | Sec. 2.3, 2.5 | see the table above |
 | Every republish starts with a lookup | `republish.go` | Sec. 2.5 skips it using split buckets | one lookup per key per interval |
 | One refresh timer per node, not per bucket | `refresh.go` | Sec. 2.3 | a bucket can wait up to two intervals |
@@ -430,4 +453,3 @@ See the README's simplifications table.
 | Value expiry | records of departed providers linger | Sec. 2.3 |
 | Hand-over on join | newcomers miss nearby values until the next republish (B3) | Sec. 2.5 |
 | Lookups that don't wait for a whole round | the first lookups after many deaths take 2 s per round with a dead node (B1) | Sec. 2.3 |
-| Exponential backoff for stale nodes | a briefly unreachable node that never messages us again stays skipped | Sec. 4.1 |

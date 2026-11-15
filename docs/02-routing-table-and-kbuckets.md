@@ -246,6 +246,21 @@ than remove them." This project does that:
   bucket that holds a stale contact, `Bucket.Update` replaces the oldest
   stale one on the spot (`ReplacedStale`). The failures already showed
   it doesn't answer. Otherwise the usual ping-then-evict rule applies.
+- **Retried after a back-off:** the paper "locks unresponsive contacts
+  and avoids sending them any further RPCs for an exponentially
+  increasing backoff interval". Going stale locks a node for
+  `--stale-backoff` (default 30 s; the paper gives no number). After
+  that it's **on probation**: no longer skipped, so the next lookup that
+  needs it asks it.
+  - If it answers, it's cleared.
+  - If it fails again, it's locked for twice as long: 60 s, 120 s, …, up
+    to 1 h.
+
+  So a live node marked stale by mistake (a few lost packets on Wi-Fi)
+  is back within 30 s. A dead node costs one timeout per lock, and the
+  locks keep getting longer. The log shows `contact marked stale` with
+  `retry_in=30s`, and each failed retry at debug level
+  (`stale contact still unresponsive`).
 - **Not voided:** if this node's own network goes down, every contact
   fails and goes stale. A lookup with nothing fresh falls back to the
   stale contacts (`ClosestIncludingStale`), and the first reply clears
@@ -256,12 +271,11 @@ from `sendAndWait` and successes from `touchContact`, and the bucket only
 reads the tracker (`isStale`).
 
 **SIMPLIFICATION:** the paper also keeps a **replacement cache** per
-bucket (contacts that arrived while it was full, ready to step in) and
-backs off exponentially before retrying an unresponsive contact. We have
-neither. A stale contact is replaced only when a new contact for its
-bucket next messages us, and lookups simply skip it until it speaks.
-Neither blocks the end goal. A replacement cache would refill a bucket
-faster after a mass death; bucket refresh (planned) does that too.
+bucket (contacts that arrived while it was full, ready to step in). We
+don't. A stale contact is replaced only when a new contact for its
+bucket next messages us. That doesn't block the end goal. A replacement
+cache would refill a bucket faster after a mass death; bucket refresh
+(below) does that too.
 
 The threshold is a trade-off. 5 tolerates a few lost UDP packets, the
 paper's concern on the Internet, but it takes several lookups to learn

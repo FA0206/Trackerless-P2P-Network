@@ -61,7 +61,7 @@ still fails at once with the same message, so B2's file case is unchanged.
 |---|---|---|---|---|
 | A2 thundering herd | **holds up** | 19/19 joins, 12/12 lookups correct, 0 data races in 20 race-detector processes | — | — |
 | A3 bridge between islands | **breaks if quiet and no refresh ran** | quiet: 0 of 5 found across, forever; used: 5 of 5; refreshed (3 s): 5 of 5, every A node knew all of B | contacts spread only through traffic | **done:** bucket refresh (Sec. 2.3); it has to run before the bridge dies (default every 1 h) |
-| A4 tiny buckets | **imperfect at k = 1** | k=1: 9–14 of 20 correct without the join refresh, 15–20 with it; k=4: 20 of 20 | thin routing tables after joining | **done:** join refresh (Sec. 2.3). k = 1 stays imperfect by nature |
+| A4 tiny buckets | **imperfect at k = 1** | k=1: 9–14 of 20 correct without the join refresh, 14–20 with it; k=4: 20 of 20 | thin routing tables after joining | **done:** join refresh (Sec. 2.3). k = 1 stays imperfect by nature |
 | B1 half the network dies | **slow at first, recovers; was wrong** | was: every answer short, and repeats no better. Now: none short; 2–8 s per lookup right after the kill, back to ms after 1 repeat (`--stale-after 1`) or 3–6 (default 5); SEED=4 still misses a live node | dead contacts in other nodes' tables (own shortlists and learning fixed) | **done:** drop failed candidates (Sec. 2.3), stale contacts (Sec. 4.1). Planned: bucket refresh |
 | B2 record holders die | **breaks until the next republish** | file unfindable with 2 providers online until the seeder's next republish (13–15 s later with a 15 s interval), which brings it back by itself | records written only at share time (fixed: republish) | **done:** lookup fix, republish (Sec. 2.5). Not yet: expiry |
 | B3 late joiners | **breaks until the next republish** | 13 of 16 newcomer `get`s miss; holders alive; the next republish moves the value to them | values move to closer nodes only at a republish | **done:** republish (Sec. 2.5). Not yet: hand-over on join |
@@ -106,7 +106,7 @@ and by how much else depends on fixing it first.
 | 2 | **B2** | A file becomes unfindable when its record holders die, even with providers online. **Fixed: the next republish brings it back** | Directly the end goal ("downloads keep working when nodes leave") and the recovery graph. Needs fix 1 first, or the republish lookup stalls on the same dead contacts | Republish values hourly; expire them after 24 h (Sec. 2.5) | `store.go`, `values.go` |
 | 3 | **B3** | Newcomers near a key can't see its value. **Fixed one interval late by republishing**; hand-over on join: open | Same family as B2, but nothing is lost: the holders are alive. Hourly republishing from fix 2 resolves it over time | Fix 2, plus: when a node meets a newcomer closer to a key it holds, it STOREs the value there (Sec. 2.5) | `node.go` (`touchContact`) |
 | 4 | **A3** | A quiet group cut off by one node's death never reconnects. **Fixed by bucket refresh, if it runs before the death** | Matters for the multi-device demo (two LANs started separately) and for long-idle networks. Busy networks connect themselves through traffic, so it rarely bites today | Bucket refresh: a lookup for a random ID in every bucket not used for a while (Sec. 2.3) | `node.go` |
-| 5 | **A4** | With k = 1, lookups go wrong with nobody dead. **Much better with the join refresh** (15–20 of 20) | Only matters for k ≤ 2. Every demo uses k ≥ 3, where all lookups were correct. Shares its code with fix 4 | After joining, refresh every bucket farther away than the closest neighbor (Sec. 2.3) | `node.go` (`Bootstrap`) |
+| 5 | **A4** | With k = 1, lookups go wrong with nobody dead. **Much better with the join refresh** (14–20 of 20) | Only matters for k ≤ 2. Every demo uses k ≥ 3, where all lookups were correct. Shares its code with fix 4 | After joining, refresh every bucket farther away than the closest neighbor (Sec. 2.3) | `node.go` (`Bootstrap`) |
 | — | **A2** | — | Holds up; nothing to fix | — | — |
 
 **Three code changes cover all five.** In order: **(a)** lookup failure
@@ -441,7 +441,7 @@ PASS: with nothing dead, k=4 lookups were all correct; k=1 got 11 of 20 right wi
 | 3 | 14 of 20 | 18 of 20 | 20 of 20 | 20 of 20 |
 
 Without the join refresh the counts are the original ones (9–14 of 20).
-With it, k = 1 gets 15–20 of 20. The exact count varies a little from run
+With it, k = 1 gets 14–20 of 20. The exact count varies a little from run
 to run, because concurrent joins don't fill tables identically, which is
 why the check is "at least as many". Before the join refresh, k = 2 was
 as bad as k = 1 for SEED=1 (11 of 20). Now it gets 19–20.
@@ -487,7 +487,7 @@ seeder-death demos, where every node is within a lookup or two anyway),
 4 or 20.
 
 The join refresh **is** that fix, and it's built: k = 1 went from 9–14
-to 15–20 of 20 correct. It can't make k = 1 perfect, since one contact
+to 14–20 of 20 correct. It can't make k = 1 perfect, since one contact
 per bucket and per reply leaves no redundancy. It also makes
 lookup-latency results less dependent on join order, which matters for
 the evaluation graphs. A2 shows the same effect at k = 4: routing tables

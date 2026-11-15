@@ -285,7 +285,7 @@ lookups are correct, and there are no data races. A4 builds the same
 20-node network with k = 1 (with and without the join refresh), 2 and 4.
 With nothing dead and no join refresh, k = 1 gets about half its
 lookups wrong (9–14 of 20 correct), because routing tables are nearly
-empty. The paper's join refresh (now built) brings that to 15–19 of 20.
+empty. The paper's join refresh (now built) brings that to 14–20 of 20.
 k = 4 gets all 20 either way.
 
 A3 joins two separately built
@@ -375,7 +375,8 @@ Then type console commands into a node's terminal:
 | `--k`, `--alpha`, `--rpc-timeout` | protocol parameters (20, 3, 2s); raise `--rpc-timeout` when using breakpoints |
 | `--refresh-interval <d>` | how often to refresh k-buckets no lookup has touched in that time, by looking up a random ID in each (default 1h, the paper's; negative = off). `--join-refresh=false` skips the refresh at join, for experiments only ([02](docs/02-routing-table-and-kbuckets.md#bucket-refresh-keeping-quiet-buckets-alive)) |
 | `--republish-interval <d>` | how often a node stores again what it published and what it holds for others (default 1h, the paper's number; negative = off). Lets values survive their holders dying and reach closer newcomers ([06](docs/06-store-and-find-value.md#republishing-keeping-values-on-the-k-closest-live-nodes)) |
-| `--stale-after <n>` | failed RPCs in a row before a contact is stale: kept in the table, but lookups and replies skip it until it's heard from again (default 5, the paper's number; negative = never) ([02](docs/02-routing-table-and-kbuckets.md#stale-contacts-a-node-that-stops-answering)) |
+| `--stale-after <n>` | failed RPCs in a row before a contact is stale: kept in the table, but lookups and replies skip it until it's heard from again or its back-off (`--stale-backoff`) runs out (default 5, the paper's number; negative = never) ([02](docs/02-routing-table-and-kbuckets.md#stale-contacts-a-node-that-stops-answering)) |
+| `--stale-backoff <d>` | how long a stale contact is skipped before lookups try it again; doubles after each failed retry, up to 1h (default 30s; negative = never retry). The paper's "exponentially increasing backoff interval" (Sec. 4.1) |
 
 ### Tests
 
@@ -479,7 +480,7 @@ Here is whether each one blocks the end goal:
 | JSON encoding | No, but it inflates the "control bytes" measurement. | Keep; say so in the evaluation. |
 | **Advertise IP set by hand** (`--advertise-ip`, default `127.0.0.1`; demos bootstrap via `127.0.0.1`) | **Yes, for multi-device.** Each node must be started with its LAN IP, and bootstrap via LAN addresses. No NAT traversal. | Before the multi-device demo: test on a LAN, maybe auto-detect the LAN IP. |
 | **Synchronous lookup rounds** ([05](docs/05-iterative-parallel-lookup.md)) | **Yes, for the latency and recovery graphs.** A dead node stalls a round by a full RPC timeout, and the seeder-kill scenario is exactly that. | Before measuring latency or recovery time. |
-| Stale contacts: no replacement cache, no exponential backoff ([02](docs/02-routing-table-and-kbuckets.md#stale-contacts-a-node-that-stops-answering)) | No. A stale contact is replaced only when a new contact for its bucket messages us; lookups just skip it. | Keep; refresh refills buckets. |
+| Stale contacts: no replacement cache ([02](docs/02-routing-table-and-kbuckets.md#stale-contacts-a-node-that-stops-answering)) | No. A stale contact is replaced only when a new contact for its bucket messages us; until its back-off runs out, lookups skip it. | Keep; refresh refills buckets. |
 | Bucket refresh: one timer per node, not per bucket ([02](docs/02-routing-table-and-kbuckets.md#bucket-refresh-keeping-quiet-buckets-alive)) | No. One pass every `--refresh-interval` refreshes every bucket idle that long, so a bucket can wait up to two intervals. | Keep. Count refresh traffic in the control-bytes graph. |
 | No lookup early-exit heuristic ([05](docs/05-iterative-parallel-lookup.md)) | Slightly inflates RPC counts. | Optional, before the graphs. |
 | **Values never expire** ([06](docs/06-store-and-find-value.md)) | Not for recovery (republish handles that), but dead providers' records linger: a downloader wastes one failed connection on each, and holders keep republishing them. Needs each STORE to carry the remaining lifetime. | Before long-running churn experiments. |

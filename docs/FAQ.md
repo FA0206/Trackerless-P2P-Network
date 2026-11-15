@@ -198,7 +198,7 @@ wrong node.
 20-node network several times: k = 1 got 9–14 of 20 lookups right, and
 k = 4 got all 20. The paper's join refresh (look up a random ID in every
 bucket farther than your closest neighbor, [04](04-bootstrap-and-join.md))
-fills those buckets: with it, k = 1 gets 15–19 of 20 right. Not all,
+fills those buckets: with it, k = 1 gets 14–20 of 20 right. Not all,
 because k = 1 is still one contact per bucket and per reply. The demos use k = 3 or more; A4 didn't test k = 3.
 
 ### Is it safe for many nodes to join at once?
@@ -269,6 +269,13 @@ Lookups and `FIND_NODE` replies skip it. The console's `table` marks it
 `(stale: lookups skip it)`, and `/api/table` shows `"stale": true`. Any
 message from it clears the flag. A new contact for a full bucket replaces
 a stale one straight away, without the usual ping.
+
+It isn't skipped forever. After 30 s (`--stale-backoff`) a lookup that
+needs it tries it again. If it answers, it's back. If not, it's skipped
+for 60 s, then 120 s, and so on, up to 1 h. That's the paper's
+"exponentially increasing backoff interval" (Sec. 4.1). So a node that
+only lost a few packets is back quickly, and a dead one costs a timeout
+less and less often.
 
 Why flag and not delete? The paper again: if a node's *own* network goes
 down for a while, every contact fails, and deleting them would leave it

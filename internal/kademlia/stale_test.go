@@ -2,28 +2,34 @@ package kademlia
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 	"time"
 )
 
+// fakeClockTracker is a tracker whose clock the test moves by hand.
+func fakeClockTracker(staleAfter int, backoff time.Duration) (*staleTracker, *time.Time) {
+	s := newStaleTracker(staleAfter, backoff)
+	clock := time.Unix(1000, 0)
+	s.now = func() time.Time { return clock }
+	return s, &clock
+}
+
 func TestStaleAfterNFailuresInARow(t *testing.T) {
-	s := newStaleTracker(3)
+	s, _ := fakeClockTracker(3, time.Minute)
 	id := idFromByte(7)
 	for i := 1; i <= 2; i++ {
-		if s.failed(id) || s.isStale(id) {
+		if lock, _ := s.failed(id); lock != 0 || s.isStale(id) {
 			t.Fatalf("stale after %d failures, want 3", i)
 		}
 	}
-	if !s.failed(id) || !s.isStale(id) {
-		t.Fatal("not stale after the 3rd failure in a row")
-	}
-	if s.failed(id) {
-		t.Error("becameStale reported twice; it should only report the moment it happens")
+	if lock, first := s.failed(id); lock != time.Minute || !first || !s.isStale(id) {
+		t.Fatalf("3rd failure: locked for %s (first=%v), want 1m, first", lock, first)
 	}
 }
 
 func TestHearingFromANodeClearsItsFailures(t *testing.T) {
-	s := newStaleTracker(2)
+	s, _ := fakeClockTracker(2, time.Minute)
 	id := idFromByte(7)
 	s.failed(id)
 	if s.heardFrom(id) {
@@ -42,12 +48,42 @@ func TestHearingFromANodeClearsItsFailures(t *testing.T) {
 	}
 }
 
+// Paper Sec. 4.1: unresponsive contacts are locked "for an exponentially
+// increasing backoff interval". After the lock, the node may be asked
+// again; each failed retry doubles the lock, up to maxStaleBackoff.
+func TestStaleBackoffDoublesAndLetsTheNodeBeRetried(t *testing.T) {
+	s, clock := fakeClockTracker(2, 30*time.Second)
+	id := idFromByte(7)
+	s.failed(id)
+	s.failed(id) // stale: locked for 30 s
+	*clock = clock.Add(29 * time.Second)
+	if !s.isStale(id) {
+		t.Fatal("unlocked before its 30 s were up")
+	}
+	*clock = clock.Add(2 * time.Second)
+	if s.isStale(id) {
+		t.Fatal("still locked after 30 s: it should be retried now")
+	}
+	want := 60 * time.Second
+	for retry := 1; retry <= 10; retry++ {
+		lock, first := s.failed(id) // the retry failed
+		if first || lock != want || !s.isStale(id) {
+			t.Fatalf("retry %d: locked for %s (first=%v), want %s", retry, lock, first, want)
+		}
+		*clock = clock.Add(lock)
+		want = min(2*want, maxStaleBackoff)
+	}
+	if !s.heardFrom(id) || s.isStale(id) {
+		t.Error("a node on probation that speaks should be cleared, and reported as recovered")
+	}
+}
+
 func TestStaleTrackerIgnoresZeroIDAndCanBeOff(t *testing.T) {
-	s := newStaleTracker(1)
-	if s.failed(ID{}) || s.isStale(ID{}) {
+	s, _ := fakeClockTracker(1, time.Minute)
+	if lock, _ := s.failed(ID{}); lock != 0 || s.isStale(ID{}) {
 		t.Error("the zero ID (Bootstrap's unidentified seed) must never be tracked")
 	}
-	off := newStaleTracker(-1)
+	off, _ := fakeClockTracker(-1, time.Minute)
 	id := idFromByte(7)
 	for i := 0; i < 10; i++ {
 		off.failed(id)
@@ -55,19 +91,27 @@ func TestStaleTrackerIgnoresZeroIDAndCanBeOff(t *testing.T) {
 	if off.isStale(id) {
 		t.Error("staleAfter < 0 should turn tracking off")
 	}
+	never, clock := fakeClockTracker(1, -1)
+	if _, first := never.failed(id); !first {
+		t.Error("with no back-off, going stale should still be reported")
+	}
+	*clock = clock.Add(100 * time.Hour)
+	if !never.isStale(id) {
+		t.Error("backoff < 0 should keep a node stale until it speaks")
+	}
 	var none *staleTracker
-	if none.failed(id) || none.isStale(id) || none.heardFrom(id) {
+	if lock, _ := none.failed(id); lock != 0 || none.isStale(id) || none.heardFrom(id) {
 		t.Error("a nil tracker should never report stale")
 	}
 }
 
 func TestStaleTrackerIsBounded(t *testing.T) {
-	s := newStaleTracker(1)
+	s, _ := fakeClockTracker(1, time.Minute)
 	for i := 0; i < maxTracked+10; i++ {
 		s.failed(HashID([]byte{byte(i), byte(i >> 8), 's'}))
 	}
-	if len(s.failures) != maxTracked {
-		t.Errorf("tracking %d IDs, want at most %d", len(s.failures), maxTracked)
+	if len(s.nodes) != maxTracked {
+		t.Errorf("tracking %d IDs, want at most %d", len(s.nodes), maxTracked)
 	}
 }
 
@@ -164,6 +208,55 @@ func TestRepeatedLookupsStopAskingDeadNodes(t *testing.T) {
 // If every contact is stale (this node's own network was down), a lookup
 // still uses them rather than giving up: the paper keeps the table rather
 // than voiding it (Sec. 4.1). The first reply clears the flag.
+// A live node marked stale by mistake (say its packets were lost) is
+// skipped only until its back-off runs out; then a lookup asks it again,
+// it answers, and it's cleared. Without the back-off it would stay
+// skipped until it happened to message us.
+func TestWronglyStaleNodeIsRetriedAfterTheBackoff(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	nodes := make([]*Node, 3)
+	for i := range nodes {
+		n, err := NewNode(Config{ID: HashID([]byte{'w', byte(i)}), K: 3, RPCTimeout: 300 * time.Millisecond,
+			StaleAfter: 1, StaleBackoff: 300 * time.Millisecond, Logger: slog.New(slog.DiscardHandler)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		n.Start()
+		t.Cleanup(func() { n.Close() })
+		nodes[i] = n
+		if i > 0 {
+			if _, err := n.Bootstrap(ctx, nodes[0].Self().UDPAddr()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	a, b := nodes[0], nodes[1]
+	a.stale.failed(b.ID) // a wrongly believes b is unresponsive
+	found := func() bool {
+		res, err := a.Lookup(ctx, b.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range res.Closest {
+			if c.ID == b.ID {
+				return true
+			}
+		}
+		return false
+	}
+	if found() {
+		t.Fatal("during its lock, b should be skipped (another live contact exists, so no fallback)")
+	}
+	time.Sleep(400 * time.Millisecond)
+	if !found() {
+		t.Fatal("after the back-off, the lookup should ask b again and find it")
+	}
+	if a.IsStale(b.ID) {
+		t.Error("b answered the retry, so it shouldn't be stale")
+	}
+}
+
 func TestLookupFallsBackToStaleContacts(t *testing.T) {
 	nodes := smallKNetworkWith(t, 2, 3, 1)
 	a, b := nodes[0], nodes[1]

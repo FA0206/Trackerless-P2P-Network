@@ -161,7 +161,7 @@ It's best effort: a failed refresh lookup doesn't fail the join.
 The first version skipped this step ("at a few dozen nodes the
 self-lookup reaches essentially everyone"). Edge case A4 showed that's
 wrong for a small k. With k = 1, nodes joined knowing almost nobody, and
-9–14 of 20 lookups were correct. With the join refresh it's 15–19 of 20
+9–14 of 20 lookups were correct. With the join refresh it's 14–20 of 20
 ([EDGE-CASES.md](EDGE-CASES.md#a4--tiny-buckets)). `--join-refresh=false`
 turns it off, only so experiments like A4 can compare.
 

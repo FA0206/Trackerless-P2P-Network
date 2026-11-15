@@ -130,8 +130,9 @@ starting `3b…` (`0011 1011`, top bit two places lower) is in 157.
 JavaScript.
 
 **`stale: true`** means the contact failed `--stale-after` RPCs in a row
-(default 5) and hasn't been heard from since. It stays in its bucket,
-but this node's lookups and replies skip it
+(default 5), hasn't been heard from since, and its back-off (30 s at
+first, doubling) hasn't run out. It stays in its bucket, but this node's
+lookups and replies skip it until then
 ([02](02-routing-table-and-kbuckets.md#stale-contacts-a-node-that-stops-answering)).
 A visualizer can draw it as a dead or fading link. Once node2 was
 restarted and messaged node0, the same contact read `"stale": false`
@@ -308,7 +309,7 @@ full list is every `logger.Debug/Info/Warn/Error` call in
 | `rpc timed out` | DEBUG | `type`, `to`, `rpc_id` | `node.go` | no reply in `--rpc-timeout`: likely a dead node |
 | `bucket updated` | DEBUG | `contact` | `node.go` `touchContact` | a contact was added or moved to the tail of its bucket |
 | `bucket full, pinging…`, `stale contact still alive…`, `stale contact unresponsive, evicted` | DEBUG | `stale`, `candidate` / `kept` / `evicted`, `replacement` | `node.go` | the eviction check ([02](02-routing-table-and-kbuckets.md)). Here "stale" means the least-recently-seen contact, not a stale-flagged one |
-| `contact marked stale` | INFO | `contact` | `node.go` `noteFailure` | a node failed `--stale-after` RPCs in a row; lookups and replies skip it from now on |
+| `contact marked stale` | INFO | `contact`, `retry_in` (how long it's skipped before a retry) | `node.go` `noteFailure` | a node failed `--stale-after` RPCs in a row; lookups and replies skip it from now on |
 | `stale contact answered again` | INFO | `contact` | `node.go` `touchContact` | a stale node sent us a message, so it's back |
 | `stale contact replaced` | INFO | `evicted`, `replacement` | `node.go` `touchContact` | a new contact took a stale contact's slot in a full bucket, without a ping |
 | `lookup round starting` | DEBUG | `target`, `round`, `batch` | `lookup.go` | one α-wide round of a lookup |

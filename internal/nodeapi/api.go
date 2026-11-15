@@ -204,7 +204,8 @@ type Bucket struct {
 // TableContact is one routing-table entry plus its XOR distance from this
 // node, so a visualizer doesn't have to compute it. Stale means it failed
 // several RPCs in a row (kademlia.Config.StaleAfter): it's still in the
-// table, but lookups and replies skip it until it's heard from again.
+// table, but lookups and replies skip it until it's heard from again or
+// its back-off (kademlia.Config.StaleBackoff) runs out.
 type TableContact struct {
 	ID       kademlia.ID `json:"id"`
 	IP       string      `json:"ip"`

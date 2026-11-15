@@ -66,6 +66,11 @@ type Config struct {
 	Alpha       int           // default DefaultAlpha
 	RPCTimeout  time.Duration // default DefaultRPCTimeout
 	StaleAfter  int           // failed RPCs in a row before a node is stale; default DefaultStaleAfter, < 0 = never
+	// StaleBackoff: how long a node that just went stale is skipped before
+	// lookups may try it again; each failed retry doubles it, up to 1 h
+	// (stale.go, paper Sec. 4.1). Default DefaultStaleBackoff (30 s);
+	// < 0 = never retry (stale until it sends us something).
+	StaleBackoff time.Duration
 	// RepublishInterval: how often this node stores again what it
 	// published and what it holds (republish.go, paper Sec. 2.5).
 	// Default DefaultRepublishInterval (1 h); < 0 turns republishing off.
@@ -102,6 +107,9 @@ func NewNode(cfg Config) (*Node, error) {
 	if cfg.StaleAfter == 0 {
 		cfg.StaleAfter = DefaultStaleAfter
 	}
+	if cfg.StaleBackoff == 0 {
+		cfg.StaleBackoff = DefaultStaleBackoff
+	}
 	if cfg.RepublishInterval == 0 {
 		cfg.RepublishInterval = DefaultRepublishInterval
 	}
@@ -112,7 +120,7 @@ func NewNode(cfg Config) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	stale := newStaleTracker(cfg.StaleAfter)
+	stale := newStaleTracker(cfg.StaleAfter, cfg.StaleBackoff)
 	rt := NewRoutingTable(cfg.ID, cfg.K)
 	rt.setStaleCheck(stale.isStale)
 	return &Node{
@@ -188,7 +196,8 @@ func (n *Node) RoutingTableSnapshot() map[int][]Contact {
 }
 
 // IsStale reports whether a node is stale: it failed several RPCs in a
-// row (Config.StaleAfter) and hasn't been heard from since. Stale contacts
+// row (Config.StaleAfter), hasn't been heard from since, and its back-off
+// (Config.StaleBackoff) hasn't run out. Stale contacts
 // stay in the routing table (and in RoutingTableSnapshot), but lookups and
 // replies skip them. For display: the console's `table`, the API.
 func (n *Node) IsStale(id ID) bool {
@@ -298,8 +307,12 @@ func (n *Node) sendAndWait(ctx context.Context, target Contact, msgType MessageT
 // logs the moment it becomes stale. It counts every node we send RPCs to,
 // in our routing table or not (see stale.go for why).
 func (n *Node) noteFailure(target Contact) {
-	if n.stale.failed(target.ID) {
-		n.logger.Info("contact marked stale", "contact", target.String())
+	lockedFor, first := n.stale.failed(target.ID)
+	switch {
+	case first:
+		n.logger.Info("contact marked stale", "contact", target.String(), "retry_in", lockedFor)
+	case lockedFor > 0:
+		n.logger.Debug("stale contact still unresponsive", "contact", target.String(), "retry_in", lockedFor)
 	}
 }
 

@@ -45,7 +45,8 @@ func run() error {
 	republishInterval := flag.Duration("republish-interval", kademlia.DefaultRepublishInterval, "how often to store again what this node published and what it holds for others (paper: 1h; demos use seconds; negative = off)")
 	refreshInterval := flag.Duration("refresh-interval", kademlia.DefaultRefreshInterval, "how often to refresh k-buckets no lookup touched in that time, by looking up a random ID in each (paper: 1h; negative = off; the refresh at join always runs)")
 	joinRefresh := flag.Bool("join-refresh", true, "after joining, refresh every k-bucket farther than the closest neighbor (paper Sec. 2.3); false only for experiments")
-	staleAfter := flag.Int("stale-after", kademlia.DefaultStaleAfter, "failed RPCs in a row before a contact is stale: kept in the table, but lookups and replies skip it until it's heard from again")
+	staleAfter := flag.Int("stale-after", kademlia.DefaultStaleAfter, "failed RPCs in a row before a contact is stale: kept in the table, but lookups and replies skip it until it's heard from again or its back-off runs out")
+	staleBackoff := flag.Duration("stale-backoff", kademlia.DefaultStaleBackoff, "how long a stale contact is skipped before lookups try it again; doubles after each failed retry, up to 1h (negative = never retry)")
 	maxInFlight := flag.Int("max-inflight", transfer.DefaultMaxInFlight, "most piece requests a download keeps in flight at once (always at most 1 per provider)")
 	debugServeDelay := flag.Duration("debug-serve-delay", 0, "DEBUG ONLY: wait this long before answering each piece request, so a demo can kill this node mid-transfer (0 = off)")
 	apiAddr := flag.String("api", "", "serve this node's state as JSON over HTTP on host:port, e.g. 127.0.0.1:8000 (off if empty; see docs/NODE-API.md)")
@@ -90,6 +91,7 @@ func run() error {
 		Alpha:             *alpha,
 		RPCTimeout:        *rpcTimeout,
 		StaleAfter:        *staleAfter,
+		StaleBackoff:      *staleBackoff,
 		RepublishInterval: *republishInterval,
 		RefreshInterval:   *refreshInterval,
 		SkipJoinRefresh:   !*joinRefresh,
