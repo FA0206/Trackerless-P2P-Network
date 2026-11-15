@@ -28,8 +28,7 @@ network to do, sometimes "this works" and sometimes "this breaks". Then:
 - **FAIL** = the network did **something we didn't predict**. It's a
   surprise worth looking into, not necessarily a bug. It can mean the
   code changed (a fix made things better than predicted), our prediction
-  was wrong, or, as in fix 1 below, the script itself misjudged what
-  happened.
+  was wrong, or the script misread the network's output.
 
 So when a fix makes something work that used to break, the script
 starts to FAIL, because the old prediction ("this breaks") is no longer
@@ -37,20 +36,18 @@ true. Every fix below therefore also **updated the prediction** in the
 affected scripts, so they PASS again, now predicting the fixed
 behavior.
 
-## The five fixes at a glance
+## The four fixes at a glance
 
 | # | Edge cases | Problem in one line | Where it came from | Fix in one line | Commit |
 |---|---|---|---|---|---|
-| 1 | B3 | B3's script cried wolf about 1 run in 6: it reported a surprise when nothing surprising had happened | the **test script** read the wrong lines of output; the network was fine | read the output by its shape, skip log lines | `1ec8628` |
-| 2 | B1, B2 | After nodes died, lookups returned too few nodes, sometimes none | `lookup.go`, `iterativeFind`: dead nodes kept their places in the lookup's shortlist | a dead node gives up its place to the next-closest one | `de5a42d` |
-| 3 | B1 | Dead nodes were asked again on every lookup, forever | `node.go`: a timeout was forgotten as soon as it happened | remember failures; after 5 in a row, stop asking that node | `3606ea6` |
-| 4 | B2, B3 | A file vanished when the few nodes holding its record died; new nodes near a key couldn't see its value | `values.go`, `Store`: a value was stored once and never again | every hour, store values again on whoever is closest now | `ffdb038` |
-| 5 | A3, A4, B1 | Quiet parts of the network never learned about each other | `node.go`, `Bootstrap`, and the lack of any background activity | look up a random ID in each idle bucket, at join and every hour | `5e2ba88` |
+| 1 | B1, B2 | After nodes died, lookups returned too few nodes, sometimes none | `lookup.go`, `iterativeFind`: dead nodes kept their places in the lookup's shortlist | a dead node gives up its place to the next-closest one | `de5a42d` |
+| 2 | B1 | Dead nodes were asked again on every lookup, forever | `node.go`: a timeout was forgotten as soon as it happened | remember failures; after 5 in a row, stop asking that node | `3606ea6` |
+| 3 | B2, B3 | A file vanished when the few nodes holding its record died; new nodes near a key couldn't see its value | `values.go`, `Store`: a value was stored once and never again | every hour, store values again on whoever is closest now | `ffdb038` |
+| 4 | A3, A4, B1 | Quiet parts of the network never learned about each other | `node.go`, `Bootstrap`, and the lack of any background activity | look up a random ID in each idle bucket, at join and every hour | `5e2ba88` |
 
-Fix 1 was a bug in **our test**, not in the network. Fixes 2–5 are bugs
-in the **network code**: each is one of the paper's own mechanisms that
-the first version of this project had left out. Each fixed something the
-edge cases measured, and each also showed us the next gap.
+Each fix is one of the paper's own mechanisms that the first version of
+this project had left out. Each fixed something the edge cases
+measured, and each also showed us the next gap.
 
 **A few words used below:**
 - **Lookup:** a node asking around for "the k nodes closest to some
@@ -63,102 +60,7 @@ edge cases measured, and each also showed us the next gap.
 
 ---
 
-## 1. B3: the test script raised false alarms
-
-**In short: the network was never wrong here. Our test script misread
-the network's output and reported a surprise that didn't happen.**
-
-### The problem
-
-Edge case B3 ("late joiners") checks one prediction in its last step:
-
-> node1 stores the value again, and the value lands on the **2 newcomer
-> nodes** closest to its key.
-
-The network did that correctly **every single time**. But about once in
-every six runs, the script reported FAIL: it claimed the value had
-landed on only **one** of the two newcomers. That's a false alarm. The
-script said "surprise!" when there was none.
-
-Why it matters: a test that cries wolf at random is worse than no test.
-Later, when a real code change does alter B3's outcome, we wouldn't know
-whether to believe it.
-
-### Where it came from
-
-**In the test script, not in the network code.** Specifically, in how
-`scripts/edge/b3-late-joiners-hide-a-value.sh` read the node's screen
-output.
-
-Here's what the script relies on. When node1 stores a value, it prints a
-header line, then one line per node that accepted it. The script checks
-the IDs on those lines against the two newcomers' IDs. To find them, it
-grabbed "**the 2 lines right after the header**" (`grep -A2 "^put …"`).
-
-The catch: the node writes **two kinds of text into the same file**. One
-is console output, the answers to commands like `put`. The other is log
-lines, which other parts of the program write whenever they do
-something. They're written independently, so a log line can squeeze in
-between two lines of console output. That's exactly what happened in
-the failing runs:
-
-```
-put b3-1-3 (key 0ead8775…): stored on 2 other node(s), locally=false, failed=0
-time=… level=INFO msg="rpc sent" … type=PING …     ← a log line squeezed in
-    0eb1a3aebfcbdc55a6cc85d006d59b5fe446ffe8@127.0.0.1:9558     ← newcomer node8
-    0f11c5bf112711b5369b5a057fa96a9496b4cbe7@127.0.0.1:9559     ← newcomer node9
-```
-
-"The 2 lines after the header" were the log line and node8. The script
-never saw node9, so it concluded the value reached only one newcomer.
-The header itself says "stored on 2 other node(s)", and both nodes are
-right there, one line further down.
-
-It's like reading the top two names off a sign-up sheet when someone has
-scribbled a note between the names: you miss the second person, even
-though they signed up.
-
-It only happened sometimes because it depends on timing. The squeezed-in
-line came from a background PING, and whether that lands at that exact
-moment is luck.
-
-### How we found it
-
-The first failure happened during a full run, and its logs were lost
-(WSL clears `/tmp` between commands). Re-running B3 a few times, it
-passed. So we ran it **30 times in a loop**, half of them with the CPU
-kept busy to shake up the timing, and saved the output and logs of every
-failed run somewhere permanent.
-
-5 of the 30 failed, all at the same check. In every saved log, the node
-had stored on both newcomers, with a log line in the middle of the
-output.
-
-### How we fixed it
-
-Only the script changed; no network code did.
-- The script now **skips any line that starts with `time=`** (log lines
-  always do) and reads only the lines shaped like contacts.
-- It **waits until it has as many contacts as the header announced**
-  ("stored on 2 other node(s)"), in case it reads the file before the
-  node has finished writing.
-
-`scripts/demo-parallel.sh` read its output the same fragile way, so it
-got the same fix before it could cause trouble.
-
-(Later, fix 4 changed B3's last step from "store it again by hand" to
-"wait for the automatic republish", so this particular parsing code is
-gone from B3 now. The lesson stays for every script: **console output
-and log lines share one file, so pick out console lines by their shape,
-not by their position.**)
-
-### How we know it works
-
-The same 30-run loop: 30 of 30 runs PASS, against 25 of 30 before.
-
----
-
-## 2. B1, B2: lookups came back short after nodes died
+## 1. B1, B2: lookups came back short after nodes died
 
 ### The problem
 
@@ -235,15 +137,15 @@ With no dead nodes, the lookup asks exactly the same nodes as before.
   4 contacts. So nobody ever mentioned node7.
 
 Both have the same root cause: **nobody ever forgets a dead contact.**
-That's fix 3.
+That's fix 2.
 
 ---
 
-## 3. B1: dead nodes were asked again and again
+## 2. B1: dead nodes were asked again and again
 
 ### The problem
 
-After fix 2, lookups were correct but slow, and **they never got
+After fix 1, lookups were correct but slow, and **they never got
 faster**. Repeat the same lookups and you pay the same timeouts to the
 same dead nodes, forever. Like a phone book that keeps the numbers of
 people who moved away: you keep calling them.
@@ -317,12 +219,12 @@ LAN. The flag lets the evaluation compare both.
 
 The querier learns, but the **other** survivors don't. They only answer
 requests and never send any to their own dead contacts, so they keep
-handing them out. That's the SEED=4 problem from fix 2, and fix 5 deals
+handing them out. That's the SEED=4 problem from fix 1, and fix 4 deals
 with it.
 
 ---
 
-## 4. B2, B3: values got lost, or stayed where nobody looked
+## 3. B2, B3: values got lost, or stayed where nobody looked
 
 ### The problem
 
@@ -361,7 +263,7 @@ always sit on whoever is closest **now**. Every
   need. This keeps a value alive after its publisher leaves.
 
 Each republish starts with a **fresh lookup**. That's what makes it
-work: the lookup skips the dead holders (thanks to fixes 2 and 3) and
+work: the lookup skips the dead holders (thanks to fixes 1 and 2) and
 finds the newcomers (B3), so the value moves to the right nodes.
 
 Smaller changes:
@@ -403,7 +305,7 @@ so the "before" step still shows the problem.)
 
 ---
 
-## 5. A3, A4, B1: quiet corners of the network stayed in the dark
+## 4. A3, A4, B1: quiet corners of the network stayed in the dark
 
 ### The problem
 
@@ -416,7 +318,7 @@ network that nobody looks up stay unknown:
 - **A4:** with k = 1 (a one-entry address book per bucket), a new node
   learns almost nobody when it joins. 9–14 of 20 lookups gave the wrong
   answer, with nothing dead.
-- **B1, SEED=4:** survivors never test their own dead contacts (fix 3's
+- **B1, SEED=4:** survivors never test their own dead contacts (fix 2's
   open item), so they keep handing them out.
 
 ### Where it came from
@@ -443,7 +345,7 @@ means looking up a random ID that falls in that bucket's range.
 A refresh lookup does three useful things at once:
 1. It fills our bucket.
 2. Every node it asks learns about us.
-3. Its requests test our contacts: dead ones fail and go stale (fix 3).
+3. Its requests test our contacts: dead ones fail and go stale (fix 2).
 
 That third point is what fixes the B1 survivors.
 
@@ -492,16 +394,16 @@ another.
 
 | Fix | The paper says | We do | Why | What it changes |
 |---|---|---|---|---|
-| 2 | A lookup "starts by picking α nodes from its closest non-empty k-bucket" (Sec. 2.3) | start from the whole routing table, sorted by distance, and fall back to farther contacts as closer ones fail | the paper doesn't say what to do when the closest contacts are all dead; we needed the lookup to keep going (B1) | nothing when nobody's dead: the first round asks the same α nodes. After deaths, the lookup can reach live nodes the paper's version might never try |
-| 3 | stale = 5 failures in a row for a **contact** (a routing-table entry) (Sec. 4.1) | count failures for **every** node we send a request to, in our table or not | most dead nodes a lookup meets were never in our table (they came from other nodes' replies); counting only table entries barely helped (measured) | lookups learn to skip dead nodes they only heard about secondhand. The notebook is capped at 4096 nodes |
-| 3 | an unresponsive contact gets no RPCs for "an exponentially increasing backoff interval", then is tried again (Sec. 4.1) | a stale node is never asked again until **it** sends us a message | simpler, and a live node normally messages us again soon (its own lookups and refreshes reach us) | a node that was briefly unreachable, and then never talks to us, stays skipped. The fallback (all contacts stale → use them) still protects a node whose own network dropped |
-| 3 | says nothing about stale contacts in replies | leave stale contacts **out of our FIND_NODE replies** | pointing others at a node we know doesn't answer just costs them a timeout | others get fewer dead pointers from us |
-| 3 | a full bucket's stale entry is replaced from a **replacement cache** (Sec. 4.1) | replace it with the next new contact that messages us, without a ping | there's no replacement cache (see simplifications) | refilling a bucket waits for the next new contact instead of using a stored spare |
-| 4 | the **original publisher** republishes every **24 h**; holders every hour (Sec. 2.3, 2.5) | the publisher republishes at the **same** interval as holders (1 h by default) | one setting is simpler, and it's what lets B2 recover within one interval | more republish traffic from publishers; faster recovery when all holders die |
-| 4 | values **expire** 24 h after publication (Sec. 2.3) | values **never expire** | expiry needs each STORE to carry the value's remaining lifetime (a change to the message format); B2 and B3 didn't need it | records of providers that left linger; a downloader wastes one failed connection on each |
-| 4 | when a node joins, nodes holding values it's now closest to **send them to it** (Sec. 2.5) | not built; newcomers get values at the next republish | a separate step | newcomers miss nearby values for up to one republish interval (B3) |
-| 5 | refresh **any** bucket idle for an hour (Sec. 2.3) | refresh only from the bucket holding our closest neighbor up to the farthest | lower buckets would need a node closer to us than our closest neighbor; in the paper's growing tree those buckets don't exist, so it's the same set | none in practice |
-| 5 | the join refresh is part of joining (Sec. 2.3) | the same, but `--join-refresh=false` can turn it off | only so experiment A4 can compare before and after | none unless the flag is used |
+| 1 | A lookup "starts by picking α nodes from its closest non-empty k-bucket" (Sec. 2.3) | start from the whole routing table, sorted by distance, and fall back to farther contacts as closer ones fail | the paper doesn't say what to do when the closest contacts are all dead; we needed the lookup to keep going (B1) | nothing when nobody's dead: the first round asks the same α nodes. After deaths, the lookup can reach live nodes the paper's version might never try |
+| 2 | stale = 5 failures in a row for a **contact** (a routing-table entry) (Sec. 4.1) | count failures for **every** node we send a request to, in our table or not | most dead nodes a lookup meets were never in our table (they came from other nodes' replies); counting only table entries barely helped (measured) | lookups learn to skip dead nodes they only heard about secondhand. The notebook is capped at 4096 nodes |
+| 2 | an unresponsive contact gets no RPCs for "an exponentially increasing backoff interval", then is tried again (Sec. 4.1) | a stale node is never asked again until **it** sends us a message | simpler, and a live node normally messages us again soon (its own lookups and refreshes reach us) | a node that was briefly unreachable, and then never talks to us, stays skipped. The fallback (all contacts stale → use them) still protects a node whose own network dropped |
+| 2 | says nothing about stale contacts in replies | leave stale contacts **out of our FIND_NODE replies** | pointing others at a node we know doesn't answer just costs them a timeout | others get fewer dead pointers from us |
+| 2 | a full bucket's stale entry is replaced from a **replacement cache** (Sec. 4.1) | replace it with the next new contact that messages us, without a ping | there's no replacement cache (see simplifications) | refilling a bucket waits for the next new contact instead of using a stored spare |
+| 3 | the **original publisher** republishes every **24 h**; holders every hour (Sec. 2.3, 2.5) | the publisher republishes at the **same** interval as holders (1 h by default) | one setting is simpler, and it's what lets B2 recover within one interval | more republish traffic from publishers; faster recovery when all holders die |
+| 3 | values **expire** 24 h after publication (Sec. 2.3) | values **never expire** | expiry needs each STORE to carry the value's remaining lifetime (a change to the message format); B2 and B3 didn't need it | records of providers that left linger; a downloader wastes one failed connection on each |
+| 3 | when a node joins, nodes holding values it's now closest to **send them to it** (Sec. 2.5) | not built; newcomers get values at the next republish | a separate step | newcomers miss nearby values for up to one republish interval (B3) |
+| 4 | refresh **any** bucket idle for an hour (Sec. 2.3) | refresh only from the bucket holding our closest neighbor up to the farthest | lower buckets would need a node closer to us than our closest neighbor; in the paper's growing tree those buckets don't exist, so it's the same set | none in practice |
+| 4 | the join refresh is part of joining (Sec. 2.3) | the same, but `--join-refresh=false` can turn it off | only so experiment A4 can compare before and after | none unless the flag is used |
 
 ### Simplifications these fixes added (labeled in the code)
 
