@@ -24,7 +24,7 @@ Every fix follows the same steps:
 | 2 | [Lookups skip dead candidates](#2-lookups-skip-dead-candidates-b1-b2) | `de5a42d` | `lookup.go` |
 | 3 | [Stale contacts](#3-stale-contacts-b1-learning) | `3606ea6` | `stale.go`, `bucket.go`, `routingtable.go`, `node.go`, `lookup.go` |
 | 4 | [Republishing](#4-republishing-b2-b3) | `ffdb038` | `republish.go`, `values.go`, `store.go`, `node.go` |
-| 5 | [Bucket refresh](#5-bucket-refresh-a3-a4-b1) | the commit after `b9995a9` | `refresh.go`, `node.go` (`Bootstrap`), `lookup.go` |
+| 5 | [Bucket refresh](#5-bucket-refresh-a3-a4-b1) | `5e2ba88` | `refresh.go`, `node.go` (`Bootstrap`), `lookup.go` |
 
 ---
 
