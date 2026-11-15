@@ -79,9 +79,10 @@ needed, and which function implements it.
 - [EDGE-CASES.md](docs/EDGE-CASES.md) — node setups that stress the
   code, each with a prediction, a script, real output, and what would
   fix it.
-- [FIXES.md](docs/FIXES.md) — how each edge-case problem is being
-  fixed: what we saw, how we found the cause, what changed, the
-  evidence, and what's still open.
+- [FIXES.md](docs/FIXES.md) — how each edge-case problem was fixed, in
+  plain words: the problem, where in the code it came from, the fix, the
+  evidence, what's still open, and every place the fixes differ from the
+  paper.
 - [CLAUDE.md](CLAUDE.md) — project scope and ground rules, for AI
   assistants and new teammates alike.
 

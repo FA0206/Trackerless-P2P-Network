@@ -266,7 +266,7 @@ faster after a mass death; bucket refresh (planned) does that too.
 The threshold is a trade-off. 5 tolerates a few lost UDP packets, the
 paper's concern on the Internet, but it takes several lookups to learn
 of a death. On a loss-free LAN `--stale-after 1` learns at once. B1
-measures both ([FIXES.md](FIXES.md#3-stale-contacts-b1-learning)).
+measures both ([FIXES.md](FIXES.md#3-dead-nodes-were-asked-again-and-again)).
 
 ## Bucket refresh: keeping quiet buckets alive
 
