@@ -15,19 +15,42 @@ Kademlia paper says, and why.
 
 All of this is on branch `feature/edge-case-fixes`.
 
+## How to read PASS and FAIL in the edge cases
+
+The edge-case scripts are **experiments with a written prediction**, not
+ordinary pass/fail tests. Each script says up front what we expect the
+network to do, sometimes "this works" and sometimes "this breaks". Then:
+
+- **PASS** = the network did **exactly what we predicted**. That includes
+  "it broke, the way we said it would". For example, B2 passes when the
+  file *can't* be found after its record holders die, because that's the
+  prediction.
+- **FAIL** = the network did **something we didn't predict**. It's a
+  surprise worth looking into, not necessarily a bug. It can mean the
+  code changed (a fix made things better than predicted), our prediction
+  was wrong, or, as in fix 1 below, the script itself misjudged what
+  happened.
+
+So when a fix makes something work that used to break, the script
+starts to FAIL, because the old prediction ("this breaks") is no longer
+true. Every fix below therefore also **updated the prediction** in the
+affected scripts, so they PASS again, now predicting the fixed
+behavior.
+
 ## The five fixes at a glance
 
-| # | Problem in one line | Where it came from | Fix in one line | Commit |
-|---|---|---|---|---|
-| 1 | Edge case B3 failed about 1 run in 6, for no clear reason | the B3 **test script** read the wrong lines of output | read the output by its shape, skip log lines | `1ec8628` |
-| 2 | After nodes died, lookups returned too few nodes, sometimes none | `lookup.go`, `iterativeFind`: dead nodes kept their places in the lookup's shortlist | a dead node gives up its place to the next-closest one | `de5a42d` |
-| 3 | Dead nodes were asked again on every lookup, forever | `node.go`: a timeout was forgotten as soon as it happened | remember failures; after 5 in a row, stop asking that node | `3606ea6` |
-| 4 | A file vanished when the few nodes holding its record died; new nodes near a key couldn't see its value | `values.go`, `Store`: a value was stored once and never again | every hour, store values again on whoever is closest now | `ffdb038` |
-| 5 | Quiet parts of the network never learned about each other | `node.go`, `Bootstrap`, and the lack of any background activity | look up a random ID in each idle bucket, at join and every hour | `5e2ba88` |
+| # | Edge cases | Problem in one line | Where it came from | Fix in one line | Commit |
+|---|---|---|---|---|---|
+| 1 | B3 | B3's script cried wolf about 1 run in 6: it reported a surprise when nothing surprising had happened | the **test script** read the wrong lines of output; the network was fine | read the output by its shape, skip log lines | `1ec8628` |
+| 2 | B1, B2 | After nodes died, lookups returned too few nodes, sometimes none | `lookup.go`, `iterativeFind`: dead nodes kept their places in the lookup's shortlist | a dead node gives up its place to the next-closest one | `de5a42d` |
+| 3 | B1 | Dead nodes were asked again on every lookup, forever | `node.go`: a timeout was forgotten as soon as it happened | remember failures; after 5 in a row, stop asking that node | `3606ea6` |
+| 4 | B2, B3 | A file vanished when the few nodes holding its record died; new nodes near a key couldn't see its value | `values.go`, `Store`: a value was stored once and never again | every hour, store values again on whoever is closest now | `ffdb038` |
+| 5 | A3, A4, B1 | Quiet parts of the network never learned about each other | `node.go`, `Bootstrap`, and the lack of any background activity | look up a random ID in each idle bucket, at join and every hour | `5e2ba88` |
 
-Fixes 2–5 are the paper's own mechanisms, which the first version of
-this project had left out. Each one fixed something the edge cases
-measured, and each one also showed us the next gap.
+Fix 1 was a bug in **our test**, not in the network. Fixes 2–5 are bugs
+in the **network code**: each is one of the paper's own mechanisms that
+the first version of this project had left out. Each fixed something the
+edge cases measured, and each also showed us the next gap.
 
 **A few words used below:**
 - **Lookup:** a node asking around for "the k nodes closest to some
@@ -40,61 +63,102 @@ measured, and each one also showed us the next gap.
 
 ---
 
-## 1. B3 failed now and then: a bug in the test script
+## 1. B3: the test script raised false alarms
+
+**In short: the network was never wrong here. Our test script misread
+the network's output and reported a surprise that didn't happen.**
 
 ### The problem
 
-Edge case B3 is a test script. It normally passed, but about once in
-every six runs it reported FAIL. A test that fails at random is worse
-than no test: when a real fix later changes B3's result, we wouldn't be
-able to tell it apart from bad luck.
+Edge case B3 ("late joiners") checks one prediction in its last step:
+
+> node1 stores the value again, and the value lands on the **2 newcomer
+> nodes** closest to its key.
+
+The network did that correctly **every single time**. But about once in
+every six runs, the script reported FAIL: it claimed the value had
+landed on only **one** of the two newcomers. That's a false alarm. The
+script said "surprise!" when there was none.
+
+Why it matters: a test that cries wolf at random is worse than no test.
+Later, when a real code change does alter B3's outcome, we wouldn't know
+whether to believe it.
 
 ### Where it came from
 
-Not in the DHT at all. It was in **how the script read the node's
-output**.
+**In the test script, not in the network code.** Specifically, in how
+`scripts/edge/b3-late-joiners-hide-a-value.sh` read the node's screen
+output.
 
-When a node stores a value, its console prints a header line and then
-one line per node it stored on. B3's step 4 took "the 2 lines after the
-header" (`grep -A2 "^put …"` in
-`scripts/edge/b3-late-joiners-hide-a-value.sh`). But the node also
-writes log lines to the same file, from other parts of the program, and
-one can land in the middle:
+Here's what the script relies on. When node1 stores a value, it prints a
+header line, then one line per node that accepted it. The script checks
+the IDs on those lines against the two newcomers' IDs. To find them, it
+grabbed "**the 2 lines right after the header**" (`grep -A2 "^put …"`).
+
+The catch: the node writes **two kinds of text into the same file**. One
+is console output, the answers to commands like `put`. The other is log
+lines, which other parts of the program write whenever they do
+something. They're written independently, so a log line can squeeze in
+between two lines of console output. That's exactly what happened in
+the failing runs:
 
 ```
 put b3-1-3 (key 0ead8775…): stored on 2 other node(s), locally=false, failed=0
-time=… level=INFO msg="rpc sent" … type=PING …     ← a log line, in the middle
-    0eb1a3aebfcbdc55a6cc85d006d59b5fe446ffe8@127.0.0.1:9558
-    0f11c5bf112711b5369b5a057fa96a9496b4cbe7@127.0.0.1:9559
+time=… level=INFO msg="rpc sent" … type=PING …     ← a log line squeezed in
+    0eb1a3aebfcbdc55a6cc85d006d59b5fe446ffe8@127.0.0.1:9558     ← newcomer node8
+    0f11c5bf112711b5369b5a057fa96a9496b4cbe7@127.0.0.1:9559     ← newcomer node9
 ```
 
-The script took the log line and the first contact, missed the second
-contact, and decided the value had reached only one node. The node had
-done exactly the right thing.
+"The 2 lines after the header" were the log line and node8. The script
+never saw node9, so it concluded the value reached only one newcomer.
+The header itself says "stored on 2 other node(s)", and both nodes are
+right there, one line further down.
 
-To find this, we ran B3 30 times in a loop, half of them with the CPU
-kept busy. Any failed run's output and logs were saved somewhere WSL
-doesn't wipe. 5 of 30 failed, all at this same check, and the saved log
-showed the stray line.
+It's like reading the top two names off a sign-up sheet when someone has
+scribbled a note between the names: you miss the second person, even
+though they signed up.
+
+It only happened sometimes because it depends on timing. The squeezed-in
+line came from a background PING, and whether that lands at that exact
+moment is luck.
+
+### How we found it
+
+The first failure happened during a full run, and its logs were lost
+(WSL clears `/tmp` between commands). Re-running B3 a few times, it
+passed. So we ran it **30 times in a loop**, half of them with the CPU
+kept busy to shake up the timing, and saved the output and logs of every
+failed run somewhere permanent.
+
+5 of the 30 failed, all at the same check. In every saved log, the node
+had stored on both newcomers, with a log line in the middle of the
+output.
 
 ### How we fixed it
 
-The script now skips anything that looks like a log line (`time=…`).
-It also waits until it has as many contacts as the header announced
-("stored on 2 other node(s)"). `scripts/demo-parallel.sh` counted
-providers the same fragile way, so it got the same fix.
+Only the script changed; no network code did.
+- The script now **skips any line that starts with `time=`** (log lines
+  always do) and reads only the lines shaped like contacts.
+- It **waits until it has as many contacts as the header announced**
+  ("stored on 2 other node(s)"), in case it reads the file before the
+  node has finished writing.
 
-(Later, fix 4 replaced B3's step 4 entirely, so this parsing code is
-gone from B3 now. The lesson stays: **console output and log lines share
-one file, so parse console blocks by their own shape.**)
+`scripts/demo-parallel.sh` read its output the same fragile way, so it
+got the same fix before it could cause trouble.
+
+(Later, fix 4 changed B3's last step from "store it again by hand" to
+"wait for the automatic republish", so this particular parsing code is
+gone from B3 now. The lesson stays for every script: **console output
+and log lines share one file, so pick out console lines by their shape,
+not by their position.**)
 
 ### How we know it works
 
-30 of 30 runs passed, against 25 of 30 before.
+The same 30-run loop: 30 of 30 runs PASS, against 25 of 30 before.
 
 ---
 
-## 2. Lookups came back short after nodes died
+## 2. B1, B2: lookups came back short after nodes died
 
 ### The problem
 
@@ -175,7 +239,7 @@ That's fix 3.
 
 ---
 
-## 3. Dead nodes were asked again and again
+## 3. B1: dead nodes were asked again and again
 
 ### The problem
 
@@ -258,7 +322,7 @@ with it.
 
 ---
 
-## 4. Values got lost, or stayed where nobody looked
+## 4. B2, B3: values got lost, or stayed where nobody looked
 
 ### The problem
 
@@ -339,7 +403,7 @@ so the "before" step still shows the problem.)
 
 ---
 
-## 5. Quiet corners of the network stayed in the dark
+## 5. A3, A4, B1: quiet corners of the network stayed in the dark
 
 ### The problem
 

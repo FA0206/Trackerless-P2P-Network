@@ -214,7 +214,7 @@ PASS: 19 nodes joined through one node at once; lookups were correct and no data
 Seeds 2 and 3: the same verdict. Joins took 269 ms and 209 ms, and the
 smallest routing table right after joining held 1 and 2 contacts.
 
-**With the join refresh** ([04](04-bootstrap-and-join.md), [FIXES.md](FIXES.md#5-quiet-corners-of-the-network-stayed-in-the-dark)),
+**With the join refresh** ([04](04-bootstrap-and-join.md), [FIXES.md](FIXES.md#5-a3-a4-b1-quiet-corners-of-the-network-stayed-in-the-dark)),
 the same run reports `routing table size right after joining: min 9,
 median 12, max 14`, against `min 2, median 5, max 6` above. Each
 newcomer's refresh lookups reach most of the network, and the verdict is
@@ -369,7 +369,7 @@ How to read the counts:
   meet late, for example two LANs in the multi-device demo.
 
 Fix: bucket refresh, a periodic lookup for a random ID in each bucket
-not used recently (paper Sec. 2.3). **Done** (`refresh.go`; [FIXES.md](FIXES.md#5-quiet-corners-of-the-network-stayed-in-the-dark)).
+not used recently (paper Sec. 2.3). **Done** (`refresh.go`; [FIXES.md](FIXES.md#5-a3-a4-b1-quiet-corners-of-the-network-stayed-in-the-dark)).
 
 ---
 
@@ -493,7 +493,7 @@ lookup-latency results less dependent on join order, which matters for
 the evaluation graphs. A2 shows the same effect at k = 4: routing tables
 right after joining grew from a median of 5 contacts to 12. Periodic
 refresh (`--refresh-interval`) keeps that coverage up as nodes come and
-go ([FIXES.md](FIXES.md#5-quiet-corners-of-the-network-stayed-in-the-dark)).
+go ([FIXES.md](FIXES.md#5-a3-a4-b1-quiet-corners-of-the-network-stayed-in-the-dark)).
 
 ---
 
@@ -618,7 +618,7 @@ The querier's log shows the learning: one `contact marked stale` line
 for each of the 8 dead nodes. Only 5 of them were in its routing table
 (`5 of them now dead` above). It knew the other 3 only from other nodes'
 replies, which is why failures are counted for every node, not only
-table contacts ([FIXES.md](FIXES.md#3-dead-nodes-were-asked-again-and-again)).
+table contacts ([FIXES.md](FIXES.md#3-b1-dead-nodes-were-asked-again-and-again)).
 
 **Seeds 1–4, both stale thresholds** (each run stops at the first pass
 with no failed RPC):
@@ -772,7 +772,7 @@ ID in each bucket, which makes node2 test its own contacts.
 
 ### With bucket refresh
 
-Bucket refresh is built now ([FIXES.md](FIXES.md#5-quiet-corners-of-the-network-stayed-in-the-dark)).
+Bucket refresh is built now ([FIXES.md](FIXES.md#5-a3-a4-b1-quiet-corners-of-the-network-stayed-in-the-dark)).
 B1 runs its nodes with the defaults, so only the **join** refresh
 happens within the script. That alone changes the tables enough that
 SEED=4's misses are gone (0 of 24). But SEED=1 now has 2 misses in pass
@@ -910,8 +910,8 @@ verdict. Their republishes came 13.01 s and 14.73 s after step 3 ended.
 | Code | Step 4 | Result |
 |---|---|---|
 | original | node1 shares the file again by hand | **fails**: its lookup stops at the dead holders, and the record stays on node1 alone |
-| + lookup fix ([FIXES.md](FIXES.md#2-lookups-came-back-short-after-nodes-died)) | node1 shares the file again by hand | works: the lookup skips the dead holders |
-| + republishing ([FIXES.md](FIXES.md#4-values-got-lost-or-stayed-where-nobody-looked)) | nobody does anything | works: node1's next republish does the re-share |
+| + lookup fix ([FIXES.md](FIXES.md#2-b1-b2-lookups-came-back-short-after-nodes-died)) | node1 shares the file again by hand | works: the lookup skips the dead holders |
+| + republishing ([FIXES.md](FIXES.md#4-b2-b3-values-got-lost-or-stayed-where-nobody-looked)) | nobody does anything | works: node1's next republish does the re-share |
 
 ### Step 3: why the file can't be found
 
@@ -1177,7 +1177,12 @@ interval, so step 4 is the publisher's pass.
 | When a node learns of a newcomer closer to a key it holds, it STOREs the value there at once, not one interval later | not yet | `node.go` (`touchContact`) | Sec. 2.5 |
 | Caching: the searcher stores a found value at the closest node on its path that lacked it | not planned | `values.go` (`FindValue`) | Sec. 2.3 |
 
-### A flaky FAIL that was the script's fault
+### A false alarm from the script, not the network
+
+Here FAIL meant "the network didn't do what we predicted", and that
+wasn't true: the network was right every time, and the script misread
+its output. The full story, in plain words, is in
+[FIXES.md, fix 1](FIXES.md#1-b3-the-test-script-raised-false-alarms).
 
 B3 once failed in a `run-all.sh` run, and then passed 15 times in a row.
 A loop of 30 runs (half with the CPU kept busy) caught 5 failures, all
