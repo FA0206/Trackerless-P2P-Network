@@ -113,6 +113,34 @@ func TestChooseAdvertiseIP(t *testing.T) {
 	}
 }
 
+// TestParseBootstrap: what -bootstrap accepts. Unlike -advertise-ip, a host
+// name is fine here: it's resolved once, on this machine.
+func TestParseBootstrap(t *testing.T) {
+	tests := []struct {
+		in, want string // want "" means rejected
+	}{
+		{"10.10.0.1:9000", "10.10.0.1:9000"},
+		{"localhost:9000", "127.0.0.1:9000"}, // a host name, resolved here
+		{":9000", ":9000"},                   // no host: this machine
+		{"10.10.0.1", ""},                    // the port is missing
+		{"10.10.0.1:99999", ""},              // no such port
+		{"10.10.0.1:abc", ""},                // not a port number
+		{"[::1]:9000", ""},                   // IPv6: nodes are IPv4 only
+	}
+	for _, tt := range tests {
+		got, err := parseBootstrap(tt.in)
+		if tt.want == "" {
+			if err == nil {
+				t.Errorf("parseBootstrap(%q) = %v, want an error", tt.in, got)
+			}
+			continue
+		}
+		if err != nil || got.String() != tt.want {
+			t.Errorf("parseBootstrap(%q) = %v, %v; want %s", tt.in, got, err, tt.want)
+		}
+	}
+}
+
 // TestRouteSourceIP checks the real route lookup on loopback, where the
 // answer is known (and no packet leaves, or is even sent).
 func TestRouteSourceIP(t *testing.T) {

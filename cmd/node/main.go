@@ -31,7 +31,7 @@ func main() {
 func run() error {
 	port := flag.Int("port", 9000, "UDP port to listen on")
 	tcpPort := flag.Int("tcp-port", 0, "TCP port for serving files; 0 means the same number as -port (TCP and UDP port numbers don't clash)")
-	advertiseIP := flag.String("advertise-ip", "127.0.0.1", "IPv4 address other nodes use to download files from this one (it goes into provider records). If not given and -bootstrap is another machine, it's auto-detected from the route to that machine. Set it on the first node of a multi-device network (docs/09-multi-device.md)")
+	advertiseIP := flag.String("advertise-ip", "127.0.0.1", "IPv4 address other nodes use to download files from this one (it goes into provider records). If not given, it's detected from the route to the -bootstrap node, which can be any node of the network on another machine; without one, it stays 127.0.0.1. So a node started without -bootstrap, like the first one, must be given its IP (docs/09-multi-device.md)")
 	idSeed := flag.String("id-seed", "", "deterministic node ID = SHA-1(id-seed); if empty, a random ID is used")
 	bootstrap := flag.String("bootstrap", "", "host:port of an existing node to join through (optional)")
 	lookupTarget := flag.String("lookup", "", "after joining, perform one extra lookup for this ID (40-char hex), log the result, and keep running")
@@ -80,11 +80,10 @@ func run() error {
 
 	// Parsed before the node exists: the advertise IP may be detected from
 	// the route to the bootstrap node, and it's fixed when the node is built.
-	var seedAddr *net.UDPAddr
+	var seedAddr *net.UDPAddr // nil without -bootstrap: this is the first node of a new network
 	if *bootstrap != "" {
-		seedAddr, err = net.ResolveUDPAddr("udp4", *bootstrap)
-		if err != nil {
-			return fmt.Errorf("parsing -bootstrap: %w", err)
+		if seedAddr, err = parseBootstrap(*bootstrap); err != nil {
+			return err
 		}
 	}
 	advertise, detected, err := chooseAdvertiseIP(*advertiseIP, flagWasSet("advertise-ip"), seedAddr, routeSourceIP)
@@ -201,6 +200,18 @@ func resolveID(seed string) (kademlia.ID, error) {
 	return kademlia.HashID([]byte(seed)), nil
 }
 
+// parseBootstrap turns -bootstrap into the address to join through. A port
+// is required. A host name is fine (unlike -advertise-ip): it's resolved
+// once, here, e.g. from /etc/hosts or mDNS. IPv6 isn't, since nodes speak
+// udp4/tcp4 only. Without a host (":9000") it means this machine.
+func parseBootstrap(s string) (*net.UDPAddr, error) {
+	addr, err := net.ResolveUDPAddr("udp4", s)
+	if err != nil {
+		return nil, fmt.Errorf("parsing -bootstrap %q: %w (want ip:port, e.g. 192.168.0.101:9000)", s, err)
+	}
+	return addr, nil
+}
+
 // chooseAdvertiseIP decides which IP this node puts in its provider records,
 // the one place a node tells others where it lives (the DHT itself records
 // peers under the address their packets come from). value is -advertise-ip
@@ -210,10 +221,12 @@ func resolveID(seed string) (kademlia.ID, error) {
 //
 //   - Given explicitly: validated and used as is, even 127.0.0.1.
 //   - Not given, joining through another machine: the IP this machine uses
-//     to reach that machine, and detected is true.
+//     to reach that machine, and detected is true. Any node of the network
+//     will do as the bootstrap node; on one subnet the answer is the same.
 //   - Otherwise (no -bootstrap, or it is this machine): the default,
-//     127.0.0.1. The first node of a multi-device network must be given
-//     its IP; whoever starts it knows it, since everyone joins through it.
+//     127.0.0.1. So a node started without -bootstrap, like the first node
+//     of a multi-device network, must be given its IP. Whoever starts the
+//     first node knows it anyway: the second node can only join through it.
 //
 // SIMPLIFICATION: the detected IP is the source of one route, the one to
 // the bootstrap node. Right when every node is on one subnet; wrong behind

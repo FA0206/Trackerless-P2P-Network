@@ -459,7 +459,9 @@ func (n *Node) Bootstrap(ctx context.Context, addr *net.UDPAddr) (*LookupResult,
 		return nil, fmt.Errorf("kademlia: bootstrap node %s did not answer PING: %w", addr, err)
 	}
 	if pong.SenderID == n.ID {
-		return nil, fmt.Errorf("kademlia: bootstrap address %s is this node itself", addr)
+		// The PONG carries our own ID: we can't tell ourselves from a twin.
+		return nil, fmt.Errorf("kademlia: the node at %s has the same ID as this node (%s): "+
+			"it is this node itself, or another node started with the same ID", addr, shortID(n.ID))
 	}
 	n.logger.Info("bootstrap node identified", "id", pong.SenderID.String(), "addr", addr.String())
 	return n.Lookup(ctx, n.ID)

@@ -151,6 +151,32 @@ This project skips that pass. At a few dozen nodes, the self-lookup
 reaches essentially everyone anyway. It matters once the network is much
 larger than `k` — see the README's simplifications table.
 
+## Join scenarios: what if…?
+
+Every case below has a test that shows the behavior. "Rule 1" is docs/09's
+"one node per device, or all on one machine". The first two cases and the
+duplicate-ID twin case can also be run on real laptops, step by step, with
+real expected output: open
+[`scripts/multi-device/join-tests.html`](../scripts/multi-device/join-tests.html)
+in a browser.
+
+| What if… | What happens | Shown by |
+|---|---|---|
+| **no `--bootstrap` is given?** | The node is the first node of a network of one. That's not an error: its lookups ask and find nobody, values it stores stay on it alone, and the next node joins through it (and then finds those values). | `TestFirstNodeWithoutBootstrap` |
+| **two nodes both start without `--bootstrap`?** | Two separate networks, forever. With no tracker and no broadcast, nothing introduces them. One join, in either direction, merges them. | `TestNodesWithoutBootstrapStaySeparate`; edge case A3 for a bridge between two built-up networks |
+| **I join through a node other than the first?** | Same result. Any member can introduce you: the PING tells you who it is, and the self-lookup does the rest. | `TestEndToEndBootstrapAndLookup` (a chain), `TestBootstrapNodeCanLeaveAfterJoin` |
+| **the bootstrap node leaves after I've joined?** | Nothing breaks. It was needed for the first contact only; you already know the others. | `TestBootstrapNodeCanLeaveAfterJoin` |
+| **nobody is at that address?** (wrong IP or port, node not started, firewall) | The PING gets no answer within `--rpc-timeout`, and the node exits: `bootstrap failed: … did not answer PING`. | `TestBootstrapFailures` |
+| **the address is my own?** | Fails at once: the PONG carries this node's own ID. | `TestBootstrapFailures` |
+| **the node there has my ID?** (the same `--id-seed`) | Fails the same way, since a node can't tell itself from a twin: `the node at … has the same ID as this node`. | `TestBootstrapThroughNodeWithOurOwnID` |
+| **my twin joins through someone else?** | It succeeds. The protocol doesn't detect duplicate IDs: that node keeps one contact per ID, the twin that spoke last, and everything for that ID goes to it alone. Never reuse a seed. | `TestDuplicateIDNewestSenderWins` |
+| **some other program answers at that address?** | Its replies don't parse, so they're dropped (`dropping malformed packet`), and the join fails as if nobody were there. | `TestBootstrapToSomethingElse` |
+| **the bootstrap node answers the PING, then dies?** | The join still reports success, but the self-lookup reached nobody, so the node knows only a dead contact. That's today's behavior; a stricter join would call it a failure. | `TestBootstrapNodeGoesSilentAfterPing` |
+| **`--bootstrap` is malformed?** (no port, IPv6, a bad port) | The node refuses to start: `parsing -bootstrap "…"`. | `TestParseBootstrap` (`cmd/node`) |
+| **`--bootstrap` is a host name?** (`laptop-a.local:9000`) | Allowed, unlike `--advertise-ip`: it's resolved once, on this machine. | `TestParseBootstrap` |
+| **many nodes join through one node at the same moment?** | All join, the lookups come out right, and the race detector finds nothing. | `scripts/edge/a2-thundering-herd.sh` |
+| **on several machines, I join through `127.0.0.1`?** | It breaks rule 1, and remote nodes get handed a `127.0.0.1` address they can't use ([09](09-multi-device.md), F2). | — (ruled out by rule 1) |
+
 ## Where this lives in the code
 
 | Concept | Function | File |
@@ -164,6 +190,9 @@ Tests in `internal/kademlia/integration_test.go`:
 `TestEndToEndBootstrapAndLookup` (a chain of five joins, then a lookup),
 `TestBootstrapLearnsRealSeedID` (no placeholder leaks; one RPC per real
 node), and `TestBootstrapFailures` (unreachable address, own address).
+The other join scenarios are in `internal/kademlia/bootstrap_test.go`,
+and parsing `--bootstrap` is `parseBootstrap` in `cmd/node/main.go`
+(`TestParseBootstrap`); the table above maps each scenario to its test.
 
 ## What's next
 

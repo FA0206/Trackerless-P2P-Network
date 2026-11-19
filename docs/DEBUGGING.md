@@ -162,7 +162,11 @@ connection, and piece arrive.
 
 **e) Bootstrap mistakes.** `--bootstrap 127.0.0.1:9999` (nobody there)
 fails with "did not answer PING" after `--rpc-timeout`. Bootstrapping a
-node against its own port fails immediately.
+node against its own port fails immediately, and so does bootstrapping
+through a node started with the same `--id-seed` ("has the same ID as this
+node"). `--bootstrap 10.10.0.1` (no port) or an IPv6 address stops the node
+at startup with `parsing -bootstrap`. Every join scenario, with its test:
+[04](04-bootstrap-and-join.md#join-scenarios-what-if).
 
 ### Reading a node's state over HTTP: `--api`
 

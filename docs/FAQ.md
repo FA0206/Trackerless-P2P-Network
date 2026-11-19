@@ -58,7 +58,18 @@ receive updates their routing table.
 
 With random 160-bit IDs the chance is negligible (≈ 2⁻¹⁶⁰ per pair). With
 `--id-seed`, using the same seed twice *will* collide. The protocol
-doesn't detect this, so don't do it.
+doesn't detect this, so don't do it. What happens if you do:
+
+- Joining *through* your twin fails, because its PONG carries your own ID
+  and a node can't tell itself from a twin (`the node at … has the same
+  ID as this node`).
+- Joining through anyone else works for both twins. That node keeps one
+  contact per ID, the twin that spoke last, so everything addressed to
+  that ID reaches only one of them.
+
+Both are tested (`TestBootstrapThroughNodeWithOurOwnID`,
+`TestDuplicateIDNewestSenderWins`); every other join scenario is in
+[04](04-bootstrap-and-join.md#join-scenarios-what-if).
 
 ## IDs, distance, buckets
 
