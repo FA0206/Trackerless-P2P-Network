@@ -12,6 +12,10 @@
 - **Part 5** (branch `feature/parallel-partial-seeding`) — the same
   seeder-death scenario, now surviving, plus `scripts/demo-parallel.sh`
   ([jump](#part-5--swarming-the-seeder-dies-and-the-file-survives)).
+- **Part 6** (branch `feature/multi-device`) — two machines, simulated
+  with network namespaces: a node detects its own address, joins, and
+  downloads across them
+  ([jump](#part-6--two-machines-a-join-and-a-download-across-namespaces)).
 
 > **On branch `feature/parallel-partial-seeding`**, parts 2–4 were
 > recorded before parallel downloads existed. The piece-by-piece numbers
@@ -918,3 +922,119 @@ Reading it:
   about 16/3 rounds.
 - **Pieces arrive out of order** (2, 11, 6, 15, 10, 8, …), and each is
   written at its own offset (`WriteAt` in `handle`).
+
+# Part 6 — two machines: a join and a download across namespaces
+
+What changes when the nodes are on different machines
+([09](09-multi-device.md)). There's no demo script: this run used the
+network-namespace lab from `scripts/netns/`, in its no-sudo sandbox
+variant, with two namespaces standing in for two devices. Commands went
+through each node's HTTP API ([NODE-API.md](NODE-API.md)) instead of a
+console.
+
+## The cast
+
+| Node | Seed | ID | Namespace / address | Started with |
+|---|---|---|---|---|
+| seeder | `seeder` | `96cfb5fc…` | `p2p1`, `10.10.0.1` | `--advertise-ip 10.10.0.1` |
+| leecher | `leecher` | `4bf85c99…` | `p2p2`, `10.10.0.2` | `--bootstrap 10.10.0.1:9000`, **no** `--advertise-ip` |
+
+Both use port 9000: each namespace has its own ports, as separate
+machines would.
+
+## Phase 1 — the seeder starts
+
+`run` (`cmd/node/main.go`) calls `chooseAdvertiseIP`. The flag was given
+(`flagWasSet`), so `parseAdvertiseIP` checks that `10.10.0.1` is an IPv4
+address another machine can dial, and that's the advertise IP.
+`NewNode` stores it and notes that it isn't loopback, so
+`warnIfAdvertisingLoopback` will never fire. `NewTransport` binds UDP on
+every interface:
+
+```
+[seeder] msg="node started" id=96cfb5fc… addr=0.0.0.0:9000 tcp_port=9000
+[seeder] msg="api listening" addr=10.10.0.1:8000
+```
+
+## Phase 2 — the leecher detects its address and joins
+
+`run` parses `--bootstrap` **before** creating the node, because the
+advertise IP is fixed when the node is built. `chooseAdvertiseIP` sees
+no `--advertise-ip` and a bootstrap address on another machine, so it
+calls `routeSourceIP`: a UDP socket "connected" to `10.10.0.1:9000`
+sends nothing, but the OS picks the route and the local address it would
+send from.
+
+```
+[leecher] msg="advertise ip auto-detected" ip=10.10.0.2 via=10.10.0.1:9000
+[leecher] msg="node started" id=4bf85c99… addr=0.0.0.0:9000 tcp_port=9000
+[leecher] msg=bootstrapping via=10.10.0.1:9000
+[leecher] msg="rpc sent" type=PING to=00000000…@10.10.0.1:9000
+[seeder]  msg="rpc received" type=PING from=4bf85c99…@10.10.0.2:9000
+[leecher] msg="rpc received" type=PONG from=96cfb5fc…@10.10.0.1:9000
+[leecher] msg="bootstrap node identified" id=96cfb5fc… addr=10.10.0.1:9000
+[leecher] msg="rpc sent" type=FIND_NODE to=96cfb5fc…@10.10.0.1:9000
+[leecher] msg="bootstrap complete" routing_table_size=1 self_lookup_rounds=1 self_lookup_rpcs=1
+```
+
+The seeder's `handleMessage` builds the sender's contact with
+`ContactFromUDPAddr` from the **packet's source address**,
+`10.10.0.2:9000`. Nobody told it that address; the packet carried it.
+That's the observed address, and it's why the DHT needed no change for
+several machines. `warnIfAdvertisingLoopback` returns at once (the
+seeder advertises a LAN IP), then `touchContact` and `replyPong` run as
+in part 1.
+
+## Phase 3 — `share` on the seeder
+
+`Peer.Share` → `announce` → `Node.Store`: a lookup for the content key
+(1 round, 1 RPC), then a `STORE` to the leecher. The record's IP comes
+from `Node.Self()`, which is the advertise IP: the self-reported address.
+
+```
+[seeder]  msg="lookup converged" target=5813effb… rounds=1 rpcs_sent=1 rpcs_failed=0 closest_found=1
+[seeder]  msg="rpc sent" type=STORE to=4bf85c99…@10.10.0.2:9000
+[leecher] msg="value stored" key=5813effb… bytes=87
+[seeder]  msg="store complete" key=5813effb… stored_at=1 stored_locally=true failed=0
+[seeder]  msg="provider announced" key=5813effb… tcp_addr=10.10.0.1:9000 replicas=2
+```
+
+Had the seeder been started without `--advertise-ip`, this line would
+say `tcp_addr=127.0.0.1:9000`, and the leecher would dial its own
+machine ([09](09-multi-device.md), F1).
+
+## Phase 4 — `fetch` on the leecher
+
+With two nodes and k = 20, both hold the record, so `FindValue` answers
+from the leecher's own store. `dialProvider` connects over `tcp4` to the
+record's address. The seeder sees that connection come from an
+OS-chosen port, which is why the record has to state its TCP port
+(FAQ, "Why not take the TCP address from the connection itself?").
+
+```
+[leecher] msg="find_value answered from local store" key=5813effb… values_found=1
+[leecher] msg="providers found" key=5813effb… count=1
+[leecher] msg="tcp connected to provider" provider=10.10.0.1:9000
+[seeder]  msg="tcp connection accepted" from=10.10.0.2:38400
+```
+
+After its first piece, the leecher announces itself as a provider
+([08](08-swarming.md)). Its record carries the **detected** address, so
+a third machine could now download from it:
+
+```
+[leecher] msg="rpc sent" type=STORE to=96cfb5fc…@10.10.0.1:9000
+[leecher] msg="provider announced" key=5813effb… tcp_addr=10.10.0.2:9000 replicas=2
+[leecher] msg="download complete" key=5813effb… name=original.bin bytes=1048576 pieces=16 providers=1 failed_providers=0 max_inflight=1 duration=5ms
+```
+
+The API's reply says `"pieces_from": {"10.10.0.1:9000": 16}`, and `cmp`
+found the copy byte-identical. `max_inflight=1`: one provider, and at
+most one request per provider.
+
+## What part 6 doesn't show
+
+- The failure cases F1–F4: [09](09-multi-device.md) shows each with real
+  logs.
+- Several providers, a seeder dying mid-download, and real Wi-Fi: those
+  are in 09's test checklist, for the lab and then for real devices.

@@ -11,12 +11,20 @@ import (
 )
 
 // maxDatagramSize bounds how much we'll ever read from a single UDP
-// packet. A FIND_NODE_RESP carrying k=20 contacts JSON-encodes to well
-// under 2KB; 8KB leaves generous headroom without risking IP
-// fragmentation (the common safe UDP payload ceiling is ~1472 bytes on an
-// Ethernet-MTU path, but on localhost -- all this project targets -- much
-// larger packets go through unfragmented). Every message type must fit:
-// see maxValueSize/maxValuesPerKey in store.go for the largest one.
+// packet. Every message type must fit: see maxValueSize/maxValuesPerKey in
+// store.go for the largest one.
+//
+// On localhost (64 KB MTU) nothing is ever split. On a real network
+// (Ethernet/Wi-Fi, 1500-byte MTU) one IP packet carries at most 1472 bytes
+// of UDP payload; anything bigger travels as IP fragments, and losing any
+// one fragment loses the whole message (a failed RPC). Sizes, from the
+// JSON wire format: a FIND_NODE_RESP with 20 contacts is about 1.8 KB, and
+// first exceeds 1472 bytes at 16 contacts with 192.168.0.1xx addresses (17
+// with 10.10.0.x) -- so with k = 20, replies fragment once a node knows
+// about 18 or more others. A FIND_VALUE_RESP holding 16 values of 250
+// bytes is about 5.6 KB, 4 fragments. Fragments are reassembled fine
+// on a LAN; under packet loss they raise rpcs_failed. SIMPLIFICATION:
+// measured, not avoided (docs/09-multi-device.md, F4).
 const maxDatagramSize = 8192
 
 // Transport owns the raw UDP socket and the wire framing: turning an

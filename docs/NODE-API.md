@@ -36,7 +36,9 @@ and prints exactly the same output as before the API existed.
 carries `Access-Control-Allow-Origin: *` so a visualizer page from any
 origin can read it. That's fine on localhost. Binding it to a LAN
 address would let anyone on the network read the node's state (and, with
-`--api-control`, control it).
+`--api-control`, control it). The one exception is the network-namespace
+lab ([09](09-multi-device.md)): binding to a node's `10.10.0.N` address
+is safe there, because that subnet exists only on this laptop.
 
 ## Snapshots
 
@@ -311,6 +313,8 @@ full list is every `logger.Debug/Info/Warn/Error` call in
 | `download complete` | INFO | `key`, `name`, `bytes`, `pieces`, `providers`, `failed_providers`, `max_inflight`, `duration` | `download.go` | a download finished |
 | `tcp request served` | INFO, DEBUG for `bitfield` | `to`, `op`, `index`, `bytes` | `server.go` | this node served a manifest, a piece, or (polled every ~500 ms, so DEBUG) its bitfield |
 | `node started`, `bootstrap complete` | INFO | `id`, `addr` / `routing_table_size`, … | `cmd/node/main.go` | lifecycle. `node started` comes before the API is up, so no viewer ever sees it |
+| `advertise ip auto-detected` | INFO | `ip`, `via` | `cmd/node/main.go` | the node took its advertise IP from the route to its bootstrap node ([09](09-multi-device.md)). Logged before the API is up, like `node started`, so no viewer sees it |
+| `advertise ip is loopback but a remote peer contacted us` | WARN | `advertise_ip`, `from` | `node.go` `warnIfAdvertisingLoopback` | once per node: a peer on another machine showed up while this node advertises a 127.x address, so its provider records send remote peers to their own machine. Fix: restart this node with `--advertise-ip <its IPv4 address>`, then restart every node ([09](09-multi-device.md), rules 2 and 3) |
 
 **Because events are log records, log text is part of this API.**
 Renaming a log message or attribute changes the event a visualizer

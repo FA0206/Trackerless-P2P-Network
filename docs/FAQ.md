@@ -285,14 +285,49 @@ Readability while learning and debugging: you can read a packet in
 bytes vs. payload bytes". Swapping the encoding later only touches
 `transport.go` and `messages.go`.
 
-### Can nodes run on different machines yet?
+## Several machines
 
-Untested. Nodes record each other's addresses from real packet sources,
-so the DHT part may already work on a LAN *if every node bootstraps via
-a LAN address*. Bootstrapping via `127.0.0.1` would hand loopback
-addresses to remote machines, which can't use them. File sharing also
-needs each node started with `--advertise-ip <its LAN IP>`, since that
-IP goes into its provider records. Multi-device is a planned later step.
+### Can nodes run on different machines?
+
+Yes, on one subnet (one router, hotspot or switch), with **one node per
+device**. The DHT needed no change, because nodes record each other's
+addresses from real packet sources. Only provider records carry an
+address a node states about itself (`--advertise-ip`). The first node
+must be given it, and nodes that join through another machine detect
+it. The rules, the failure modes with real logs, and a lab that
+simulates several machines on one laptop:
+[09-multi-device.md](09-multi-device.md).
+
+### My download fails with "connection refused" or "unknown content key" at 127.0.0.1. Why?
+
+The provider's record says `127.0.0.1`, so your node dialed *its own*
+machine: nothing listening means "connection refused", and your own file
+server answering means "unknown content key". The provider was started
+without `--advertise-ip`, usually because it was the first node, which has
+nothing to detect its address from. It logs
+`advertise ip is loopback but a remote peer contacted us` when the first
+remote peer joins. Restart it with `--advertise-ip <its IPv4 address>`,
+and restart every other node too: the old record never expires, and it
+wins over the new one ([09](09-multi-device.md), F1 and F3).
+
+### How do I test several machines on one laptop?
+
+With Linux network namespaces: `sudo bash scripts/netns/up.sh 5` makes
+five "machines", `10.10.0.1`–`10.10.0.5`, each with its own IP, its own
+`127.0.0.1` and its own ports. That's enough to reproduce every
+multi-device problem, including IP fragmentation, which localhost hides.
+`tc netem` adds Wi-Fi-like delay and loss. On macOS, Docker Compose does
+the same job. Real devices come last.
+[09](09-multi-device.md#the-lab-several-machines-on-one-laptop).
+
+### Can this run over the internet?
+
+Not directly. Home routers use NAT: a device behind one has no address
+that others can reach, so nobody can bootstrap through it or download
+from it. An overlay VPN such as Tailscale or ZeroTier gives every device
+a reachable address, and then it works like one subnet, with no code
+change. Real NAT traversal (hole punching, relays) is a project of its
+own.
 
 ## STORE / FIND_VALUE
 

@@ -1,1 +1,5 @@
 .DS_Store
+
+# Scratch area for the multi-device lab (docs/09-multi-device.md): the
+# node binary, test files and logs. Never committed.
+/lab/
