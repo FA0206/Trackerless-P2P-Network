@@ -78,7 +78,7 @@ func (p *Peer) Library() *Library {
 // Share makes a local file downloadable: cut it into pieces, add it to the
 // library, and announce a provider record under its content key.
 func (p *Peer) Share(ctx context.Context, path string) (kademlia.ID, error) {
-	m, err := BuildManifest(path, DefaultPieceSize)
+	m, tree, err := BuildManifest(path, DefaultPieceSize)
 	if err != nil {
 		return kademlia.ID{}, err
 	}
@@ -87,11 +87,12 @@ func (p *Peer) Share(ctx context.Context, path string) (kademlia.ID, error) {
 		return kademlia.ID{}, err
 	}
 	key := ContentKey(manifestBytes)
-	p.lib.addComplete(key, m, manifestBytes, path)
+	p.lib.addComplete(key, m, manifestBytes, path, tree)
 	if err := p.announce(ctx, key); err != nil {
 		return key, err
 	}
-	p.logger.Info("share complete", "key", key.String(), "name", m.Name, "size", m.Size, "pieces", m.NumPieces())
+	p.logger.Info("share complete", "key", key.String(), "name", m.Name, "size", m.Size, "pieces", m.NumPieces(),
+		"merkle_root", m.MerkleRoot, "manifest_bytes", len(manifestBytes))
 	return key, nil
 }
 

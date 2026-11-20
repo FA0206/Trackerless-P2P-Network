@@ -20,11 +20,18 @@ type Library struct {
 	files map[kademlia.ID]*libraryEntry
 }
 
+// Every piece is served with its Merkle proof (docs/09-merkle-trees.md).
+// A file this peer shared has the whole tree and can make any proof. A
+// file it's downloading has no tree: it can't build one without every
+// piece, so it keeps the proof that came with each piece and passes that
+// on (partial seeding, docs/08-swarming.md).
 type libraryEntry struct {
 	manifest      Manifest
 	manifestBytes []byte
 	path          string
-	have          Bitfield // guarded by Library.mu
+	have          Bitfield    // guarded by Library.mu
+	tree          *MerkleTree // shared files: read-only, makes every proof
+	proofs        [][]Hash    // downloads: the proof received with each piece; guarded by Library.mu
 }
 
 // SharedFile describes one library entry, for listing.
@@ -41,11 +48,13 @@ func newLibrary() *Library {
 	return &Library{files: make(map[kademlia.ID]*libraryEntry)}
 }
 
-// addComplete registers a file this peer holds in full (shared by it).
-func (l *Library) addComplete(key kademlia.ID, m Manifest, manifestBytes []byte, path string) {
+// addComplete registers a file this peer holds in full (shared by it),
+// with the Merkle tree over its pieces (from BuildManifest).
+func (l *Library) addComplete(key kademlia.ID, m Manifest, manifestBytes []byte, path string, tree *MerkleTree) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.files[key] = &libraryEntry{manifest: m, manifestBytes: manifestBytes, path: path, have: FullBitfield(m.NumPieces())}
+	l.files[key] = &libraryEntry{manifest: m, manifestBytes: manifestBytes, path: path,
+		have: FullBitfield(m.NumPieces()), tree: tree}
 }
 
 // addPartial registers a file being downloaded into path, with no pieces
@@ -57,17 +66,22 @@ func (l *Library) addPartial(key kademlia.ID, m Manifest, manifestBytes []byte, 
 	if _, ok := l.files[key]; ok {
 		return fmt.Errorf("transfer: %s is already in the library", key)
 	}
-	l.files[key] = &libraryEntry{manifest: m, manifestBytes: manifestBytes, path: path, have: NewBitfield(m.NumPieces())}
+	l.files[key] = &libraryEntry{manifest: m, manifestBytes: manifestBytes, path: path,
+		have: NewBitfield(m.NumPieces()), proofs: make([][]Hash, m.NumPieces())}
 	return nil
 }
 
-// markHave publishes piece i: from now on it may be served. Call only
-// after the piece was verified and written.
-func (l *Library) markHave(key kademlia.ID, i int) {
+// markHave publishes piece i, with the proof it was verified with: from
+// now on it may be served, proof included. Call only after the piece was
+// verified and written.
+func (l *Library) markHave(key kademlia.ID, i int, proof []Hash) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if e, ok := l.files[key]; ok {
 		e.have.Set(i)
+		if e.proofs != nil {
+			e.proofs[i] = proof
+		}
 	}
 }
 
@@ -101,36 +115,45 @@ func (l *Library) bitfield(key kademlia.ID) (Bitfield, bool) {
 	return e.have.Clone(), true
 }
 
-// readPiece reads piece i from disk, if this peer has it.
-func (l *Library) readPiece(key kademlia.ID, i int) ([]byte, error) {
+// readPiece reads piece i from disk, if this peer has it, along with its
+// Merkle proof.
+func (l *Library) readPiece(key kademlia.ID, i int) ([]byte, []Hash, error) {
 	l.mu.RLock()
 	e, ok := l.files[key]
 	var m Manifest
 	var path string
+	var proof []Hash
 	has := false
 	if ok {
 		m, path = e.manifest, e.path
 		has = i >= 0 && i < m.NumPieces() && e.have.Has(i)
+		if has {
+			if e.tree != nil {
+				proof, _ = e.tree.Proof(i) // read-only after NewMerkleTree; i is in range
+			} else {
+				proof = e.proofs[i]
+			}
+		}
 	}
 	l.mu.RUnlock()
 	switch {
 	case !ok:
-		return nil, fmt.Errorf("unknown content key %s", key)
+		return nil, nil, fmt.Errorf("unknown content key %s", key)
 	case i < 0 || i >= m.NumPieces():
-		return nil, fmt.Errorf("piece index %d out of range (0..%d)", i, m.NumPieces()-1)
+		return nil, nil, fmt.Errorf("piece index %d out of range (0..%d)", i, m.NumPieces()-1)
 	case !has:
-		return nil, fmt.Errorf("don't have piece %d yet", i)
+		return nil, nil, fmt.Errorf("don't have piece %d yet", i)
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer f.Close()
 	buf := make([]byte, m.PieceLength(i))
 	if _, err := f.ReadAt(buf, m.PieceOffset(i)); err != nil {
-		return nil, fmt.Errorf("read piece %d: %w", i, err)
+		return nil, nil, fmt.Errorf("read piece %d: %w", i, err)
 	}
-	return buf, nil
+	return buf, proof, nil
 }
 
 // List returns every file in the library, sorted by name.

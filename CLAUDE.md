@@ -83,8 +83,10 @@ only downward; see `docs/ARCHITECTURE.md`.
 7. Each UDP message must fit in one datagram (`maxDatagramSize`, 8 KB),
    hence `maxValueSize`/`maxValuesPerKey`. File data only travels over TCP.
 8. Nothing from a peer is trusted: provider records and bitfields are
-   validated, manifests must hash to the content key, pieces must match
-   their SHA-256. Downloads only create new files (`O_EXCL`). Write, then
+   validated, manifests must hash to the content key, pieces must verify
+   against the manifest's Merkle root with the proof sent alongside
+   (`VerifyPiece`; root and piece count come from the manifest, never
+   the sender). Downloads only create new files (`O_EXCL`). Write, then
    publish: a piece is marked servable (`Library.markHave`) only after
    its `WriteAt` completed.
 9. With `--api`, every log record is also an `/api/events` event

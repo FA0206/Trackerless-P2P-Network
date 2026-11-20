@@ -178,6 +178,30 @@ func TestWorkedExampleFromTheDoc(t *testing.T) {
 	}
 }
 
+// The TCP server serves pieces from several goroutines at once, all asking
+// one shared file's tree for proofs. NewMerkleTree computes every inner
+// hash up front, so Proof only reads. Run with -race.
+func TestProofsAreSafeConcurrently(t *testing.T) {
+	tree := NewMerkleTree(leavesFor(37))
+	root := tree.Root()
+	done := make(chan bool)
+	for g := 0; g < 8; g++ {
+		go func() {
+			ok := true
+			for i := 0; i < 37; i++ {
+				proof, err := tree.Proof(i)
+				ok = ok && err == nil && VerifyMerkleProof(root, i, 37, tree.leaves[i], proof)
+			}
+			done <- ok
+		}()
+	}
+	for g := 0; g < 8; g++ {
+		if !<-done {
+			t.Error("a proof made concurrently didn't verify")
+		}
+	}
+}
+
 func TestProofRejectsBadIndex(t *testing.T) {
 	tree := NewMerkleTree(leavesFor(4))
 	for _, i := range []int{-1, 4} {

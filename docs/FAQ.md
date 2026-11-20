@@ -544,26 +544,27 @@ peers that want it.
 
 ### How do we know a piece from a stranger isn't corrupted or fake?
 
-The content key is a hash of the file's manifest, which includes a hash
-of every piece. A downloader checks `hash(manifest) == key`
-(`DecodeManifest`), then `SHA-256(piece) == manifest.piece_hashes[i]`
-for each piece (`VerifyPiece`). A peer can't send a fake piece without
-breaking a hash.
+The content key is a hash of the file's manifest, which includes the
+root of a Merkle tree over every piece ([09](09-merkle-trees.md)). A
+downloader checks `hash(manifest) == key` (`DecodeManifest`). Then, for
+each piece, it combines the piece's hash with the short proof that came
+with it and checks that the result is the manifest's root
+(`VerifyPiece`). A peer can't send a fake piece without breaking SHA-256.
 
 ### How does a leecher know what order the pieces go in when it rebuilds the file?
 
 From the **piece index**, never from arrival order. That matters on this
 branch, where pieces routinely arrive out of order. The path:
 
-- `PieceHashes[i]` in the manifest is the hash of the file's `i`-th chunk
-  (`BuildManifest`).
+- The file's `i`-th chunk is leaf `i` of the Merkle tree whose root is in
+  the manifest (`BuildManifest`), so the order is part of the root.
 - The picker chooses an index (`pickPiece`, `picker.go`), and
   `swarmDownload.startPiece` (`download.go`) asks a provider for that
   index (`GET_PIECE`, via `providerConn.fetch` in `client.go`).
 - The provider reads bytes `[i·PieceSize, …)` (`Library.readPiece`), but
   only if piece `i`'s bit is set.
-- The worker checks the bytes against `PieceHashes[i]`
-  (`Manifest.VerifyPiece`). `swarmDownload.handle` writes them at
+- The worker checks the bytes, with their proof, against the root *for
+  position `i`* (`Manifest.VerifyPiece`). `swarmDownload.handle` writes them at
   `PieceOffset(i)` (`file.WriteAt`), then publishes the piece
   (`Library.markHave`).
 
@@ -592,7 +593,7 @@ SHA-1 as the paper suggests. A node ID needs no collision resistance;
 it just has to be spread out. File integrity does: the content key is
 the root of the trust chain, and SHA-1 has practical collision attacks.
 So file keys are **SHA-256 truncated to 160 bits** (BitTorrent v2 does
-the same) and piece hashes are full SHA-256.
+the same), and the Merkle tree over the pieces uses full SHA-256.
 
 ### Do Merkle trees make sense here?
 
@@ -617,10 +618,11 @@ The flat-list design keeps an easy upgrade path: replace "list of piece
 hashes" with "Merkle root", and add a proof to each piece response. It's
 a good stretch goal if you want a concrete thing to show.
 
-**Now in progress** on branch `feature/merkle`: the tree, its proofs and
-their verification are built and tested (step 1 of 4). How it works,
-with a worked example using real hashes, is in
-[09-merkle-trees.md](09-merkle-trees.md).
+**Now built** on branch `feature/merkle`, so the comparison above is
+history. The manifest carries the Merkle root instead of the list, and
+every piece travels with its proof. A partial seeder passes on the
+proof it received with each piece. How it works, with a worked example
+using real hashes, is in [09-merkle-trees.md](09-merkle-trees.md).
 
 ## Compared with BitTorrent / libtorrent
 
@@ -663,7 +665,7 @@ lookup carry over almost unchanged.
 | Flow control | none | `choke`/`unchoke`, `interested`/`not interested` |
 | Who has what | nothing on `main` (whole files only) | `bitfield` (high bit of byte 0 = piece 0) + `have` messages |
 | Pipelining | one request outstanding per connection | many outstanding requests per connection |
-| File description | manifest = JSON; key = SHA-256(manifest)[:20] | `info` dictionary, bencoded; v1 infohash = SHA-1(info); piece hashes = 20-byte SHA-1s concatenated |
+| File description | manifest = JSON with a Merkle root over the pieces (RFC 6962 hashing); key = SHA-256(manifest)[:20] | `info` dictionary, bencoded; v1 infohash = SHA-1(info); piece hashes = 20-byte SHA-1s concatenated |
 | Getting the description from peers | `GET_MANIFEST` | `ut_metadata` ([BEP 9](https://www.bittorrent.org/beps/bep_0009.html)) over the BEP 10 extension protocol, in 16 KiB blocks |
 
 One genuine match: both frame messages with a 4-byte big-endian length

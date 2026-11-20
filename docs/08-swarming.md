@@ -120,8 +120,11 @@ path that already exists. Pieces are written at their offsets
 
 **Write, then publish:** a piece's bit is set in the library only after
 its `WriteAt` has completed. So the server only ever reads, and serves,
-pieces fully on disk. On failure, the library entry is removed first (to
-stop serving), then the file is closed and deleted. A download of a key
+pieces fully on disk. With the Merkle tree ([09](09-merkle-trees.md)),
+the piece's proof is stored at that same moment, because a partial
+seeder can't build the tree itself: it serves each piece with the proof
+it received. On failure, the library entry is removed first (to stop
+serving), then the file is closed and deleted. A download of a key
 that's already in the library is refused rather than starting a second,
 conflicting entry.
 
@@ -149,8 +152,8 @@ whether the manifest comes from the seeder or from another leecher.
   The `Library` is shared with the TCP server's goroutines, so it keeps
   its own mutex.
 - **Invariant 8: nothing from a peer is trusted.** Bitfields are
-  validated, pieces are hash-checked before `WriteAt`, and a peer only
-  ever serves pieces it verified. Downloads still create only new files.
+  validated, pieces are checked (now against the Merkle root, with their
+  proof) before `WriteAt`, and a peer only ever serves pieces it verified. Downloads still create only new files.
 - **Invariant 4: pure logic, no I/O.** The bitfield type and the piece
   picker are pure functions, unit-tested without sockets.
 - **The DHT invariants (1–3, 5, 7) are untouched.** Nothing in

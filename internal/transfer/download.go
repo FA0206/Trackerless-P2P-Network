@@ -130,6 +130,7 @@ type event struct {
 	conn     *providerConn // returned to the loop (nil if the dial failed)
 	piece    int
 	data     []byte
+	proof    []Hash // the piece's Merkle proof, verified; kept to serve it on
 	have     Bitfield
 	records  []ProviderRecord
 	err      error
@@ -418,8 +419,8 @@ func (d *swarmDownload) startPiece(ps *providerState, piece int) {
 		ev := event{kind: evPiece, provider: rec.NodeID, piece: piece}
 		conn, ev.err = ensureConn(ctx, conn, rec, timeout, logger)
 		if ev.err == nil {
-			if ev.data, ev.err = conn.fetch(opGetPiece, key, piece); ev.err == nil {
-				ev.err = m.VerifyPiece(piece, ev.data)
+			if ev.data, ev.proof, ev.err = conn.fetchPiece(key, piece); ev.err == nil {
+				ev.err = m.VerifyPiece(piece, ev.data, ev.proof) // against the manifest's Merkle root
 			}
 		}
 		ev.conn = conn
@@ -511,10 +512,11 @@ func (d *swarmDownload) handle(ev event) error {
 		}
 		d.have.Set(ev.piece) // write, then publish:
 		d.haveN++
-		d.p.lib.markHave(d.key, ev.piece) // only now can our server hand it out
+		d.p.lib.markHave(d.key, ev.piece, ev.proof) // only now can our server hand it out, with its proof
 		d.result.PiecesFrom[ps.rec.Addr()]++
 		d.p.logger.Info("piece received", "index", ev.piece, "of", d.manifest.NumPieces(),
-			"from", ps.rec.Addr(), "bytes", len(ev.data), "have", d.haveN, "inflight", len(d.inflight))
+			"from", ps.rec.Addr(), "bytes", len(ev.data), "have", d.haveN, "inflight", len(d.inflight),
+			"proof", len(ev.proof))
 	case evBitfield:
 		ps := d.providers[ev.provider]
 		ps.busy, ps.conn = false, ev.conn

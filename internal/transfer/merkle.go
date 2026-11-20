@@ -2,7 +2,9 @@ package transfer
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 )
 
 // A Merkle tree over a file's pieces: one 32-byte root fingerprints the
@@ -11,8 +13,9 @@ import (
 // instead of the full list of piece hashes. BitTorrent v2 does the same.
 // See docs/09-merkle-trees.md.
 //
-// Pure functions, no I/O (like bitfield.go and picker.go). Not used by
-// transfers yet: the manifest still carries the flat PieceHashes list.
+// Pure functions, no I/O (like bitfield.go and picker.go). The manifest
+// carries the root (manifest.go), every piece travels with its proof
+// (protocol.go), and the downloader checks it (VerifyPiece).
 //
 // The tree shape and hashing follow RFC 6962 (Certificate Transparency),
 // Sec. 2.1, and the proof check follows RFC 9162, Sec. 2.1.3.2:
@@ -29,6 +32,20 @@ import (
 
 // Hash is a SHA-256 digest: a leaf, an inner node, or the root.
 type Hash [sha256.Size]byte
+
+// String is the hash in hex, the form it takes in JSON (manifest, proofs).
+func (h Hash) String() string { return hex.EncodeToString(h[:]) }
+
+// parseHash decodes a hex hash, as received in a manifest or a proof.
+func parseHash(s string) (Hash, error) {
+	var h Hash
+	b, err := hex.DecodeString(s)
+	if err != nil || len(b) != len(h) {
+		return h, fmt.Errorf("transfer: %q is not a SHA-256 hex digest", s)
+	}
+	copy(h[:], b)
+	return h, nil
+}
 
 // LeafHash hashes one piece's bytes as a leaf: H(0x00 || piece).
 func LeafHash(piece []byte) Hash {
@@ -51,30 +68,34 @@ func nodeHash(left, right Hash) Hash {
 	return out
 }
 
-// MerkleTree holds a file's leaf hashes and remembers every subtree hash it
-// has computed, so the root and all proofs cost O(n) hashing in total, not
-// O(n) per proof.
+// MerkleTree holds a file's leaf hashes and every inner hash, computed
+// once when it's built (O(n) hashing). After that it's read-only, so the
+// TCP server's goroutines can ask it for proofs concurrently.
 type MerkleTree struct {
 	leaves []Hash
-	memo   map[[2]int]Hash // subtree [start, end) -> its hash
+	memo   map[[2]int]Hash // subtree [start, end) -> its hash; complete after NewMerkleTree
+	root   Hash
 }
 
 // NewMerkleTree builds a tree over the given leaf hashes (one per piece, in
-// order, from LeafHash). It keeps its own copy of the slice.
+// order, from LeafHash). It keeps its own copy of the slice, and computes
+// every inner hash now: Proof only ever asks for subtrees of this one
+// shape, so later calls just read the memo.
 func NewMerkleTree(leaves []Hash) *MerkleTree {
-	return &MerkleTree{leaves: append([]Hash(nil), leaves...), memo: make(map[[2]int]Hash)}
+	t := &MerkleTree{leaves: append([]Hash(nil), leaves...), memo: make(map[[2]int]Hash)}
+	if len(t.leaves) == 0 {
+		t.root = sha256.Sum256(nil)
+	} else {
+		t.root = t.subtree(0, len(t.leaves))
+	}
+	return t
 }
 
 // Len is the number of leaves (pieces).
 func (t *MerkleTree) Len() int { return len(t.leaves) }
 
 // Root is the tree's root hash. For an empty tree it's H("").
-func (t *MerkleTree) Root() Hash {
-	if len(t.leaves) == 0 {
-		return sha256.Sum256(nil)
-	}
-	return t.subtree(0, len(t.leaves))
-}
+func (t *MerkleTree) Root() Hash { return t.root }
 
 // subtree is the hash of leaves[start:end] (end > start), RFC 6962's MTH.
 func (t *MerkleTree) subtree(start, end int) Hash {

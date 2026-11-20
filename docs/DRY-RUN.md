@@ -438,9 +438,9 @@ on every run (it was `5951f7ca…` in this one).
 ```
 console.go     consoleEnv.share
 peer.go        Peer.Share
-manifest.go      BuildManifest       16 pieces × 64 KiB, SHA-256 each
-manifest.go      EncodeManifest → 1146 bytes; ContentKey → 5951f7ca…
-library.go       Library.add         node1 can now serve it
+manifest.go      BuildManifest       16 pieces × 64 KiB → 16 Merkle leaves → root (merkle.go)
+manifest.go      EncodeManifest → 138 bytes (1146 with the old flat hash list); ContentKey → 5951f7ca…
+library.go       Library.addComplete node1 can now serve it, and keeps the tree to make proofs
 peer.go          announce → kademlia Node.Store(key, {"node_id":"10f71961…","ip":"127.0.0.1","tcp_port":9001})
 ```
 
@@ -449,6 +449,22 @@ peer.go          announce → kademlia Node.Store(key, {"node_id":"10f71961…",
 [node1] msg="store complete" key=5951f7ca… stored_at=2 stored_locally=true failed=0     ← holders: node1, node0, node4
 [node1] msg="provider announced" key=5951f7ca… tcp_addr=127.0.0.1:9001 replicas=3
 [node1] msg="share complete" key=5951f7ca… name=original.bin size=1048576 pieces=16
+```
+
+With the Merkle tree ([09](09-merkle-trees.md)), `share complete` also
+reports the root and the manifest's size. From a later run of the same
+script (another random file, so another key):
+
+```
+[node1] msg="share complete" key=a6f8e154… name=original.bin size=1048576 pieces=16 merkle_root=e46caffd69ce0a25… manifest_bytes=138
+```
+
+Each `piece received` now says how many hashes its proof had. 16 pieces
+make a tree 4 levels deep, so every proof is 4 hashes:
+
+```
+[node2] msg="piece received" index=10 of=16 from=127.0.0.1:9003 bytes=65536 have=1 inflight=1 proof=4
+[node2] msg="piece received" index=15 of=16 from=127.0.0.1:9004 bytes=65536 have=2 inflight=1 proof=4
 ```
 
 ## Phase 4 — `fetch <key> node3.bin` (node3), the full TCP path
@@ -466,7 +482,7 @@ client.go          providerConn.fetch: framing.Write(request) → framing.Read(h
                    ── node1: handleConn: framing.Read(request) → answer → Library.lookup → writeData
 manifest.go        DecodeManifest: ContentKey(bytes) == key ✓, Validate ✓
 peer.go          fetchPiecesInto: os.OpenFile(out, O_CREATE|O_EXCL)
-                   for i in 0..15: fetch(start i, GET_PIECE i) → Manifest.VerifyPiece(i) → WriteAt(offset)
+                   for i in 0..15: fetch(start i, GET_PIECE i) → Manifest.VerifyPiece(i, data, proof) → WriteAt(offset)
                    ── node1: answer → Library.readPiece (ReadAt from original.bin)
 library.go       Library.add(out)              node3 can now serve it
 peer.go          announce                      node3's provider record → the 3 holders
@@ -904,7 +920,7 @@ Function by function, for one piece in node4 (all in
 swarmDownload.run            event loop
   schedule → pickPiece (picker.go)    rarest needed piece with an idle holder → (piece 7, node2)
   startPiece                           log "piece requested", lend node2's connection to a worker
-    worker: ensureConn → providerConn.fetch(GET_PIECE 7) (client.go) → Manifest.VerifyPiece
+    worker: ensureConn → providerConn.fetchPiece(7) (client.go) → Manifest.VerifyPiece(7, data, proof)
             sends event{evPiece, piece 7, data, conn}
   wait → handle(evPiece)               give the connection back, WriteAt(PieceOffset(7)),
                                        have.Set(7), Library.markHave (library.go) ← now servable

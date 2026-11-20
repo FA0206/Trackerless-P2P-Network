@@ -39,21 +39,47 @@ func (pc *providerConn) close() {
 // fetch performs one request/response exchange (protocol.go) and returns
 // the data frame.
 func (pc *providerConn) fetch(op string, key kademlia.ID, index int) ([]byte, error) {
+	data, _, err := pc.exchange(op, key, index)
+	return data, err
+}
+
+// fetchPiece fetches piece i and the Merkle proof that came with it. The
+// proof is only parsed here, not trusted: VerifyPiece checks it.
+func (pc *providerConn) fetchPiece(key kademlia.ID, i int) ([]byte, []Hash, error) {
+	data, header, err := pc.exchange(opGetPiece, key, i)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(header.Proof) > maxProofLen {
+		return nil, nil, fmt.Errorf("proof for piece %d has %d hashes, at most %d possible", i, len(header.Proof), maxProofLen)
+	}
+	proof := make([]Hash, len(header.Proof))
+	for j, s := range header.Proof {
+		if proof[j], err = parseHash(s); err != nil {
+			return nil, nil, fmt.Errorf("proof for piece %d: %w", i, err)
+		}
+	}
+	return data, proof, nil
+}
+
+// exchange sends one request and reads the response header and data frame.
+func (pc *providerConn) exchange(op string, key kademlia.ID, index int) ([]byte, responseHeader, error) {
+	var header responseHeader
 	pc.conn.SetDeadline(time.Now().Add(pc.ioTimeout))
 	body, _ := json.Marshal(request{Op: op, Key: key, Index: index})
 	if err := framing.Write(pc.conn, body); err != nil {
-		return nil, err
+		return nil, header, err
 	}
-	headerBytes, err := framing.Read(pc.conn, maxRequestFrame)
+	headerBytes, err := framing.Read(pc.conn, maxHeaderFrame)
 	if err != nil {
-		return nil, fmt.Errorf("read response header: %w", err)
+		return nil, header, fmt.Errorf("read response header: %w", err)
 	}
-	var header responseHeader
 	if err := json.Unmarshal(headerBytes, &header); err != nil {
-		return nil, fmt.Errorf("decode response header: %w", err)
+		return nil, header, fmt.Errorf("decode response header: %w", err)
 	}
 	if !header.OK {
-		return nil, errors.New("provider refused: " + header.Error)
+		return nil, header, errors.New("provider refused: " + header.Error)
 	}
-	return framing.Read(pc.conn, maxDataFrame)
+	data, err := framing.Read(pc.conn, maxDataFrame)
+	return data, header, err
 }

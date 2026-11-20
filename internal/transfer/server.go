@@ -108,7 +108,7 @@ func (s *server) handleConn(conn net.Conn) {
 			s.writeError(conn, fmt.Sprintf("bad request: %v", err))
 			return
 		}
-		data, err := s.answer(req)
+		data, proof, err := s.answer(req)
 		if err != nil {
 			s.logger.Warn("tcp request refused", "from", remote, "op", req.Op, "index", req.Index, "error", err)
 			if s.writeError(conn, err.Error()) != nil {
@@ -116,7 +116,7 @@ func (s *server) handleConn(conn net.Conn) {
 			}
 			continue
 		}
-		if err := s.writeData(conn, data); err != nil {
+		if err := s.writeData(conn, data, proof); err != nil {
 			s.logger.Debug("tcp write failed", "from", remote, "error", err)
 			return
 		}
@@ -128,32 +128,38 @@ func (s *server) handleConn(conn net.Conn) {
 	}
 }
 
-func (s *server) answer(req request) ([]byte, error) {
+// answer returns the data frame for a request, and for GET_PIECE the
+// piece's Merkle proof.
+func (s *server) answer(req request) ([]byte, []Hash, error) {
 	switch req.Op {
 	case opGetManifest:
 		_, manifestBytes, ok := s.lib.manifestFor(req.Key)
 		if !ok {
-			return nil, fmt.Errorf("unknown content key %s", req.Key)
+			return nil, nil, fmt.Errorf("unknown content key %s", req.Key)
 		}
-		return manifestBytes, nil
+		return manifestBytes, nil, nil
 	case opGetBitfield:
 		have, ok := s.lib.bitfield(req.Key)
 		if !ok {
-			return nil, fmt.Errorf("unknown content key %s", req.Key)
+			return nil, nil, fmt.Errorf("unknown content key %s", req.Key)
 		}
-		return have, nil
+		return have, nil, nil
 	case opGetPiece:
 		if d := time.Duration(s.debugServeDelay.Load()); d > 0 {
 			time.Sleep(d)
 		}
 		return s.lib.readPiece(req.Key, req.Index)
 	default:
-		return nil, fmt.Errorf("unknown op %q", req.Op)
+		return nil, nil, fmt.Errorf("unknown op %q", req.Op)
 	}
 }
 
-func (s *server) writeData(conn net.Conn, data []byte) error {
-	header, _ := json.Marshal(responseHeader{OK: true})
+func (s *server) writeData(conn net.Conn, data []byte, proof []Hash) error {
+	h := responseHeader{OK: true}
+	for _, p := range proof {
+		h.Proof = append(h.Proof, p.String())
+	}
+	header, _ := json.Marshal(h)
 	if err := framing.Write(conn, header); err != nil {
 		return err
 	}

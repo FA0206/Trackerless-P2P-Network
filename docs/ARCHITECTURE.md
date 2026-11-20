@@ -95,7 +95,7 @@ Each file depends only on files in lower layers:
 | `protocol.go` | TCP request/response shapes, op names, frame size limits | `kademlia.ID` |
 | `bitfield.go` | `Bitfield` (`Has`, `Set`, `Count`), `decodeBitfield` validation. **No I/O.** | — |
 | `picker.go` | `pickPiece`: rarest needed piece with an idle holder, random ties. **No I/O.** | `bitfield.go` |
-| `merkle.go` | `MerkleTree` over piece hashes: `LeafHash`, `Root`, `Proof`, `VerifyMerkleProof` (RFC 6962 / 9162). Not used by transfers yet. **No I/O.** | — |
+| `merkle.go` | `MerkleTree` over piece hashes: `LeafHash`, `Root`, `Proof`, `VerifyMerkleProof` (RFC 6962 / 9162). The manifest carries the root; every piece travels with its proof. Read-only once built. **No I/O.** | — |
 | `library.go` | key → (manifest, file path, `have` bitfield); `addComplete`/`addPartial`/`markHave`/`remove`; `readPiece` serves only pieces it has | `manifest.go`, `bitfield.go` |
 | `server.go` | accept loop; `handleConn` request loop; `answer` (`GET_MANIFEST`, `GET_BITFIELD`, `GET_PIECE`); tracks open connections so `close` ends them; the DEBUG ONLY `debugServeDelay` (`--debug-serve-delay`) | `library.go`, `protocol.go`, framing |
 | `client.go` | `dialProvider`; `providerConn.fetch` | `protocol.go`, framing |
@@ -162,7 +162,7 @@ framing.Write / Read        // frames on a stream
              openFile: O_EXCL + Library.addPartial        ← from here on, we serve what we have
    ▼
  download.go run (event loop, ONE goroutine owns all state)
-    schedule ─┬─ pickPiece (picker.go) → startPiece ──► worker: dial/fetch GET_PIECE → VerifyPiece ─┐
+    schedule ─┬─ pickPiece (picker.go) → startPiece ──► worker: dial/fetchPiece GET_PIECE (+ proof) → VerifyPiece ─┐
               ├─ stale bitfield       → startBitfield ─► worker: fetch GET_BITFIELD → decodeBitfield ─┤
               ├─ every 1 s            → startDiscovery ► worker: kademlia FindValue → records ───────┤ events
               └─ after 1st piece      → startAnnounce ─► worker: Peer.announce (kademlia Store) ─────┤ channel
@@ -233,8 +233,8 @@ way.
 7. **Nothing from another peer is trusted unchecked.** Provider records
    are validated (`decodeProviderRecord`), bitfields are validated
    (`decodeBitfield`), manifests must hash to the requested key
-   (`DecodeManifest`), and every piece must match its hash
-   (`VerifyPiece`) before it's written.
+   (`DecodeManifest`), and every piece must verify
+   (`VerifyPiece`, which checks the piece's Merkle proof against the manifest's root) before it's written.
 8. **A download only ever creates a new file** (`O_EXCL`), and deletes it
    on failure (after removing it from the library). It never overwrites
    an existing path.

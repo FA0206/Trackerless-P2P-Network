@@ -1,10 +1,9 @@
 # 09 — Merkle trees: one hash for the whole file, a short proof per piece
 
-> **Status:** step 1 of 4 is built: the tree, proofs and their
-> verification, as pure functions with tests (`internal/transfer/merkle.go`).
-> Transfers don't use it yet: the manifest still carries the flat list of
-> piece hashes ([07](07-file-transfer-over-tcp.md)). Steps 2–4 (using it
-> in transfers, a tamper demo, the diagram) come next; see the end.
+> **Status:** steps 1 and 2 of 4 are built. Step 1 is the tree, proofs and
+> verification (`internal/transfer/merkle.go`). Step 2 is transfers using
+> them: the manifest carries the root, and every piece travels with its
+> proof. Steps 3 and 4 (a tamper demo, the diagram) come next; see the end.
 
 ## The problem it solves
 
@@ -109,6 +108,55 @@ per proof. `VerifyMerkleProof` is RFC 9162's inclusion-proof algorithm
 (Sec. 2.1.3.2). It also rejects a proof that's too long, too short, or
 for a different index.
 
+## How file transfers use it
+
+**Sharing** (`BuildManifest`, `Peer.Share`): the sharer hashes each
+piece into a leaf, builds the tree, and puts the root in the manifest.
+The manifest is now name, size, piece size and root:
+
+```json
+{"name":"original.bin","size":1048576,"piece_size":65536,"merkle_root":"e46caffd69ce0a25…"}
+```
+
+That's **138 bytes** for a 1 MiB, 16-piece file, against 1,146 bytes
+with the old flat list, and it stays about that size for any file. The
+content key is still the hash of the manifest, so it now vouches for the
+root. The sharer keeps the tree in its library (`addComplete`), to make
+proofs.
+
+**Serving a piece** (`server.go`, `Library.readPiece`): the reply's
+header carries the proof as hex hashes, then the piece follows:
+
+```
+server → client   frame: {"ok":true,"proof":["…","…","…","…"]}
+server → client   frame: <65536 raw bytes of the piece>
+```
+
+**Checking it** (`download.go` → `Manifest.VerifyPiece(i, data, proof)`):
+the downloader takes the index and the piece count from the manifest
+it already verified, never from the sender. A bad piece, a bad proof, or
+a good piece sent for the wrong index all fail. The provider is then
+dropped, and the piece is fetched from another one. A real run shows
+each piece with a 4-hash proof (16 pieces → 4 levels):
+
+```
+msg="piece received" index=10 of=16 from=127.0.0.1:9003 bytes=65536 have=1 inflight=1 proof=4
+```
+
+**Passing pieces on** (partial seeding, [08](08-swarming.md)). This is the
+one subtle part. A downloader serves pieces before it has the whole
+file, so it **can't build the tree**: it doesn't have every leaf. So it
+keeps the proof that came with each piece (`Library.markHave(key, i,
+proof)`) and sends that same proof to whoever asks for that piece. The
+proof is genuine (it was just verified), and it doesn't depend on who
+sends it. A test checks that a downloader's proofs equal the seeder's,
+byte for byte.
+
+**Concurrency:** the server answers requests from several goroutines,
+all asking one tree for proofs. `NewMerkleTree` computes every inner
+hash up front, so `Proof` only reads (`TestProofsAreSafeConcurrently`,
+under `-race`).
+
 ## How we know it's right
 
 `internal/transfer/merkle_test.go`:
@@ -125,17 +173,22 @@ for a different index.
 - **Leaves and inner nodes can't be confused** (the 0x00 / 0x01 prefixes).
 - **The worked example above:** the root `049a8eca…` and the proof
   `[L3, H01, L4]` for piece 2 come straight from the code.
+- **In transfers** (`manifest_test.go`, `transfer_test.go`):
+  - a flipped byte, a piece sent with another piece's genuine proof, a
+    truncated piece and a missing proof are all rejected;
+  - the manifest's size doesn't grow with the number of pieces;
+  - a provider serving corrupted pieces *with the genuine proofs* is
+    caught and dropped;
+  - a downloader serves exactly the seeder's proofs;
+  - leechers finish from each other after the seeder dies, so every
+    piece they pass on carries a valid stored proof. All existing
+    demos and edge cases pass unchanged.
 
 ## What's next
 
-1. ~~The tree, proofs, verification, tests~~ (this doc).
-2. **Use it in transfers.**
-   - The manifest carries the root instead of the list, so it stays
-     small whatever the file size.
-   - Every piece reply carries its proof, and the downloader checks it.
-   - Partial seeders (who serve pieces before they have the whole file,
-     [08](08-swarming.md)) keep the proof that came with each piece, so
-     they can pass it on.
+1. ~~The tree, proofs, verification, tests.~~
+2. ~~Use it in transfers: the root in the manifest, a proof with every
+   piece, partial seeders passing proofs on.~~
 3. **A tamper demo:** a node that serves a corrupted piece, caught by the
    proof check, with the download finishing from other peers. Plus a
    manifest-size comparison, flat list vs root.

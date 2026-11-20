@@ -127,6 +127,44 @@ func TestDownloadSurvivesSeederShutdown(t *testing.T) {
 	}
 }
 
+// A downloader can't rebuild the Merkle tree (it may not have every
+// piece yet), so it serves each piece with the proof it received. Those
+// must be exactly the seeder's proofs.
+func TestDownloaderServesThePieceProofsItReceived(t *testing.T) {
+	peers := startNetwork(t, 3)
+	dir := t.TempDir()
+	src := writeRandomFile(t, dir, 5*DefaultPieceSize)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	key, err := peers[0].peer.Share(ctx, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peers[1].peer.Download(ctx, key, filepath.Join(dir, "out.bin")); err != nil {
+		t.Fatal(err)
+	}
+	seederTree := peers[0].peer.lib.files[key].tree
+	m, _, _ := peers[1].peer.lib.manifestFor(key)
+	for i := 0; i < 5; i++ {
+		data, proof, err := peers[1].peer.lib.readPiece(key, i)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, _ := seederTree.Proof(i)
+		if len(proof) != len(want) {
+			t.Fatalf("piece %d: the downloader serves a %d-hash proof, the seeder's has %d", i, len(proof), len(want))
+		}
+		for j := range want {
+			if proof[j] != want[j] {
+				t.Errorf("piece %d: proof hash %d differs from the seeder's", i, j)
+			}
+		}
+		if err := m.VerifyPiece(i, data, proof); err != nil {
+			t.Errorf("piece %d as the downloader serves it doesn't verify: %v", i, err)
+		}
+	}
+}
+
 func TestCorruptProviderIsSkipped(t *testing.T) {
 	peers := startNetwork(t, 4)
 	dir := t.TempDir()
@@ -147,8 +185,10 @@ func TestCorruptProviderIsSkipped(t *testing.T) {
 	}
 	corrupt := filepath.Join(dir, "corrupt.bin")
 	os.WriteFile(corrupt, data, 0o644)
+	// It even sends the genuine Merkle proofs (the seeder's tree): only
+	// the piece bytes are wrong, and the proof check must still catch it.
 	m, mb, _ := peers[0].peer.lib.manifestFor(key)
-	peers[1].peer.lib.addComplete(key, m, mb, corrupt)
+	peers[1].peer.lib.addComplete(key, m, mb, corrupt, peers[0].peer.lib.files[key].tree)
 	if err := peers[1].peer.announce(ctx, key); err != nil {
 		t.Fatalf("announce: %v", err)
 	}

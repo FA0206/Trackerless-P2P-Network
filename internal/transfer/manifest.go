@@ -6,7 +6,6 @@ package transfer
 
 import (
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,55 +26,63 @@ const (
 )
 
 // Manifest describes a shared file: its size, how it's cut into pieces,
-// and the SHA-256 of every piece. Its hash is the file's content key
+// and the root of the Merkle tree over its pieces (merkle.go,
+// docs/09-merkle-trees.md). Its hash is the file's content key
 // (ContentKey), so whoever knows the key can check that a manifest is
-// genuine, and then check every piece against the manifest.
+// genuine, and then check every piece, with its proof, against the root.
 //
-// This is BitTorrent v1's approach, a flat list of piece hashes. A Merkle
-// tree would replace PieceHashes with one root hash plus a per-piece proof;
-// see docs/FAQ.md for why that isn't needed at this project's scale. The
-// tree itself is in merkle.go (docs/09-merkle-trees.md), not used here yet.
+// The manifest stays a few hundred bytes however big the file is. The
+// first version carried a flat list of every piece's SHA-256 instead
+// (BitTorrent v1's approach), which grows with the file: ~1 MB for 1 GB.
 type Manifest struct {
-	Name        string   `json:"name"` // informational only; never used as a path
-	Size        int64    `json:"size"`
-	PieceSize   int      `json:"piece_size"`
-	PieceHashes []string `json:"piece_hashes"` // hex SHA-256, one per piece
+	Name       string `json:"name"` // informational only; never used as a path
+	Size       int64  `json:"size"`
+	PieceSize  int    `json:"piece_size"`
+	MerkleRoot string `json:"merkle_root"` // hex SHA-256, the root of the tree over the pieces
 }
 
-// BuildManifest reads the file at path and hashes it piece by piece.
-func BuildManifest(path string, pieceSize int) (Manifest, error) {
+// BuildManifest reads the file at path, hashes it piece by piece into a
+// Merkle tree, and returns the manifest and the tree. The sharer keeps the
+// tree: it's what makes the proof sent with each piece.
+func BuildManifest(path string, pieceSize int) (Manifest, *MerkleTree, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return Manifest{}, err
+		return Manifest{}, nil, err
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		return Manifest{}, err
+		return Manifest{}, nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return Manifest{}, fmt.Errorf("transfer: %s is not a regular file", path)
+		return Manifest{}, nil, fmt.Errorf("transfer: %s is not a regular file", path)
 	}
 
 	m := Manifest{Name: filepath.Base(path), Size: info.Size(), PieceSize: pieceSize}
+	var leaves []Hash
 	buf := make([]byte, pieceSize)
 	for {
 		n, err := io.ReadFull(f, buf)
 		if n > 0 {
-			sum := sha256.Sum256(buf[:n])
-			m.PieceHashes = append(m.PieceHashes, hex.EncodeToString(sum[:]))
+			leaves = append(leaves, LeafHash(buf[:n]))
 		}
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			break
 		}
 		if err != nil {
-			return Manifest{}, err
+			return Manifest{}, nil, err
 		}
 	}
+	tree := NewMerkleTree(leaves)
+	m.MerkleRoot = tree.Root().String()
 	if err := m.Validate(); err != nil {
-		return Manifest{}, fmt.Errorf("transfer: %s changed while being read? %w", path, err)
+		return Manifest{}, nil, err
 	}
-	return m, nil
+	if tree.Len() != m.NumPieces() {
+		return Manifest{}, nil, fmt.Errorf("transfer: %s changed while being read? %d pieces hashed, %d expected",
+			path, tree.Len(), m.NumPieces())
+	}
+	return m, tree, nil
 }
 
 // NumPieces is ceil(Size / PieceSize).
@@ -107,28 +114,31 @@ func (m Manifest) Validate() error {
 	if m.Size > int64(maxPieces)*int64(m.PieceSize) {
 		return fmt.Errorf("transfer: file needs more than %d pieces", maxPieces)
 	}
-	if len(m.PieceHashes) != m.NumPieces() {
-		return fmt.Errorf("transfer: %d piece hashes for %d pieces", len(m.PieceHashes), m.NumPieces())
-	}
-	for i, h := range m.PieceHashes {
-		if b, err := hex.DecodeString(h); err != nil || len(b) != sha256.Size {
-			return fmt.Errorf("transfer: piece %d hash %q is not a SHA-256 hex digest", i, h)
-		}
+	if _, err := parseHash(m.MerkleRoot); err != nil {
+		return fmt.Errorf("transfer: bad merkle_root: %w", err)
 	}
 	return nil
 }
 
-// VerifyPiece checks that data really is piece i of this file.
-func (m Manifest) VerifyPiece(i int, data []byte) error {
+// root is the Merkle root as a Hash. Only call it on a validated manifest.
+func (m Manifest) root() Hash {
+	h, _ := parseHash(m.MerkleRoot)
+	return h
+}
+
+// VerifyPiece checks that data really is piece i of this file, using the
+// proof that came with it: the piece's leaf hash and the proof must lead
+// to the manifest's Merkle root (VerifyMerkleProof). The index and the
+// piece count come from the manifest, never from the sender.
+func (m Manifest) VerifyPiece(i int, data []byte, proof []Hash) error {
 	if i < 0 || i >= m.NumPieces() {
 		return fmt.Errorf("transfer: piece index %d out of range", i)
 	}
 	if len(data) != m.PieceLength(i) {
 		return fmt.Errorf("transfer: piece %d is %d bytes, expected %d", i, len(data), m.PieceLength(i))
 	}
-	sum := sha256.Sum256(data)
-	if hex.EncodeToString(sum[:]) != m.PieceHashes[i] {
-		return fmt.Errorf("transfer: piece %d failed its hash check", i)
+	if !VerifyMerkleProof(m.root(), i, m.NumPieces(), LeafHash(data), proof) {
+		return fmt.Errorf("transfer: piece %d failed its Merkle proof check", i)
 	}
 	return nil
 }
