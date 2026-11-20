@@ -23,8 +23,11 @@ pieces between them, yet the file was lost:
    of 16.
 3. A failed download deletes its partial file.
 
-This design removes 1 and 2. Rule 3 stays, but now it only bites when a
-download really can't finish.
+This design removes 1 and 2. Rule 3 stayed at first, and only bit when
+a download really couldn't finish. It was replaced later too: a download
+that gives up now keeps its file and keeps serving it, because deleting
+it let one leecher cut another off (see
+["Why giving up mustn't delete"](#why-giving-up-mustnt-delete-two-leechers-end-with-different-pieces)).
 
 ## Design
 
@@ -32,7 +35,8 @@ download really can't finish.
 
 - **The original sharer** announces at `share`, as before.
 - **A downloader** announces as soon as it has **verified its first
-  piece** (in a worker, so the download doesn't wait for the DHT). A
+  piece** (in a worker, so the download doesn't wait for the DHT; a
+  resumed download, which starts with pieces on disk, announces at once). A
   finished download also waits for that announce to complete before
   `Download` returns, so the next downloader is guaranteed to find it. Before that it has nothing to offer. Announcing once is enough:
   the provider record `{node_id, ip, tcp_port}` doesn't change as more
@@ -104,26 +108,149 @@ why that matters). Then:
    and keep refreshing bitfields as they go stale;
 2. **wait**: new providers may announce, or a known one may get the
    missing piece;
-3. **give up** after 15 s of uninterrupted stall: delete the partial
-   file and return an error. Any progress (a piece arriving) resets the
-   15 s.
+3. **give up** after 15 s of uninterrupted stall: stop downloading and
+   return an error, but **keep the partial file and keep serving its
+   pieces** (see "Why giving up mustn't delete" below). Any progress (a
+   piece arriving) resets the 15 s.
 
 A provider that fails once (connection refused, timeout, refusal, a bad
 piece or bitfield) is dropped for the rest of the download, as on `main`.
 
 ### Partial files on disk, without overwriting anything
 
-The output file is still created with `O_CREATE|O_EXCL`. That happens
-right after the manifest is verified, and the download never touches a
-path that already exists. Pieces are written at their offsets
-(`WriteAt`), in whatever order they arrive.
+A fresh download still creates its output file with `O_CREATE|O_EXCL`,
+right after the manifest is verified, so it never touches a path that
+already exists. The one exception is a resume, which reopens this node's
+own partial file after re-checking it (see "Resuming" below). Pieces are
+written at their offsets (`WriteAt`), in whatever order they arrive;
+slots of missing pieces stay zeros.
 
 **Write, then publish:** a piece's bit is set in the library only after
 its `WriteAt` has completed. So the server only ever reads, and serves,
-pieces fully on disk. On failure, the library entry is removed first (to
-stop serving), then the file is closed and deleted. A download of a key
-that's already in the library is refused rather than starting a second,
-conflicting entry.
+pieces fully on disk.
+
+When a download gives up, its file is closed but stays on disk and in
+the library, so the pieces it has are still served
+(`swarmDownload.stopButKeepServing`). The same happens when it stops for
+any other reason: the console's or API's transfer timeout, a cancelled
+`/api/fetch`, a write error. Two cases are deleted instead (`abort`: off
+the library, then off the disk): a download that stopped before its
+first piece, which has nothing to serve or resume, and a finished file
+that can't be closed. If the caller stops waiting after the last piece
+is written (while the download waits for its announce), the download
+counts as complete. A download of a key that's already in the library
+is refused rather than starting a second, conflicting entry, with one
+exception: a download that gave up, fetched again into the same path,
+resumes (below).
+
+### Why giving up mustn't delete: two leechers end with different pieces
+
+Take one seeder and two leechers, and kill the seeder before the leechers
+*together* hold every piece. The file is lost: some pieces existed only
+on the seeder. You'd expect both leechers to end with the same pieces,
+the union of what they held, missing exactly the ones that died with the
+seeder. Until this change they didn't: in one reported run, one leecher
+ended with 3 pieces missing and the other with 6.
+
+**Why.** Each leecher gives up on its own 15 s clock, and giving up used
+to delete the file and stop serving it. The leecher that needs less from
+the other finishes copying first, so its clock starts first, and it gives
+up first. When it deletes its file, the other leecher is still copying
+from it. That leecher's next request is refused, it drops the provider
+(one failure is enough), and it ends with fewer pieces. **The leecher
+that's ahead abandons the one that's behind.**
+
+The scenario on localhost, as `scripts/demo-give-up-resume.sh` runs it:
+32 pieces, the seeder and both leechers serving one piece a second
+(`--debug-serve-delay 1s`), leechers at `--max-inflight 1`. B starts
+first, C starts once B has 20 pieces, and the seeder is killed once C has
+2. A replay with the code from before this change (commit `c21848f`); at
+the kill, B had 22 and C had 2, 23 of 32 together:
+
+```
+20:49:28.697 [B] msg="download stalled: no live provider has the missing pieces; looking for more" have=23 of=32   ← got C's piece; B's 15 s clock starts
+             … B gives up ~15 s later and deletes its file; C, copying from B one piece a second, is at 18
+20:49:44.725 [C] msg="provider failed, trying the next one" provider=127.0.0.1:9401 error="provider refused: unknown content key 5da1b2bf…"
+20:49:44.725 [C] msg="download stalled: no live provider has the missing pieces; looking for more" have=18 of=32
+[B] fetch failed: transfer: stalled for 15s with 23 of 32 pieces: no live provider has the rest
+[C] fetch failed: transfer: stalled for 15s with 18 of 32 pieces: no live provider has the rest
+```
+
+The same scenario with this change, from `scripts/demo-give-up-resume.sh`
+itself (B is node1, C is node2; at the kill again 22 + 2, 23 together;
+full trace in [DRY-RUN part 8](DRY-RUN.md#part-8--scriptsdemo-give-up-resumesh-giving-up-keeps-seeding-fetching-again-resumes)):
+
+```
+21:12:31.419 [B] msg="download stalled: no live provider has the missing pieces; looking for more" have=23 of=32
+21:12:46.514 [B] msg="download gave up, still serving its pieces" key=0ac21332… have=23 of=32 error="transfer: stalled for 15s with 23 of 32 pieces: no live provider has the rest"
+21:12:47.239 [C] msg="piece received" index=30 of=32 from=127.0.0.1:9651 bytes=65536 have=19 inflight=0   ← still copying from B
+             … 3 more from B, one a second …
+21:12:51.247 [C] msg="piece received" index=5 of=32 from=127.0.0.1:9651 bytes=65536 have=23 inflight=0
+21:12:51.247 [C] msg="download stalled: no live provider has the missing pieces; looking for more" have=23 of=32   ← caught up
+21:13:06.259 [C] msg="download gave up, still serving its pieces" key=0ac21332… have=23 of=32 error="transfer: stalled for 15s with 23 of 32 pieces: no live provider has the rest"
+[B] fetch failed: transfer: stalled for 15s with 23 of 32 pieces: no live provider has the rest
+[C] fetch failed: transfer: stalled for 15s with 23 of 32 pieces: no live provider has the rest
+```
+
+The outcome doesn't change: the file is lost either way. What changes is
+that no leecher's pieces disappear with it. Every leecher reaches the
+union, and the swarm keeps everything it had for when a source comes
+back (resuming, below).
+
+**What real BitTorrent does** (clients' visible behavior, **not
+verified** against their source). A client never gives up on its own or
+deletes a stalled download. The torrent stays in the list, "stalled",
+seeding what it has. Clients show its *availability*, how many full
+copies the reachable peers make together; below 1.0 means some piece
+exists nowhere reachable. The download continues when a peer with the
+missing pieces shows up. Ours now matches the "keeps seeding" part. It
+still stops downloading after 15 s, so `fetch` returns and scripts can
+finish.
+
+### Resuming
+
+Running the same `fetch` again on the node whose download gave up
+continues it (`Peer.Download`):
+
+1. `Library.claimForResume` finds the stopped partial and, in one locked
+   step, marks it as downloading again. Two `fetch`es of one key can
+   never both run.
+2. The manifest comes from the library, and the file is reopened
+   without `O_EXCL` (`swarmDownload.reopenFile`). Before anything is
+   written, **every piece the library says is on disk is re-hashed**
+   against the manifest. Since the download stopped, the file may have
+   been truncated, edited, or deleted and replaced by another file: the
+   library only remembers a path. If any piece fails, the resume is
+   refused, nothing is written, and the entry is dropped so the file is
+   no longer served (invariant 8: not even our own disk is trusted).
+3. The download starts with the pieces already on disk and fetches only
+   the missing ones. The event loop needs no change: `needed()` already
+   skips pieces in `have`.
+
+The end of that demo run: a new node (node3, serving at full speed)
+shares the same file (same bytes, same key), and B runs the same `fetch`:
+
+```
+[B] msg="download resumed" key=0ac21332… have=23 of=32
+fetched "original.bin" (2097152 bytes, 32 pieces) into /tmp/tmp.Q9O0qPW9SR/node1.bin in 2.009s
+    9 piece(s) from 127.0.0.1:9653
+    23 piece(s) were already on disk (resumed)
+    provider 127.0.0.1:9650 failed and was skipped
+```
+
+The rules:
+
+| You run | Result |
+|---|---|
+| the same `fetch` into the **same path** | resumes |
+| into **another path** | refused: `… has a stopped partial download at <path>; fetch into that path to resume it` |
+| for a file that's complete, or still downloading | refused: `… is already in the library` |
+| after deleting the partial file by hand | the entry is dropped with an error; the next `fetch` starts over |
+| after the file was changed or replaced | refused: `resume … changed since the download stopped (piece N: …)`; nothing written, entry dropped, file left alone (move it away to fetch again) |
+| when the file can't be opened for writing (e.g. read-only) | refused, but the entry stays and its pieces are still served; fix it and fetch again |
+| when another download now uses that path | refused: `… now belongs to the library entry for <key>` |
+| for a download that stopped before its first piece | nothing to resume: it left no file or entry, so this is a fresh fetch |
+| after **restarting** the node | not a resume: see the SIMPLIFICATION below |
 
 ### Fetching the manifest from a partial provider
 
@@ -150,7 +277,9 @@ whether the manifest comes from the seeder or from another leecher.
   its own mutex.
 - **Invariant 8: nothing from a peer is trusted.** Bitfields are
   validated, pieces are hash-checked before `WriteAt`, and a peer only
-  ever serves pieces it verified. Downloads still create only new files.
+  ever serves pieces it verified. Downloads still create only new files,
+  except a resume reopening its own partial file, whose pieces on disk
+  are re-hashed first.
 - **Invariant 4: pure logic, no I/O.** The bitfield type and the piece
   picker are pure functions, unit-tested without sockets.
 - **The DHT invariants (1–3, 5, 7) are untouched.** Nothing in
@@ -175,6 +304,7 @@ connections and `Peer.Close` closes them all.
 | Rarest-first uses only this downloader's (possibly stale) view | Not global rarity | No |
 | A provider that fails once stays dead for the whole download | A briefly unreachable peer is never retried | Revisit for Wi-Fi |
 | No choking, upload limits, or fairness | A peer serves everyone, as fast as it can | Not in the goal list |
+| No resume after a restart. The library lives in memory, so a restarted node forgets a partial file and doesn't serve it, and the file blocks its path (downloads never overwrite) | Delete the file by hand; the download starts from zero | No. Fix when demoing node restarts: write to `<out>.part`, and on a re-fetch re-hash the `.part` file against the manifest |
 
 ## Predicted effects of the known gaps (out of scope here)
 
@@ -242,6 +372,7 @@ the three known gaps had to be fixed. What the real runs did turn up:
 | Bitfield (BitTorrent layout), validation | `Bitfield`, `NewBitfield`, `FullBitfield`, `decodeBitfield` | `internal/transfer/bitfield.go` |
 | Rarest-first picker (pure) | `pickPiece`, `holderView` | `picker.go` |
 | Partial library entries, write-then-publish | `Library.addPartial`, `markHave`, `remove`, `bitfield`, `readPiece` | `library.go` |
+| Giving up keeps serving; resuming | `Library.claimForResume`, `stopDownloading`; `swarmDownload.stopButKeepServing`, `reopenFile` | `library.go`, `download.go` |
 | `GET_BITFIELD`, closing open connections | `server.answer`, `server.close`, `server.track` | `server.go`, `protocol.go` |
 | The download event loop | `Peer.Download`, `swarmDownload.run`, `schedule`, `handle`, `canProgress` | `download.go` |
 | Workers | `startPiece`, `startBitfield`, `startDiscovery`, `startAnnounce`, `ensureConn` | `download.go` |
@@ -263,6 +394,25 @@ the three known gaps had to be fixed. What the real runs did turn up:
     (typically each holds 9–10 of 16), and every leecher must finish
     with a byte-identical file.
   - `TestDownloadGivesUpWhenNoOneHasTheRest`: the stall regression test.
+    It also checks the download keeps its file and can still serve its
+    pieces after giving up.
+  - `TestGivingUpKeepsServing`: the "different pieces" case. A second
+    leecher fetching after the first gave up gets exactly the first one's
+    pieces from it.
+  - `TestFetchAgainResumes`: after the leecher gives up at k of 8 pieces,
+    another node shares the same file, and the same fetch completes with
+    `AlreadyHad == k`, fetching only 8 − k pieces. Fetching into another
+    path, or after completion, is refused; a read-only partial is refused
+    but stays in the library.
+  - `TestResumeRefusesAChangedFile`: the partial is replaced by the
+    user's own bytes; the resume is refused, writes nothing, and drops
+    the entry.
+  - `TestGivingUpWithNoPiecesLeavesNothing`: no file, no entry.
+  - `TestCancelAfterLastPieceStillCompletes`: cancelled while waiting for
+    the announce, after the last piece: success, not a failure.
+- **Unit:** `library_test.go` `TestClaimForResume`: fresh, resume,
+  refusals (including a path now used by another entry), and one claim
+  at a time.
 - The older `transfer_test.go` tests (seeder shutdown, corrupt provider,
   two providers, unknown key) pass unchanged against the new downloader.
 

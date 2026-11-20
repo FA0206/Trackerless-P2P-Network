@@ -221,8 +221,10 @@ Two constraints still hold:
   pipelining on one connection would need the index in the reply, or
   strict first-in-first-out matching. Parallelism comes from several
   connections, one per provider.
-- **Partial files are deleted on failure.** Pieces that arrived are
-  thrown away if the download can't finish (no resume).
+- **Partial files were deleted on failure.** Pieces that arrived were
+  thrown away if the download couldn't finish. That's gone too: a
+  download that gives up keeps its file and keeps serving it, and the
+  same `fetch` resumes it ([08](08-swarming.md#why-giving-up-mustnt-delete-two-leechers-end-with-different-pieces)).
 
 ## Seen in the demo
 
@@ -259,7 +261,7 @@ with pieces arriving rarest-first and in parallel.
 |---|---|
 | *(Removed on this branch: "providers must have the whole file" and "pieces fetched one at a time". New simplifications of the swarm are listed in [08](08-swarming.md#new-simplifications).)* | |
 | One failure drops a provider for the rest of the download; no retries | Fine for now. Revisit with packet loss / Wi-Fi. |
-| Failed download deletes the partial file; no resume | No. |
+| *(Removed: "failed download deletes the partial file; no resume". A download that gives up keeps serving, and fetching again resumes; only resume after a restart is missing, listed in [08](08-swarming.md#new-simplifications).)* | |
 | Provider records never expire ([06](06-store-and-find-value.md)) | Costs one failed connection per dead provider; matters for recovery-time measurements. |
 | The advertise IP comes from `--advertise-ip` (default `127.0.0.1`), or from the route to the bootstrap node when a node joins through another machine | No, on one subnet: the first node is started with its IP, the others detect theirs, and bad values are refused at startup. No NAT traversal ([09](09-multi-device.md)). |
 | No upload limits, no tit-for-tat | Not in the goal list. |

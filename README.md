@@ -455,7 +455,8 @@ Here is whether each one blocks the end goal:
 | No lookup early-exit heuristic ([05](docs/05-iterative-parallel-lookup.md)) | Slightly inflates RPC counts. | Optional, before the graphs. |
 | **Values never expire or get republished** ([06](docs/06-store-and-find-value.md)) | **Yes, for churn.** Dead providers' records linger (one wasted connection each), and records don't move to closer nodes that join later. Edge cases B2 and B3 show both ([EDGE-CASES](docs/EDGE-CASES.md)). | Before the seeder-kill and recovery experiments. |
 | No caching of found values ([06](docs/06-store-and-find-value.md)) | No. | Keep. |
-| One failure drops a provider for the whole download; no retries; no resume ([07](docs/07-file-transfer-over-tcp.md), [08](docs/08-swarming.md)) | Not yet. | Revisit with real networks / Wi-Fi. |
+| One failure drops a provider for the whole download; no retries ([07](docs/07-file-transfer-over-tcp.md), [08](docs/08-swarming.md)) | Not yet. | Revisit with real networks / Wi-Fi. |
+| No resume after a restart: the library lives in memory, so a restarted node forgets a partial file, doesn't serve it, and the file blocks its path ([08](docs/08-swarming.md)) | No. | When demoing node restarts: write to `<out>.part` and re-hash it against the manifest on re-fetch. |
 | One outstanding request per provider, no pipelining ([08](docs/08-swarming.md)) | No; limits one provider's throughput. | Before throughput/download-time graphs, if it shows. |
 | Bitfields polled every 500 ms instead of pushed `have` messages; providers rediscovered by polling `FIND_VALUE` every 1 s ([08](docs/08-swarming.md)) | No, but adds control traffic and some duplicate seeder uploads. | Count it in the control-bytes graph; push-based updates if it dominates. |
 | Fixed swarm timers: 500 ms / 1 s / 15 s stall ([08](docs/08-swarming.md)) | No. | Tune for Wi-Fi. |

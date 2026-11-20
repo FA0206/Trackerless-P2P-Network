@@ -467,8 +467,12 @@ what "connection refused" is.
 | `fetch failed: … file exists` | Downloads never overwrite; pick a new output path. |
 | `no providers found` | Wrong key, or every node holding the provider records is gone (values aren't republished yet). |
 | A download pauses ~2 s before starting | Its `FIND_VALUE` round included a dead node (synchronous rounds; see DRY-RUN part 2). |
-| `download stalled: no live provider has the missing pieces` | Every node that had the missing pieces is gone. It keeps rediscovering for 15 s, then fails and deletes the partial file. |
-| `fetch failed: … is already in the library` | This node already shares or is downloading that key. |
+| `download stalled: no live provider has the missing pieces` | Every node that had the missing pieces is gone. It keeps rediscovering for 15 s, then gives up (`download gave up, still serving its pieces`): the partial file stays, and the node keeps serving the pieces it has. |
+| `fetch failed: … is already in the library` | This node already shares, has finished, or is downloading that key. |
+| `fetch failed: … has a stopped partial download at <path>` | An earlier fetch of this key gave up. Fetch into that path to resume it, or restart the node and delete the file to start over ([08](08-swarming.md#resuming)). |
+| `fetch failed: transfer: resume … changed since the download stopped` | The partial file was edited, truncated, or replaced after its download gave up, so a piece on disk no longer matches its hash. Nothing was written to it, and its library entry was dropped. Move the file away and fetch again. |
+| `fetch failed: transfer: resume … (still serving its pieces; …)` | The partial file is there but couldn't be opened for writing (e.g. read-only). Its pieces are still served; fix the cause and run the same fetch again. |
+| `N piece(s) were already on disk (resumed)` | This fetch continued one that had given up, and fetched only the missing pieces. |
 | `transfer: this is a BitTorrent magnet link …` | The link says `xt=urn:btih:`, a BitTorrent info hash. This network's links say `xt=urn:tp2p:` ([10](10-magnet-links.md#why-tp2p-and-not-btih)). |
 | `transfer: want a 40-hex-char content key or a magnet:?xt=urn:tp2p:... link: …` | `fetch`'s first argument is neither: a mistyped key, or a link missing its `magnet:` start. |
 | `usage: fetch …` after pasting a link | The pasted link contains a space, so the console saw extra arguments. Links printed by `share` and `files` never contain one (a space in a name is `+`). |

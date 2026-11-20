@@ -207,7 +207,9 @@ would no longer parse, so `writeJSON` turns that escaping off
 **`have` is how many pieces the node holds** and can serve. With partial
 seeding ([08](08-swarming.md)) a download enters the library as soon as
 it starts, and the node serves each piece once it's written, so
-`have < pieces` means "still downloading, already seeding what it has".
+`have < pieces` means "still downloading, already seeding what it has",
+or a download that gave up and keeps seeding what it has (fetching it
+again resumes it, [08](08-swarming.md#resuming)).
 A shared or finished file has `have == pieces`. Polling this is the
 simplest way to draw download progress; the `piece received` event
 below carries the same count as it changes.
@@ -317,6 +319,8 @@ full list is every `logger.Debug/Info/Warn/Error` call in
 | `piece received` | INFO | `index`, `of`, `from`, `bytes`, `have`, `inflight` | `download.go` | one verified piece arrived and is now served; `have` is the new count |
 | `provider failed, trying the next one` | WARN | `provider`, `error` | `download.go` | a provider was dropped mid-download |
 | `download stalled: no live provider has the missing pieces; looking for more` | WARN | `have`, `of` | `download.go` | nobody known has the missing pieces; the download gives up after 15 s of this |
+| `download gave up, still serving its pieces` | WARN | `key`, `have`, `of`, `error` | `download.go` `stopButKeepServing` | the download stopped without finishing: usually a 15 s stall (after `download stalled…`), but also the transfer timeout, a cancelled `/api/fetch`, or a write error (`error` says which). Its partial file stays, its `have` pieces are still served, and a fetch into the same path resumes it. With no pieces yet, nothing is kept and this isn't logged ([08](08-swarming.md#why-giving-up-mustnt-delete-two-leechers-end-with-different-pieces)) |
+| `download resumed` | INFO | `key`, `have`, `of` | `download.go` `reopenFile` | a fetch continued one that had given up, starting with `have` pieces on disk, each re-hashed first ([08](08-swarming.md#resuming)) |
 | `announce failed; will retry` | WARN | `key`, `error` | `download.go` | a downloader couldn't announce itself as a provider yet |
 | `download complete` | INFO | `key`, `name`, `bytes`, `pieces`, `providers`, `failed_providers`, `max_inflight`, `duration` | `download.go` | a download finished |
 | `tcp request served` | INFO, DEBUG for `bitfield` | `to`, `op`, `index`, `bytes` | `server.go` | this node served a manifest, a piece, or (polled every ~500 ms, so DEBUG) its bitfield |
@@ -487,6 +491,7 @@ $ curl -s -X POST -H 'Content-Type: application/json' -d '{"key":"magnet:?xt=urn
   },
   "failed_providers": [],
   "max_inflight": 1,
+  "already_had": 0,
   "duration_ms": 1609
 }
 ```
@@ -499,12 +504,14 @@ console). Only the key inside the link is used; its `dn` is ignored
 ([10](10-magnet-links.md)). `fetch`'s `pieces_from` is keyed by each
 provider's TCP address, and `max_inflight` is the most piece requests it
 had outstanding at once: here 1, because a download keeps at most one
-request per provider ([08](08-swarming.md)). The copy was byte-for-byte
-identical.
+request per provider ([08](08-swarming.md)). `already_had` is how many
+pieces were on disk when it started: 0 here, more when the fetch resumed
+one that gave up ([08](08-swarming.md#resuming)). The copy was
+byte-for-byte identical.
 
-A `fetch` can fail before any network traffic in three ways. On the same
-node again, the file is already in its library (shared, downloading, or
-downloaded):
+A `fetch` can fail without downloading a piece in four ways; the first
+three fail before any network traffic. On the same node again, the file
+is already in its library (shared, downloading, or downloaded):
 
 ```
 {
@@ -512,8 +519,19 @@ downloaded):
 }
 ```
 
+On the same node into a different `out`, after an earlier fetch of that
+key gave up: only its own path resumes.
+
+```
+{
+  "error": "fetch failed: transfer: 16fc6af0cf2598518cfc151c1ba6d408c8be4541 has a stopped partial download at copy.bin; fetch into that path to resume it"
+}
+```
+
 On another node into the same `out` path, the path exists, and
-**downloads never overwrite** (`O_EXCL`, [07](07-file-transfer-over-tcp.md)):
+**downloads never overwrite** (`O_EXCL`, [07](07-file-transfer-over-tcp.md)).
+This one is checked only after the lookup and the manifest fetch, because
+creating the file needs the manifest:
 
 ```
 {

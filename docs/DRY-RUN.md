@@ -20,6 +20,10 @@
   fetching with a magnet link, a link whose name lies, and a refused
   BitTorrent link
   ([jump](#part-7--scriptsdemo-magnetsh-fetching-with-a-link)).
+- **Part 8** (branch `feature/magnet-links`) — `scripts/demo-give-up-resume.sh`:
+  the seeder dies too early, both leechers give up with the same pieces
+  and keep serving them, and fetching again resumes
+  ([jump](#part-8--scriptsdemo-give-up-resumesh-giving-up-keeps-seeding-fetching-again-resumes)).
 
 > **On branch `feature/parallel-partial-seeding`**, parts 2–4 were
 > recorded before parallel downloads existed. The piece-by-piece numbers
@@ -1209,3 +1213,147 @@ PASS: both links delivered identical copies, the lying name was ignored (the man
   has real `curl` output, and `TestFetchAcceptsMagnetLink` tests it.
 - A link carried to another machine: parsing is local, so it's the same
   on any device; [09](09-multi-device.md) covers running across devices.
+
+# Part 8 — `scripts/demo-give-up-resume.sh`: giving up keeps seeding, fetching again resumes
+
+Same branch. The concept is in [08](08-swarming.md#why-giving-up-mustnt-delete-two-leechers-end-with-different-pieces).
+The point of this part: **when a download can't finish, it stops
+downloading but keeps serving what it has.** So a leecher that is still
+copying from it isn't cut off, and both end with the same pieces. Later
+the same `fetch` resumes.
+
+node0–node2 serve one piece a second (`--debug-serve-delay 1s`), and the
+leechers fetch one piece at a time (`--max-inflight 1`), as in field
+test 4. node3, which joins at the end, serves at full speed. The file is
+2 MiB, 32 pieces. Its key was `0ac21332…` in this run. The script's own
+output, then each phase from the node logs (timestamps cut to the time of
+day, `node=` dropped):
+
+```
+  node0 killed: node1 has 22, node2 has 2, together 23 of 32
+  node1: fetch failed: transfer: stalled for 15s with 23 of 32 pieces: no live provider has the rest
+  node2: fetch failed: transfer: stalled for 15s with 23 of 32 pieces: no live provider has the rest
+  fetched "original.bin" (2097152 bytes, 32 pieces) into /tmp/tmp.Q9O0qPW9SR/node1.bin in 2.009s
+      9 piece(s) from 127.0.0.1:9653
+      23 piece(s) were already on disk (resumed)
+      provider 127.0.0.1:9650 failed and was skipped
+  both leechers gave up with 23 of 32 pieces
+  'files' still lists the partial file on both, at 23/32: they keep serving it
+  node1's second fetch resumed from 23 pieces and is byte-identical to the original
+PASS: the leechers that lost their seeder ended with the same pieces and kept serving them, and fetching again resumed.
+```
+
+## The cast
+
+| Node | Ports | ID (seed) | Role |
+|---|---|---|---|
+| node0 | 9650 | `2b370ab7…` (`demo0`) | the seeder; killed once node2 has 2 pieces |
+| node1 | 9651 | `10f71961…` (`demo1`) | leecher, starts first |
+| node2 | 9652 | `db612776…` (`demo2`) | leecher, starts once node1 has 20 pieces |
+| node3 | 9653 | `94fab99d…` (`demo3`) | joins at the end, no serve delay, shares the same file |
+
+## Phase 1 — share, two fetches, the kill
+
+node0 shares, and node1 fetches. When node1 has 20 pieces, node2
+fetches. Rarest-first sends node2's one request to a piece only the
+seeder has. When node2 has 2 pieces, the script SIGKILLs node0. Both
+leechers' in-flight requests to it fail at once:
+
+```
+21:12:30.198 [node1] msg="provider failed, trying the next one" provider=127.0.0.1:9650 error="read response header: EOF"
+21:12:30.198 [node2] msg="provider failed, trying the next one" provider=127.0.0.1:9650 error="read response header: EOF"
+```
+
+Together they hold 23 of 32 pieces. The other 9 existed only on node0, so
+the file can't be finished.
+
+## Phase 2 — node1 gives up first, and keeps serving
+
+node1 needs only node2's one extra piece. It has it a second later, and
+then nothing it needs exists anywhere. Its 15 s clock starts:
+
+```
+21:12:31.419 [node1] msg="piece received" index=15 of=32 from=127.0.0.1:9652 bytes=65536 have=23 inflight=0
+21:12:31.419 [node1] msg="download stalled: no live provider has the missing pieces; looking for more" have=23 of=32
+21:12:46.514 [node1] msg="download gave up, still serving its pieces" key=0ac21332… have=23 of=32 error="transfer: stalled for 15s with 23 of 32 pieces: no live provider has the rest"
+```
+
+`stopButKeepServing` closes the file but leaves it on disk and in the
+library. Before this change, the same moment deleted the file and
+removed the library entry.
+
+## Phase 3 — node2 is still copying from node1
+
+node2 needs 21 pieces from node1, one a second (from 21:12:31 on), so
+it's still copying when node1 gives up. Its last five pieces all come
+from node1 **after** node1 gave up:
+
+```
+21:12:47.239 [node2] msg="piece received" index=30 of=32 from=127.0.0.1:9651 bytes=65536 have=19 inflight=0
+21:12:48.240 [node2] msg="piece received" index=9 of=32 from=127.0.0.1:9651 bytes=65536 have=20 inflight=0
+21:12:49.242 [node2] msg="piece received" index=8 of=32 from=127.0.0.1:9651 bytes=65536 have=21 inflight=0
+21:12:50.245 [node2] msg="piece received" index=27 of=32 from=127.0.0.1:9651 bytes=65536 have=22 inflight=0
+21:12:51.247 [node2] msg="piece received" index=5 of=32 from=127.0.0.1:9651 bytes=65536 have=23 inflight=0
+21:12:51.247 [node2] msg="download stalled: no live provider has the missing pieces; looking for more" have=23 of=32
+21:13:06.259 [node2] msg="download gave up, still serving its pieces" key=0ac21332… have=23 of=32 error="transfer: stalled for 15s with 23 of 32 pieces: no live provider has the rest"
+```
+
+With the old code, the request after 21:12:46.5 would have been refused
+(`provider refused: unknown content key`), and node2 would have ended at
+18. That's the replay in [08](08-swarming.md#why-giving-up-mustnt-delete-two-leechers-end-with-different-pieces),
+and what this script reports on the old code: `FAIL`, with counts like
+24 vs 19.
+
+## Phase 4 — `files` on both leechers
+
+```
+[node1] 0ac2133235ffc1bab10fd39b1f3d7192248079e6  original.bin  2097152 bytes, has 23/32 pieces  (/tmp/tmp.Q9O0qPW9SR/node1.bin)
+[node2] 0ac2133235ffc1bab10fd39b1f3d7192248079e6  original.bin  2097152 bytes, has 23/32 pieces  (/tmp/tmp.Q9O0qPW9SR/node2.bin)
+```
+
+Both still list the partial file, so both still serve its 23 pieces.
+
+## Phase 5 — node3 shares the same file; node1 fetches again
+
+node3 joins through node1 and shares the same bytes, so the content key
+is the same. Then node1 runs exactly the same `fetch`:
+
+```
+21:13:10.462 [node3] msg="provider announced" key=0ac21332… tcp_addr=127.0.0.1:9653 replicas=3
+21:13:10.496 [node1] msg="download resumed" key=0ac21332… have=23 of=32
+21:13:10.497 [node1] msg="rpc sent" type=FIND_NODE to=…@127.0.0.1:9652        ← the announce's lookup, started at once
+21:13:10.497 [node1] msg="rpc sent" type=FIND_NODE to=…@127.0.0.1:9653
+21:13:10.497 [node1] msg="rpc sent" type=FIND_NODE to=…@127.0.0.1:9650        ← the dead seeder: 2 s RPC timeout
+21:13:10.497 [node1] msg="provider failed, trying the next one" provider=127.0.0.1:9650 error="dial tcp4 127.0.0.1:9650: connect: connection refused"
+21:13:10.498 [node1] msg="piece received" index=12 of=32 from=127.0.0.1:9653 bytes=65536 have=24 inflight=0
+             … 7 more from node3 …
+21:13:10.502 [node1] msg="piece received" index=28 of=32 from=127.0.0.1:9653 bytes=65536 have=32 inflight=0
+21:13:12.499 [node1] msg="lookup converged" target=0ac21332… rounds=1 rpcs_sent=3 rpcs_failed=1 closest_found=2
+21:13:12.501 [node1] msg="download complete" key=0ac21332… name=original.bin bytes=2097152 pieces=32 providers=3 failed_providers=1 max_inflight=1 duration=2.009s
+```
+
+- **Resume.** `Library.claimForResume` found the stopped partial at the
+  same path. `Download` skipped the manifest fetch and `O_EXCL`, and
+  `reopenFile` re-hashed the 23 pieces on disk (all matched; this is
+  silent) before starting with them.
+- **The 9 missing pieces** arrived from node3 within 5 ms.
+- **The dead seeder.** Its provider record never expires, so it's tried
+  and dropped once.
+- **node2** is a provider too, but it has nothing node1 needs.
+- **The 2 s `duration`.** node1 already had pieces, so its first loop
+  pass started the announce again (harmless: the same record) before
+  requesting anything. The 2 s is `Download` waiting for that announce,
+  whose lookup waited on the dead node0 (`rpcs_failed=1`).
+
+## What part 8 doesn't show
+
+- **Resume after a restart.** The library lives in memory, so a
+  restarted node forgets its partial file (a SIMPLIFICATION in
+  [08](08-swarming.md#new-simplifications)).
+- **A refused resume.** If the partial file was changed or replaced
+  after the download gave up, the re-hash refuses the resume and leaves
+  the file alone (`TestResumeRefusesAChangedFile`).
+- **node2 resuming too.** The same `fetch` on node2 would work the same
+  way; the script shows only node1.
+- **Real devices.** Field test 4 in `scripts/multi-device/field-tests.html`
+  is the same scenario on laptops.

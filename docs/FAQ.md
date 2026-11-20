@@ -637,6 +637,50 @@ because replies don't repeat the index, so there's no pipelining. On
 although the format already allowed any order. Details:
 [07, "Can pieces arrive out of order?"](07-file-transfer-over-tcp.md#can-pieces-arrive-out-of-order).
 
+### The seeder died early, and my two leechers ended with different missing pieces. Shouldn't they match?
+
+**They should, and now they do.** Once the seeder is gone, the only
+pieces left are the ones some leecher holds: their *union*. If both keep
+trading, both end with exactly that union, missing the same pieces (the
+ones only the seeder had).
+
+They didn't match before because each leecher gives up on its own 15 s
+clock, and giving up used to **delete the file and stop serving it**.
+The leecher that needed less from the other finished copying first, gave
+up first, and cut the other off mid-copy. In a replay, that left 23 vs
+18 of 32. Now a download that gives up keeps its file and keeps serving
+it, so the other catches up, and both end at 23. The file is still lost,
+because 9 pieces died with the seeder; that part is correct. Real
+BitTorrent clients go further: a stalled download never gives up at all;
+it sits "stalled", seeding, until a source returns **(not verified**
+against client source; it's how clients present it**)**. Timeline and logs:
+[08, "Why giving up mustn't delete"](08-swarming.md#why-giving-up-mustnt-delete-two-leechers-end-with-different-pieces);
+demo: `scripts/demo-give-up-resume.sh` (DRY-RUN part 8).
+
+### Can a download that gave up continue later?
+
+**Yes, while the node keeps running.** Run the same `fetch` again, into
+the same output path. It starts from the pieces already on disk and
+fetches only the missing ones, e.g. after the seeder comes back or
+someone else shares the same file. The console prints `N piece(s) were
+already on disk (resumed)`. Into another path it's refused, naming the
+partial file's path. Before writing anything, the resume re-hashes every
+piece it thinks is on disk: if the file was edited or replaced in the
+meantime, it refuses and leaves the file alone.
+
+**Not after a restart.** The library lives in memory, so a restarted
+node forgets the partial file, and the file blocks its path (downloads
+never overwrite). Delete it by hand and fetch again from zero. Real
+clients keep partial files under a temporary name (Transmission can add
+`.part`, its `rename_partial_files` setting in
+[Editing-Configuration-Files.md](https://github.com/transmission/transmission/blob/main/docs/Editing-Configuration-Files.md))
+and save their progress in a resume file, so a restart doesn't lose it.
+When they re-check pieces against their hashes after a restart is a
+detail we haven't checked **(not verified)**. The listed fix for us is
+simpler: write to `<out>.part` and re-hash it on a re-fetch, as a resume
+already does
+([08, SIMPLIFICATIONS](08-swarming.md#new-simplifications)).
+
 ### Why SHA-1 for node IDs but SHA-256 for files?
 
 Kademlia IDs and keys are 160 bits, SHA-1's output size, so node IDs use

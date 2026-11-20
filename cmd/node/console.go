@@ -74,7 +74,8 @@ func (c *consoleEnv) help() {
 Files:
   share <path>               publish a local file; prints its content key and magnet link
   fetch <key|magnet> <out>   download a shared file by content key or magnet link
-                             (out must not exist; the link's name is ignored)
+                             (out must not exist; the link's name is ignored).
+                             After a fetch gives up, the same fetch resumes it
   files                      files this node can serve, each with its magnet link`)
 }
 
@@ -243,6 +244,9 @@ func (c *consoleEnv) fetch(ctx context.Context, args []string) {
 		res.Name, res.Size, res.Pieces, args[1], res.Duration.Round(time.Millisecond))
 	for addr, n := range res.PiecesFrom {
 		fmt.Fprintf(c.out, "    %d piece(s) from %s\n", n, addr)
+	}
+	if res.AlreadyHad > 0 {
+		fmt.Fprintf(c.out, "    %d piece(s) were already on disk (resumed)\n", res.AlreadyHad)
 	}
 	for _, addr := range res.FailedProviders {
 		fmt.Fprintf(c.out, "    provider %s failed and was skipped\n", addr)

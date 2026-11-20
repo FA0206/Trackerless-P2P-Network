@@ -50,6 +50,7 @@ bash scripts/demo-seeder-death.sh               # seeder dies mid-download; PASS
 bash scripts/demo-big-network.sh                # 20 nodes, random joins, lookups vs brute force + transfer; must print PASS
 bash scripts/demo-parallel.sh                   # one download from 3 providers at once; must print PASS
 bash scripts/demo-magnet.sh                     # share prints a magnet link; fetch by link; lying name ignored; BitTorrent link refused; must print PASS
+bash scripts/demo-give-up-resume.sh             # seeder dies too early: both leechers give up with the same pieces, keep serving, then fetch resumes; must print PASS (~1 min)
 bash scripts/edge/run-all.sh                    # every edge case; each PASS = behaved as docs/EDGE-CASES.md predicts
 ```
 
@@ -85,7 +86,9 @@ only downward; see `docs/ARCHITECTURE.md`.
    hence `maxValueSize`/`maxValuesPerKey`. File data only travels over TCP.
 8. Nothing from a peer is trusted: provider records and bitfields are
    validated, manifests must hash to the content key, pieces must match
-   their SHA-256. Downloads only create new files (`O_EXCL`). Write, then
+   their SHA-256. Downloads only create new files (`O_EXCL`), except a
+   resume reopening its own partial file (`Library.claimForResume`), whose
+   pieces on disk are re-hashed first (`reopenFile`). Write, then
    publish: a piece is marked servable (`Library.markHave`) only after
    its `WriteAt` completed.
 9. With `--api`, every log record is also an `/api/events` event

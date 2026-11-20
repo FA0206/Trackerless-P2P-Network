@@ -176,8 +176,9 @@ func TestShareOnOneNodeFetchOnAnother(t *testing.T) {
 	seederAddr := "127.0.0.1:" + strconv.Itoa(nodes[1].peer.TCPPort()) // pieces_from is keyed by TCP address
 	// One provider: at most one request in flight (docs/08-swarming.md).
 	if fetched.Pieces != 3 || fetched.ProvidersFound != 1 || fetched.PiecesFrom[seederAddr] != 3 ||
-		fetched.FailedProviders == nil || len(fetched.FailedProviders) != 0 || fetched.MaxInFlight != 1 {
-		t.Errorf("fetch: %+v, want 3 pieces from the seeder at %s, 1 in flight", fetched, seederAddr)
+		fetched.FailedProviders == nil || len(fetched.FailedProviders) != 0 || fetched.MaxInFlight != 1 ||
+		fetched.AlreadyHad != 0 {
+		t.Errorf("fetch: %+v, want 3 pieces from the seeder at %s, 1 in flight, none already had", fetched, seederAddr)
 	}
 
 	// Downloads never overwrite: fetching into an existing path fails and

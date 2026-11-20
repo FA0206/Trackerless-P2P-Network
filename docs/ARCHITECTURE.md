@@ -92,11 +92,11 @@ Each file depends only on files in lower layers:
 | `protocol.go` | TCP request/response shapes, op names, frame size limits | `kademlia.ID` |
 | `bitfield.go` | `Bitfield` (`Has`, `Set`, `Count`), `decodeBitfield` validation. **No I/O.** | — |
 | `picker.go` | `pickPiece`: rarest needed piece with an idle holder, random ties. **No I/O.** | `bitfield.go` |
-| `library.go` | key → (manifest, file path, `have` bitfield); `addComplete`/`addPartial`/`markHave`/`remove`; `readPiece` serves only pieces it has | `manifest.go`, `bitfield.go` |
+| `library.go` | key → (manifest, file path, `have` bitfield, `downloading`); `addComplete`/`addPartial`/`markHave`/`remove`; `claimForResume` (start, resume, or refuse a download, in one locked step) and `stopDownloading`; `readPiece` serves only pieces it has | `manifest.go`, `bitfield.go` |
 | `server.go` | accept loop; `handleConn` request loop; `answer` (`GET_MANIFEST`, `GET_BITFIELD`, `GET_PIECE`); tracks open connections so `close` ends them; the DEBUG ONLY `debugServeDelay` (`--debug-serve-delay`) | `library.go`, `protocol.go`, framing |
 | `client.go` | `dialProvider`; `providerConn.fetch` | `protocol.go`, framing |
 | `peer.go` | `Config`, `NewPeer`, `Share`, `announce`, `decodeProviders` | `library.go`, `server.go`, `kademlia.Node` |
-| `download.go` | `Peer.Download`; `swarmDownload` (event loop `run`/`schedule`/`handle`/`canProgress`, workers `startPiece`/`startBitfield`/`startDiscovery`/`startAnnounce`) | all of the above + `kademlia.Node` |
+| `download.go` | `Peer.Download`; `swarmDownload` (event loop `run`/`schedule`/`handle`/`canProgress`, workers `startPiece`/`startBitfield`/`startDiscovery`/`startAnnounce`; `stopButKeepServing` when it gives up, `reopenFile` to resume) | all of the above + `kademlia.Node` |
 
 ## Public APIs
 
@@ -155,21 +155,27 @@ framing.Write / Read        // frames on a stream
 ```
  console.go fetch
    ▼
- download.go Peer.Download ── kademlia FindValue(key) ──► provider records
-             swarmDownload.fetchManifest (one provider at a time) → DecodeManifest
-             openFile: O_EXCL + Library.addPartial        ← from here on, we serve what we have
+ download.go Peer.Download ── Library.claimForResume(key, path): fresh | resume | refuse
+             kademlia FindValue(key) ──► provider records
+             fresh:  swarmDownload.fetchManifest (one provider at a time) → DecodeManifest
+                     openFile: O_EXCL + Library.addPartial   ← from here on, we serve what we have
+             resume: reopenFile: re-hash the pieces on disk, have = library's bitfield (no manifest fetch)
    ▼
  download.go run (event loop, ONE goroutine owns all state)
     schedule ─┬─ pickPiece (picker.go) → startPiece ──► worker: dial/fetch GET_PIECE → VerifyPiece ─┐
               ├─ stale bitfield       → startBitfield ─► worker: fetch GET_BITFIELD → decodeBitfield ─┤
               ├─ every 1 s            → startDiscovery ► worker: kademlia FindValue → records ───────┤ events
-              └─ after 1st piece      → startAnnounce ─► worker: Peer.announce (kademlia Store) ─────┤ channel
+              └─ after 1st piece*     → startAnnounce ─► worker: Peer.announce (kademlia Store) ─────┤ channel
     wait ◄──────────────────────────────────────────────────────────────────────────────────────┘
     handle: WriteAt → have.Set → Library.markHave   (write, then publish)
             or markDead (close conn) / add providers / note announce
    ▼
  complete: file.Close; Download returns once announced
- stalled 15 s (canProgress false): Library.remove → close → delete file
+ stopped (stalled 15 s, or the caller's timeout): stopButKeepServing: close; entry and file stay,
+          still served, and the same fetch resumes. With no pieces yet: abort
+          (Library.remove → close → delete file), as when closing a finished file fails.
+
+ * on a resume, at once: it starts with pieces on disk.
 ```
 
 Each worker talks to the provider's server like this:
@@ -236,9 +242,15 @@ way.
    (`decodeBitfield`), manifests must hash to the requested key
    (`DecodeManifest`), and every piece must match its hash
    (`VerifyPiece`) before it's written.
-8. **A download only ever creates a new file** (`O_EXCL`), and deletes it
-   on failure (after removing it from the library). It never overwrites
-   an existing path.
+8. **A download only ever creates a new file** (`O_EXCL`). It never
+   overwrites an existing path. The one exception is resuming: a
+   download that gave up stays in the library, and fetching the same key
+   into the same path reopens that file (`Library.claimForResume`), but
+   only after re-hashing every piece the library says is in it
+   (`reopenFile`): the file may have been changed or replaced since. A
+   download that gives up keeps its file and keeps serving it; one with
+   no pieces yet, or a finished file that can't be closed, is removed
+   from the library, then deleted (`abort`).
 9. **Write, then publish.** A piece's bit is set in the library
    (`markHave`) only after its `WriteAt` completes, so a peer never
    serves a piece that isn't fully on disk.
@@ -274,13 +286,14 @@ way.
 | Change lookup termination / concurrency | `lookup.go`, `integration_test.go`, `values_test.go`, doc `05`, `DRY-RUN.md` numbers |
 | Change value limits or storage rules | `store.go`, `store_test.go`, doc `06` |
 | Change the TCP protocol | `protocol.go`, `server.go`, `client.go`, doc `07` (and `08` for `GET_BITFIELD`) |
+| Change what happens when a download gives up, or how it resumes | `download.go` (`stopButKeepServing`, `reopenFile`, the claim in `Download`), `library.go` (`claimForResume`, `stopDownloading`), `swarm_test.go`/`library_test.go`, doc `08` ("Why giving up mustn't delete", "Resuming"), invariant 8, `scripts/demo-give-up-resume.sh`, `DRY-RUN.md` part 8, field tests 2 and 4 |
 | Change piece selection or concurrency | `picker.go` (+ `swarm_unit_test.go`), `download.go` `schedule`, `swarm_test.go`, doc `08`, `DRY-RUN.md` part 5, `scripts/demo-seeder-death.sh` (its kill-window reasoning depends on `--max-inflight 1`) |
 | Change stall/rediscovery/bitfield timers | `download.go` constants, `TestDownloadGivesUpWhenNoOneHasTheRest`, doc `08` |
 | Change how pieces/keys are hashed | `manifest.go`, `manifest_test.go`, doc `07`, FAQ; the worked example and `testKeyHex` in doc `10` / `magnet_test.go` assume today's hashing |
 | Change the magnet link format (namespace, parameters, escaping) | `magnet.go`, `magnet_test.go`; `nodeapi` tests that spell out a link (`api_test.go`, `control_test.go`); doc `10`, `NODE-API.md`, `DRY-RUN.md` part 7; `scripts/demo-magnet.sh` (it rewrites `&dn=` with `sed`) |
 | Change the join procedure | `node.go` `Bootstrap`; its tests in `integration_test.go` and `bootstrap_test.go`; doc `04` (the "Join scenarios" table names each test); `DRY-RUN.md`. `TestBootstrapNodeGoesSilentAfterPing` pins today's lenient behavior, so a stricter join would update it on purpose |
 | Change what `--bootstrap` accepts | `cmd/node/main.go` `parseBootstrap` and `TestParseBootstrap`; doc `04` |
-| Change log or console text | `scripts/demo.sh` greps `"bootstrap complete"` and `"TRIGGERED LOOKUP RESULT"`; `scripts/demo-transfer.sh` greps `"bootstrap complete"`, `"put greeting"`, `"get greeting:"`, `"content key:"`, `"fetch"`, `msg="piece received"`; `scripts/lib/nodes.sh` (used by the newer demos) greps `"node started"`, `"bootstrap complete"`, and `msg="piece received"` with an `index=N` field; `scripts/demo-seeder-death.sh` also greps console lines starting `fetch` / `fetched ` / `fetch failed`; `scripts/demo-big-network.sh` parses the console's `lookup <hex>: rounds=…` line and the numbered `   N. <id>@ip:port` lines after it, plus `content key:` and `^fetch`; `scripts/demo-magnet.sh` greps `content key:` and `magnet link:` (taking `$3`), console lines starting `fetch` / `fetched "<name>"`, and the error text `BitTorrent magnet link`; `scripts/demo-parallel.sh` parses `msg="piece requested"` / `msg="piece received"` (`index=`, `from=`, `inflight=`), `max_inflight=` in `msg="download complete"`, and the console's `N piece(s) from` lines; `scripts/edge/b2-record-holders-die.sh` greps `content key:`, `^fetch`, `^fetch failed: transfer: no providers found`, `^PONG from` / `^no reply from`, and the log messages `"value stored"`, `"lookup converged"`, `"store complete"`, `"find_value finished"` with their `key=`/`target=`, `closest_found=`, `stored_at=`/`stored_locally=` fields; `scripts/edge/b1-half-the-network-dies.sh` parses the console's `lookup <hex>: rounds=… rpcs_sent=… rpcs_failed=…` line, the numbered `   N. <id>@ip:port` lines after it, `lookup failed`, and `table`'s `<id>@` contact lines and `N contacts in M non-empty buckets`; `scripts/edge/a3-bridge-between-islands.sh` uses the same `lookup` and `table` lines (it expects `table` contacts indented by exactly 4 spaces) plus `^PONG from` / `^no reply from`; `scripts/edge/b3-late-joiners-hide-a-value.sh` parses `put <name> (key …)` and the contact lines after it, `get <name>: N value(s) …` (a miss is `0 value(s)`), `get failed`, and `"value stored"` log lines, and relies on a repeated `--id-seed` flag taking its last value; `scripts/edge/a4-tiny-buckets.sh` relies on the same `--id-seed` rule and parses the `lookup` lines; `scripts/edge/a2-thundering-herd.sh` greps `bootstrap complete` with its `routing_table_size=` field, `^error:` (a failed join), the `lookup` lines, and the race detector's `WARNING: DATA RACE`; `scripts/edge/run-all.sh` takes each script's last line starting `PASS`/`FAIL`; `scripts/netns/kill-seeder-when-spread.sh` greps `msg="piece received"` with its `index=` and `of=` fields, console lines starting `fetched `, and `msg="download complete"`; `scripts/multi-device/field-tests.html` shows the expected text of `advertise ip auto-detected`, `bootstrap complete`, the loopback-advertise warning, `provider failed, trying the next one`, `piece received … have=`, `fetch failed: …` and `fetched … / N piece(s) from` for people to compare against; `scripts/multi-device/join-tests.html` does the same for the console's `table` (`routing table is empty`, bucket and contact lines, the `N contacts in M non-empty buckets` summary), `lookup`, `put`, `get`, `PONG from` and `bootstrap complete` |
+| Change log or console text | `scripts/demo.sh` greps `"bootstrap complete"` and `"TRIGGERED LOOKUP RESULT"`; `scripts/demo-transfer.sh` greps `"bootstrap complete"`, `"put greeting"`, `"get greeting:"`, `"content key:"`, `"fetch"`, `msg="piece received"`; `scripts/lib/nodes.sh` (used by the newer demos) greps `"node started"`, `"bootstrap complete"`, and `msg="piece received"` with an `index=N` field; `scripts/demo-seeder-death.sh` also greps console lines starting `fetch` / `fetched ` / `fetch failed`; `scripts/demo-big-network.sh` parses the console's `lookup <hex>: rounds=…` line and the numbered `   N. <id>@ip:port` lines after it, plus `content key:` and `^fetch`; `scripts/demo-magnet.sh` greps `content key:` and `magnet link:` (taking `$3`), console lines starting `fetch` / `fetched "<name>"`, and the error text `BitTorrent magnet link`; `scripts/demo-give-up-resume.sh` greps `content key:` (taking `$3`), `msg="piece received"` (via `pieces_received`), console lines starting `fetch failed` (the `with N of M pieces` in them) and `fetched `, `files`' ` bytes, has N/M pieces` line, and `N piece(s) were already on disk (resumed)`; `scripts/demo-parallel.sh` parses `msg="piece requested"` / `msg="piece received"` (`index=`, `from=`, `inflight=`), `max_inflight=` in `msg="download complete"`, and the console's `N piece(s) from` lines; `scripts/edge/b2-record-holders-die.sh` greps `content key:`, `^fetch`, `^fetch failed: transfer: no providers found`, `^PONG from` / `^no reply from`, and the log messages `"value stored"`, `"lookup converged"`, `"store complete"`, `"find_value finished"` with their `key=`/`target=`, `closest_found=`, `stored_at=`/`stored_locally=` fields; `scripts/edge/b1-half-the-network-dies.sh` parses the console's `lookup <hex>: rounds=… rpcs_sent=… rpcs_failed=…` line, the numbered `   N. <id>@ip:port` lines after it, `lookup failed`, and `table`'s `<id>@` contact lines and `N contacts in M non-empty buckets`; `scripts/edge/a3-bridge-between-islands.sh` uses the same `lookup` and `table` lines (it expects `table` contacts indented by exactly 4 spaces) plus `^PONG from` / `^no reply from`; `scripts/edge/b3-late-joiners-hide-a-value.sh` parses `put <name> (key …)` and the contact lines after it, `get <name>: N value(s) …` (a miss is `0 value(s)`), `get failed`, and `"value stored"` log lines, and relies on a repeated `--id-seed` flag taking its last value; `scripts/edge/a4-tiny-buckets.sh` relies on the same `--id-seed` rule and parses the `lookup` lines; `scripts/edge/a2-thundering-herd.sh` greps `bootstrap complete` with its `routing_table_size=` field, `^error:` (a failed join), the `lookup` lines, and the race detector's `WARNING: DATA RACE`; `scripts/edge/run-all.sh` takes each script's last line starting `PASS`/`FAIL`; `scripts/netns/kill-seeder-when-spread.sh` greps `msg="piece received"` with its `index=` and `of=` fields, console lines starting `fetched `, and `msg="download complete"`; `scripts/multi-device/field-tests.html` shows the expected text of `advertise ip auto-detected`, `bootstrap complete`, the loopback-advertise warning, `provider failed, trying the next one`, `piece received … have=`, `fetch failed: …` and `fetched … / N piece(s) from` for people to compare against; `scripts/multi-device/join-tests.html` does the same for the console's `table` (`routing table is empty`, bucket and contact lines, the `N contacts in M non-empty buckets` summary), `lookup`, `put`, `get`, `PONG from` and `bootstrap complete` |
 | Change how the advertise IP is chosen or validated | `cmd/node/main.go` (`chooseAdvertiseIP`, `parseAdvertiseIP`, `routeSourceIP`) and `main_test.go`; doc `09`; the `advertise ip auto-detected` row in `NODE-API.md` |
 | Pass contacts on differently in replies (e.g. filter loopback ones) | `node.go` `closestExcluding` (its `SIMPLIFICATION:` assumes one node per device), doc `09` F2, invariant 3 |
 | Change the network-namespace lab | `scripts/netns/*.sh`, doc `09` ("The lab"), `DRY-RUN.md` part 6 |
