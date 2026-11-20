@@ -1,9 +1,13 @@
 # 09 — Merkle trees: one hash for the whole file, a short proof per piece
 
-> **Status:** steps 1 and 2 of 4 are built. Step 1 is the tree, proofs and
-> verification (`internal/transfer/merkle.go`). Step 2 is transfers using
-> them: the manifest carries the root, and every piece travels with its
-> proof. Steps 3 and 4 (a tamper demo, the diagram) come next; see the end.
+> **Status:** steps 1–3 of 4 are built:
+> 1. the tree, proofs and verification (`internal/transfer/merkle.go`);
+> 2. transfers using them: the manifest carries the root, and every piece
+>    travels with its proof;
+> 3. a demo, `scripts/demo-merkle.sh`, where a dishonest provider is
+>    caught and the manifest stays the same size from 1 to 2,048 pieces.
+>
+> Step 4, a diagram, comes next; see the end.
 
 ## The problem it solves
 
@@ -189,8 +193,71 @@ under `-race`).
 1. ~~The tree, proofs, verification, tests.~~
 2. ~~Use it in transfers: the root in the manifest, a proof with every
    piece, partial seeders passing proofs on.~~
-3. **A tamper demo:** a node that serves a corrupted piece, caught by the
-   proof check, with the download finishing from other peers. Plus a
-   manifest-size comparison, flat list vs root.
+3. ~~A tamper demo and a manifest-size comparison~~ (below).
 4. **A diagram of a real file's tree,** with one piece's proof path
    highlighted.
+
+## Seeing it work: `scripts/demo-merkle.sh`
+
+```sh
+bash scripts/demo-merkle.sh      # env: BASE_PORT=9600; prints PASS
+```
+
+**Part 1, a dishonest provider.**
+- node1 shares a 1 MiB file (16 pieces).
+- node2 downloads a genuine copy and becomes a provider too, but it runs
+  with the DEBUG ONLY `--debug-corrupt-pieces`: it flips one byte of
+  every piece it serves and sends the **genuine** proof. Only the proof
+  check can catch it.
+- node3 then downloads with both providers available. It asks both at
+  once, so node2 always gets a request.
+
+Real output:
+
+```
+  node1 shared original.bin: 16 pieces, key fb71d1ab…
+    merkle_root=4c8df61ff76dbc18f291bea949158c5756ace5f01c39bcff1f07221ca1f28d64
+    manifest_bytes=138
+  node2 downloaded a genuine copy: fetched "original.bin" (1048576 bytes, 16 pieces) in 15ms
+
+  node3 downloads, with node1 and node2 both available:
+    fetched "original.bin" (1048576 bytes, 16 pieces) in 11ms
+      16 piece(s) from 127.0.0.1:9601
+      provider 127.0.0.1:9602 failed and was skipped
+
+  What node2 did, and what node3 saw (logs):
+    [node2] level=WARN msg="DEBUG: serving a corrupted piece" index=8
+    [node3] level=WARN msg="provider failed, trying the next one" provider=127.0.0.1:9602 error="transfer: piece 8 failed its Merkle proof check"
+    [node3] level=INFO msg="piece received" index=13 of=16 from=127.0.0.1:9601 bytes=65536 have=1 inflight=0 proof=4
+    [node3] … 16 pieces received in all, every one with its proof checked
+
+  as predicted: node3 rejected node2's piece: it failed its Merkle proof check
+  as predicted: node3 accepted 0 pieces from node2
+  as predicted: node3's copy is byte-identical to the original
+```
+
+Over 5 runs, the corrupted piece node3 caught was 8, 6, 6, 4 and 12. The
+downloader picks pieces in random rarest-first order, so the check isn't
+tied to one piece.
+
+**Part 2, manifest size.** node1 shares files of 1 to 2,048 pieces. The
+"manifest now" column is the real size, from the `share complete` log
+line. The "old flat list" column is what the old format (a list of every
+piece's SHA-256) would have been, computed exactly from its JSON layout.
+The formula reproduces the 1,146 bytes the old code really produced for a
+16-piece `original.bin`.
+
+```
+  file                      pieces    manifest now   old flat list (computed)
+  f1.bin (64 KiB)                1           130 B                      133 B
+  f16.bin (1024 KiB)            16           133 B                     1141 B
+  f256.bin (16384 KiB)         256           135 B                    17223 B
+  f2048.bin (131072 KiB)      2048           137 B                   137289 B
+```
+
+From 1 to 2,048 pieces the manifest grew by 7 bytes, all from the longer
+file name and size. The flat list would have grown by about 135 KB, and
+by about 1 MB for a 1 GB file.
+
+`TestDebugCorruptPiecesIsCaughtByTheProofCheck` (`transfer_test.go`) is
+Part 1 as a Go test.

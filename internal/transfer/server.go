@@ -33,6 +33,12 @@ type server struct {
 	// (the default) means no delay. Atomic because it can be set while
 	// connections are being served.
 	debugServeDelay atomic.Int64
+
+	// DEBUG ONLY (--debug-corrupt-pieces): flip one byte of every piece
+	// before sending it, with its genuine Merkle proof. It plays a
+	// dishonest provider, so a demo can show the downloader's proof check
+	// catching it (docs/09-merkle-trees.md). Off by default.
+	debugCorrupt atomic.Bool
 }
 
 // listen opens the TCP listening socket. port 0 lets the OS pick.
@@ -148,7 +154,12 @@ func (s *server) answer(req request) ([]byte, []Hash, error) {
 		if d := time.Duration(s.debugServeDelay.Load()); d > 0 {
 			time.Sleep(d)
 		}
-		return s.lib.readPiece(req.Key, req.Index)
+		data, proof, err := s.lib.readPiece(req.Key, req.Index)
+		if err == nil && s.debugCorrupt.Load() && len(data) > 0 {
+			data[0] ^= 0xFF // readPiece's buffer is ours alone; the file on disk is untouched
+			s.logger.Warn("DEBUG: serving a corrupted piece", "index", req.Index)
+		}
+		return data, proof, err
 	default:
 		return nil, nil, fmt.Errorf("unknown op %q", req.Op)
 	}

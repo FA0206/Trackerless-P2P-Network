@@ -40,7 +40,7 @@ evaluation includes performance graphs:
 | Per-node HTTP API (for the visual demo) | ✅ Done: `--api` serves node info, routing table, stored values, files (with download progress) as JSON, plus a live event stream (SSE) of every RPC, stored value and piece; `--api-control` adds POST lookup/ping/put/get/share/fetch | `internal/nodeapi`, [docs/NODE-API.md](docs/NODE-API.md) |
 | Visual demo | ⬜ Not started | — |
 | Performance graphs (the four above) | ⬜ Not started | — |
-| Merkle trees | 🟡 Steps 1–2 of 4 on branch `feature/merkle`: the tree, proofs and verification (RFC 6962, tested against the standard test vectors), and transfers use them. The manifest carries one root (138 bytes for a 1 MiB file, against 1,146 before), every piece travels with its proof, and partial seeders pass proofs on | [docs/09](docs/09-merkle-trees.md), `internal/transfer/merkle.go` |
+| Merkle trees | 🟡 Steps 1–3 of 4 on branch `feature/merkle` (`scripts/demo-merkle.sh` catches a dishonest provider and prints a manifest-size table): the tree, proofs and verification (RFC 6962, tested against the standard test vectors), and transfers use them. The manifest carries one root (138 bytes for a 1 MiB file, against 1,146 before), every piece travels with its proof, and partial seeders pass proofs on | [docs/09](docs/09-merkle-trees.md), `internal/transfer/merkle.go` |
 
 In short: nodes find each other and join, and any node can store and
 find small values. A file shared by one node is downloaded by others
@@ -217,6 +217,24 @@ stays ahead of each individual leecher (why: [DRY-RUN.md](docs/DRY-RUN.md)
 part 5). Every node uses the DEBUG ONLY `--debug-serve-delay` so the kill
 can land mid-download.
 
+### The Merkle tree demo
+
+```sh
+bash scripts/demo-merkle.sh              # env: BASE_PORT=9600
+```
+
+A dishonest provider (DEBUG ONLY `--debug-corrupt-pieces`) serves every
+piece with one byte flipped and the genuine Merkle proof. The downloader
+catches it with the proof check, takes 0 pieces from it, and finishes
+from the honest seeder with an identical file. Then a table shows the
+manifest staying ~135 bytes from 1 to 2,048 pieces, where the old flat
+hash list would have reached 137 KB ([09](docs/09-merkle-trees.md)):
+
+```
+    [node3] level=WARN msg="provider failed, trying the next one" provider=127.0.0.1:9602 error="transfer: piece 8 failed its Merkle proof check"
+  f2048.bin (131072 KiB)      2048           137 B                   137289 B
+```
+
 ### The parallel-download demo
 
 ```sh
@@ -367,7 +385,7 @@ Then type console commands into a node's terminal:
 | `--max-inflight <n>` | most piece requests a download keeps in flight at once (default 4; always at most 1 per provider) |
 | `--api <host:port>` | serve this node's state as JSON over HTTP, e.g. `127.0.0.1:8000`, plus a live event stream; off by default ([NODE-API.md](docs/NODE-API.md)) |
 | `--api-control` | with `--api`: also accept POST commands (lookup, ping, put, get, share, fetch). Any web page in your browser could use them too: demo use only |
-| `--debug-serve-delay <dur>` | **DEBUG ONLY**, off by default: wait this long before answering each piece request, so a demo can kill a node mid-transfer |
+| `--debug-corrupt-pieces` | **DEBUG ONLY**, off by default: flip one byte of every piece this node serves (sending the genuine Merkle proof), to show downloaders catching a dishonest provider (`scripts/demo-merkle.sh`) | **DEBUG ONLY**, off by default: wait this long before answering each piece request, so a demo can kill a node mid-transfer |
 | `--id-seed <s>` | node ID = SHA-1(s); random if omitted |
 | `--bootstrap <host:port>` | join through this node |
 | `--lookup <hex>` `--lookup-after <dur>` | after joining, run one lookup and log it (used by the demo) |
@@ -462,6 +480,7 @@ scripts/demo-transfer.sh   5 processes: put/get, share, downloads, killed seeder
 scripts/demo-seeder-death.sh  seeder killed mid-download: leechers finish from each other
 scripts/demo-big-network.sh   20 nodes, random joins, lookups checked by brute force, transfer
 scripts/demo-parallel.sh   one download from 3 providers at once, with a timeline
+scripts/demo-merkle.sh     a dishonest provider caught by the Merkle proof check; manifest size table
 scripts/lib/nodes.sh       shared helper: start N nodes with console FIFOs (bash 3.2)
 scripts/lib/edge.sh        helpers for the edge cases: brute-force closest nodes, wait for the Nth log line
 scripts/edge/              edge-case scripts, one per case, and run-all.sh (docs/EDGE-CASES.md)

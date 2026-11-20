@@ -65,6 +65,14 @@ func (p *Peer) SetDebugServeDelay(d time.Duration) {
 	p.srv.debugServeDelay.Store(int64(d))
 }
 
+// SetDebugCorruptPieces is a DEBUG ONLY knob (CLI: --debug-corrupt-pieces):
+// the file server flips one byte of every piece it sends, with the genuine
+// Merkle proof, playing a dishonest provider. Downloaders must catch it
+// with the proof check (VerifyPiece) and fetch the piece elsewhere.
+func (p *Peer) SetDebugCorruptPieces(on bool) {
+	p.srv.debugCorrupt.Store(on)
+}
+
 // TCPPort is the port the file server listens on.
 func (p *Peer) TCPPort() int {
 	return p.srv.port()

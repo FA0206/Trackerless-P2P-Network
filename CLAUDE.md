@@ -49,6 +49,7 @@ bash scripts/demo-transfer.sh                   # put/get + file transfer + kill
 bash scripts/demo-seeder-death.sh               # seeder dies mid-download; PASS = file survives (on main: PASS = file lost)
 bash scripts/demo-big-network.sh                # 20 nodes, random joins, lookups vs brute force + transfer; must print PASS
 bash scripts/demo-parallel.sh                   # one download from 3 providers at once; must print PASS
+bash scripts/demo-merkle.sh                     # dishonest provider caught by the Merkle proof check; must print PASS
 bash scripts/edge/run-all.sh                    # every edge case; each PASS = behaved as docs/EDGE-CASES.md predicts
 ```
 

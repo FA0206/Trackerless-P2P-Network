@@ -203,6 +203,23 @@ answer is `415` (on purpose; NODE-API.md, "Safety"). Pick API ports away from th
 ports (8000s for APIs, 9000s for nodes): a node's UDP and TCP ports
 already use its own number.
 
+### Playing a dishonest provider: `--debug-corrupt-pieces`
+
+`--debug-corrupt-pieces` is a **DEBUG ONLY** flag, **off by default**.
+The node's file server flips one byte of every piece it sends, with the
+genuine Merkle proof (`server.answer`; `Peer.SetDebugCorruptPieces`).
+The file on disk is untouched. It logs a `WARN` at startup, and one per
+piece it corrupts:
+
+```
+WARN msg="DEBUG: this node corrupts every piece it serves (genuine proofs, wrong bytes)"
+WARN msg="DEBUG: serving a corrupted piece" index=8
+```
+
+A downloader that asks it for a piece logs `provider failed, trying the
+next one … failed its Merkle proof check` and finishes from someone else.
+`scripts/demo-merkle.sh` does exactly this ([09](09-merkle-trees.md)).
+
 ### Slowing transfers down on purpose: `--debug-serve-delay`
 
 On localhost a 1 MiB file moves in ~20 ms, so you can't kill a seeder or

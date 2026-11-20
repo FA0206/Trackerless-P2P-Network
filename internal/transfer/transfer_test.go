@@ -165,6 +165,38 @@ func TestDownloaderServesThePieceProofsItReceived(t *testing.T) {
 	}
 }
 
+// --debug-corrupt-pieces plays a dishonest provider: genuine proofs, one
+// byte wrong in every piece. The proof check must catch it, and the
+// download must finish from the honest provider.
+func TestDebugCorruptPiecesIsCaughtByTheProofCheck(t *testing.T) {
+	peers := startNetwork(t, 4)
+	dir := t.TempDir()
+	src := writeRandomFile(t, dir, 8*DefaultPieceSize)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	key, err := peers[0].peer.Share(ctx, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := peers[1].peer.Download(ctx, key, filepath.Join(dir, "honest.bin")); err != nil {
+		t.Fatal(err)
+	}
+	peers[1].peer.SetDebugCorruptPieces(true) // now a provider that lies
+	out := filepath.Join(dir, "out.bin")
+	res, err := peers[2].peer.Download(ctx, key, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSameFile(t, src, out)
+	liar := ProviderRecord{IP: "127.0.0.1", Port: peers[1].peer.TCPPort()}.Addr()
+	if len(res.FailedProviders) != 1 || res.FailedProviders[0] != liar {
+		t.Errorf("expected the corrupting provider %s to be dropped, got %v", liar, res.FailedProviders)
+	}
+	if res.PiecesFrom[liar] != 0 {
+		t.Errorf("%d pieces were accepted from the corrupting provider", res.PiecesFrom[liar])
+	}
+}
+
 func TestCorruptProviderIsSkipped(t *testing.T) {
 	peers := startNetwork(t, 4)
 	dir := t.TempDir()
