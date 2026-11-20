@@ -145,8 +145,10 @@ libtorrent's own docs.
 
 **In this codebase:** no RTT is recorded. Buckets keep the oldest live
 contacts (`bucket.go`), and `iterativeFind` (`lookup.go`) picks the α
-closest by XOR, whatever their latency. That matters for the planned
-"lookup latency vs. network size" graph.
+closest by XOR, whatever their latency. That matters for the "lookup
+latency vs. network size" graph ([10](10-performance-graphs.md), graph
+1): on localhost every peer is equally near, so it measures rounds and
+RPCs, not network distance.
 
 ### What's the non-simplified way to find the k closest nodes in the routing table?
 

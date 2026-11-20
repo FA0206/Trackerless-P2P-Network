@@ -87,8 +87,10 @@ func (t *Transport) Send(addr *net.UDPAddr, env Envelope) error {
 }
 
 // Handler processes one received envelope from the given source address.
-// It's invoked from Listen's read loop (see Listen for concurrency notes).
-type Handler func(from *net.UDPAddr, env Envelope)
+// size is the datagram's length on the wire (framing prefix included), so
+// control traffic can be measured. It's invoked from Listen's read loop
+// (see Listen for concurrency notes).
+type Handler func(from *net.UDPAddr, env Envelope, size int)
 
 // Listen reads packets until the socket is closed, parsing and validating
 // framing before handing each decoded Envelope to handler. Each handler
@@ -113,7 +115,7 @@ func (t *Transport) Listen(handler Handler) error {
 			continue
 		}
 
-		go handler(from, env)
+		go handler(from, env, n)
 	}
 }
 

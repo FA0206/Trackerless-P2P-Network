@@ -44,6 +44,7 @@ func run() error {
 	rpcTimeout := flag.Duration("rpc-timeout", kademlia.DefaultRPCTimeout, "per-RPC timeout (raise this, e.g. to 5m, when pausing at breakpoints)")
 	maxInFlight := flag.Int("max-inflight", transfer.DefaultMaxInFlight, "most piece requests a download keeps in flight at once (always at most 1 per provider)")
 	debugServeDelay := flag.Duration("debug-serve-delay", 0, "DEBUG ONLY: wait this long before answering each piece request, so a demo can kill this node mid-transfer (0 = off)")
+	debugUploadRate := flag.Int64("debug-upload-rate", 0, "DEBUG ONLY: cap this node's total file upload at this many bytes per second, across all connections, to model a real uplink on localhost (0 = off; docs/10-performance-graphs.md)")
 	apiAddr := flag.String("api", "", "serve this node's state as JSON over HTTP on host:port, e.g. 127.0.0.1:8000 (off if empty; see docs/NODE-API.md)")
 	apiControl := flag.Bool("api-control", false, "with -api: also accept POST lookup/ping/put/get/share/fetch, so a page can make this node act (any website open in your browser could too; demo use only)")
 	flag.Parse()
@@ -120,6 +121,10 @@ func run() error {
 	if *debugServeDelay > 0 {
 		peer.SetDebugServeDelay(*debugServeDelay)
 		logger.Warn("DEBUG: delaying every piece this node serves", "delay", debugServeDelay.String())
+	}
+	if *debugUploadRate > 0 {
+		peer.SetDebugUploadRate(*debugUploadRate)
+		logger.Warn("DEBUG: capping this node's upload", "bytes_per_sec", *debugUploadRate)
 	}
 
 	logger.Info("node started", "id", id.String(), "addr", n.Addr().String(), "tcp_port", peer.TCPPort())

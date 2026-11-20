@@ -1,0 +1,16 @@
+kill_point_pct,trial,environment,survived,recovery_s
+40,1,localhost,0,
+40,2,localhost,0,
+40,3,localhost,0,
+40,4,localhost,0,
+40,5,localhost,0,
+60,1,localhost,1,1.012
+60,2,localhost,1,1.012
+60,3,localhost,1,1.003
+60,4,localhost,1,1.002
+60,5,localhost,0,
+80,1,localhost,1,1.003
+80,2,localhost,1,1.002
+80,3,localhost,1,1.012
+80,4,localhost,1,1.002
+80,5,localhost,1,1.002

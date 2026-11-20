@@ -119,8 +119,8 @@ this document: every later RPC follows the same path.
 ```
 [node1] msg=bootstrapping via=127.0.0.1:9000
 [node1] msg="rpc sent" type=PING to=0000000000000000000000000000000000000000@127.0.0.1:9000 rpc_id=f6ba6d98
-[node0] msg="rpc received" type=PING from=10f71961bd11dd33c1c95c771b98cf0e09d57b7c@127.0.0.1:9001 rpc_id=f6ba6d98
-[node1] msg="rpc received" type=PONG from=2b370ab73e042befc2c56a925ab511b5116aec98@127.0.0.1:9000 rpc_id=f6ba6d98
+[node0] msg="rpc received" type=PING from=10f71961bd11dd33c1c95c771b98cf0e09d57b7c@127.0.0.1:9001 rpc_id=f6ba6d98 bytes=126
+[node1] msg="rpc received" type=PONG from=2b370ab73e042befc2c56a925ab511b5116aec98@127.0.0.1:9000 rpc_id=f6ba6d98 bytes=126
 [node1] msg="bootstrap node identified" id=2b370ab73e042befc2c56a925ab511b5116aec98 addr=127.0.0.1:9000
 ```
 
@@ -141,8 +141,8 @@ node.go           select { <-respCh / <-ctx.Done() } (this goroutine now blocks)
 ```
 transport.go  Transport.Listen                       ReadFromUDP returns the datagram
 transport.go    decodeEnvelope                       check length prefix == body size, json.Unmarshal
-transport.go    go handler(from, env)                each packet handled on its own goroutine
-node.go       handleMessage
+transport.go    go handler(from, env, n)             each packet handled on its own goroutine; n = datagram size
+node.go       handleMessage                          logs "rpc received" with bytes=n (126 for a PING)
 contact.go      ContactFromUDPAddr(env.SenderID, from) → node1's ID + the address the packet really came from
 node.go         touchContact(node1)
 routingtable.go   RoutingTable.Update → bucketFor → id.go BucketIndex(node0, node1) = 157
@@ -168,8 +168,8 @@ node.go       sendAndWait returns the PONG envelope  → Bootstrap reads pong.Se
 
 ```
 [node1] msg="rpc sent" type=FIND_NODE to=2b370ab7…@127.0.0.1:9000 rpc_id=79bff9dd
-[node0] msg="rpc received" type=FIND_NODE from=10f71961…@127.0.0.1:9001 rpc_id=79bff9dd
-[node1] msg="rpc received" type=FIND_NODE_RESP from=2b370ab7…@127.0.0.1:9000 rpc_id=79bff9dd
+[node0] msg="rpc received" type=FIND_NODE from=10f71961…@127.0.0.1:9001 rpc_id=79bff9dd bytes=195
+[node1] msg="rpc received" type=FIND_NODE_RESP from=2b370ab7…@127.0.0.1:9000 rpc_id=79bff9dd bytes=162
 [node1] msg="lookup converged" target=10f71961… rounds=1 rpcs_sent=1 rpcs_failed=0 closest_found=1
 [node1] msg="bootstrap complete" routing_table_size=1 self_lookup_rounds=1 self_lookup_rpcs=1
 ```

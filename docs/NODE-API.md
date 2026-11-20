@@ -293,7 +293,7 @@ full list is every `logger.Debug/Info/Warn/Error` call in
 | `msg` | Level | Key attrs | Where it's logged | Means |
 |---|---|---|---|---|
 | `rpc sent` | INFO | `type`, `to` (`id@ip:port`), `rpc_id` | `node.go` `sendAndWait` | this node sent a request: PING, FIND_NODE, STORE, FIND_VALUE |
-| `rpc received` | INFO | `type`, `from`, `rpc_id` | `node.go` `handleMessage` | any message arrived: a request, or a reply to one of ours (`*_RESP`, `PONG`) |
+| `rpc received` | INFO | `type`, `from`, `rpc_id`, `bytes` | `node.go` `handleMessage` | any message arrived: a request, or a reply to one of ours (`*_RESP`, `PONG`). `bytes` is the datagram's size on the wire; summed over every node it's all DHT traffic, each message once ([10](10-performance-graphs.md), graph 4) |
 | `rpc timed out` | DEBUG | `type`, `to`, `rpc_id` | `node.go` | no reply in `--rpc-timeout`: likely a dead node |
 | `bucket updated` | DEBUG | `contact` | `node.go` `touchContact` | a contact was added or moved to the tail of its bucket |
 | `bucket full, pinging…`, `stale contact still alive…`, `stale contact unresponsive, evicted` | DEBUG | `stale`, `candidate` / `kept` / `evicted`, `replacement` | `node.go` | the eviction check ([02](02-routing-table-and-kbuckets.md)) |

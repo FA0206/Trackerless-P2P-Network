@@ -1,0 +1,424 @@
+<!doctype html>
+<!--
+  Kademlia LAN Eval Runs: the real-laptop halves of performance graphs 3 and
+  4 (docs/10-performance-graphs.md). Same pattern as
+  scripts/multi-device/field-tests.html, but every test ends in numbers, not
+  pass/fail. A static page, no build step. Open it in a browser:
+    xdg-open eval/scripts/eval-field-tests.html
+  Typing each laptop's IP into the page fills in every command.
+  The awk one-liners must compute what eval/scripts/recovery_time.sh and
+  eval/scripts/bytes_overhead.sh compute on localhost, and the expected
+  output is real log and console text: keep both in sync when either changes
+  (docs/ARCHITECTURE.md, "If you change X").
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kademlia LAN Eval Runs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@500;600;700&display=swap">
+<style>
+/* Same protocol-sheet layout and colours as scripts/multi-device/field-tests.html. */
+:root {
+  --bg: #f4f6f8;
+  --surface: #ffffff;
+  --ink: #15212c;
+  --muted: #586777;
+  --line: #d9e0e7;
+  --code-bg: #eaeff4;
+  --accent: #1d6a86;
+  --role-a: #4453c9;
+  --role-b: #0d806a;
+  --role-c: #a4600a;
+  --pass: #1d7f47;
+  --fail: #b93a27;
+  --font-display: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f151b; --surface: #151d25; --ink: #e2e8ee; --muted: #93a1af; --line: #27323d;
+    --code-bg: #1b2530; --accent: #63b4d2; --role-a: #93a0ff; --role-b: #4cc7a6; --role-c: #e2a64d;
+    --pass: #55c487; --fail: #ff7c66; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f151b; --surface: #151d25; --ink: #e2e8ee; --muted: #93a1af; --line: #27323d;
+  --code-bg: #1b2530; --accent: #63b4d2; --role-a: #93a0ff; --role-b: #4cc7a6; --role-c: #e2a64d;
+  --pass: #55c487; --fail: #ff7c66; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink);
+  font: 15px/1.6 var(--font-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 32px 64px;
+}
+.page { max-width: 820px; margin: 0 auto; display: grid; gap: 40px; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; line-height: 1.2; }
+h1 { font-size: clamp(28px, 5vw, 38px); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 22px; font-weight: 600; }
+h3 { font-size: 18px; font-weight: 600; }
+p { margin: 0; max-width: 68ch; }
+a { color: var(--accent); }
+code, pre, kbd { font-family: var(--font-mono); font-size: 13px; }
+:not(pre) > code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; background: var(--surface); }
+.eyebrow { font: 600 12px/1.4 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.muted { color: var(--muted); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+header.top { display: grid; gap: 14px; }
+.lede { font-size: 17px; }
+
+.roles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.role { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 14px 16px; display: grid; gap: 6px; align-content: start; }
+.role p { font-size: 14px; color: var(--muted); }
+.chip { display: inline-flex; align-items: center; gap: 6px; font: 600 12px/1 var(--font-mono); padding: 4px 8px; border-radius: 999px; color: var(--surface); white-space: nowrap; width: fit-content; }
+.chip.a { background: var(--role-a); }
+.chip.b { background: var(--role-b); }
+.chip.c { background: var(--role-c); }
+.chip.ab { background: linear-gradient(90deg, var(--role-a) 50%, var(--role-b) 50%); }
+.chip.bc { background: linear-gradient(90deg, var(--role-b) 50%, var(--role-c) 50%); }
+
+.panel { border: 1px solid var(--line); background: var(--surface); border-radius: 10px; padding: 18px; display: grid; gap: 14px; }
+.fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.field { display: grid; gap: 6px; }
+.field label { font: 600 13px/1.3 var(--font-body); display: flex; gap: 8px; align-items: center; }
+.field input, .field select { font: 15px/1.2 var(--font-mono); padding: 9px 11px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); width: 100%; min-width: 0; }
+.field input:focus, .field select:focus { outline: 2px solid var(--accent); outline-offset: 0; border-color: transparent; }
+.field input[aria-invalid="true"] { border-color: var(--fail); }
+.field small { color: var(--muted); font-size: 12.5px; }
+
+section { display: grid; gap: 16px; }
+.section-head { display: grid; gap: 6px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.test { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 18px; display: grid; gap: 14px; }
+.test-head .title { display: grid; gap: 4px; min-width: 0; }
+.num { font: 600 12px/1 var(--font-mono); color: var(--accent); letter-spacing: 0.06em; text-transform: uppercase; }
+.why { color: var(--muted); }
+
+ol.steps { margin: 0; padding: 0; list-style: none; counter-reset: s; display: grid; gap: 12px; }
+ol.steps > li { counter-increment: s; display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 4px 8px; }
+ol.steps > li::before { content: counter(s); font: 600 12px/22px var(--font-mono); color: var(--muted); text-align: center; border: 1px solid var(--line); border-radius: 50%; width: 22px; height: 22px; }
+ol.steps > li > * { grid-column: 2; }
+.step-text { display: grid; gap: 8px; min-width: 0; }
+
+.cmd { border-radius: 8px; background: var(--code-bg); overflow: hidden; min-width: 0; }
+.cmd-bar { display: flex; align-items: center; gap: 8px; padding: 6px 8px 0 10px; flex-wrap: wrap; }
+.where { font: 500 11.5px/1 var(--font-mono); color: var(--muted); letter-spacing: 0.04em; }
+.copy { margin-left: auto; font: 600 12px/1 var(--font-body); padding: 6px 10px; border-radius: 5px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+.copy:hover { border-color: var(--accent); }
+.cmd pre { margin: 0; padding: 8px 12px 12px; overflow-x: auto; white-space: pre; line-height: 1.55; }
+.ph { color: var(--fail); font-weight: 600; }
+.ip { color: var(--accent); font-weight: 600; }
+
+.expect { display: grid; gap: 6px; min-width: 0; }
+.expect .label { font: 600 11.5px/1 var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--pass); }
+pre.out { margin: 0; padding: 10px 12px; border-left: 3px solid var(--pass); background: var(--bg); overflow-x: auto; white-space: pre; line-height: 1.55; font-size: 12.5px; border-radius: 0 6px 6px 0; }
+pre.out.bad { border-left-color: var(--fail); }
+.passwhen { border-top: 1px dashed var(--line); padding-top: 12px; display: grid; gap: 6px; }
+.passwhen strong { font-family: var(--font-display); }
+
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; min-width: 620px; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+th { font: 600 12px/1.3 var(--font-mono); letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+tr:last-child td { border-bottom: 0; }
+footer { color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); padding-top: 16px; display: grid; gap: 6px; }
+
+/* recorder: turns the one-liners' output into a CSV row */
+.recorder { border: 1px solid var(--accent); border-radius: 10px; padding: 16px; display: grid; gap: 12px; background: var(--bg); }
+.recorder h4 { margin: 0; font: 600 15px/1.3 var(--font-display); }
+.msg { font-size: 13.5px; color: var(--muted); }
+.msg.err { color: var(--fail); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .copy { transition: border-color .15s; }
+}
+</style>
+</head>
+<body>
+<div class="page">
+
+<header class="top">
+  <div class="eyebrow">Trackerless P2P network · performance graphs</div>
+  <h1>Kademlia LAN Eval Runs</h1>
+  <p class="lede">The real-laptop halves of two performance graphs: how fast a swarm recovers when its seeder dies (graph 3), and how much DHT traffic a download costs next to the file itself (graph 4). Each run ends in a CSV row, plotted next to the same experiment on localhost.</p>
+  <p class="muted">Same setup as the <a href="../../scripts/multi-device/field-tests.html">LAN field tests</a>: no SSH, every laptop typed at by hand. Why each graph exists and how the localhost half runs: <a href="../../docs/10-performance-graphs.md"><code>docs/10-performance-graphs.md</code></a>.</p>
+</header>
+
+<section aria-labelledby="who">
+  <div class="section-head">
+    <h2 id="who">Who runs what</h2>
+    <p class="muted">Every command is tagged with the laptop that runs it, and with where you type it.</p>
+  </div>
+  <div class="roles">
+    <div class="role"><span class="chip a">A · has the repo</span><p>Builds the program, shares the files, and is the seeder. Runs <code>./lab/node</code> from the repo folder and appends the CSV rows.</p></div>
+    <div class="role"><span class="chip b">B · second laptop</span><p>A leecher. Gets <code>node-linux</code> from A and runs <code>./node-linux</code>.</p></div>
+    <div class="role"><span class="chip c">C · third laptop</span><p>The second leecher, test 1 only. Same file as B.</p></div>
+  </div>
+  <p class="muted"><b>terminal</b> means a normal shell. <b>node console</b> means typing into the window where a node is running: log lines scroll past, but typing still works. Every node's output is also saved by <code>tee</code>, so the numbers can be read off afterwards. Stop a node with <kbd>Ctrl</kbd>+<kbd>C</kbd>. A <b>fresh start</b> means stopping every node and starting again: the network keeps everything in memory, so stopping wipes it. Every trial is a fresh start.</p>
+</section>
+
+<section aria-labelledby="addr">
+  <div class="panel">
+    <h2 id="addr">Your addresses</h2>
+    <p class="muted">Type the IPs once and every command on this page fills them in. They're saved in this browser only.</p>
+    <div class="fields">
+      <div class="field"><label for="ipA"><span class="chip a">A</span> Laptop A's IP</label><input id="ipA" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="192.168.0.101"><small>Needed for every test</small></div>
+      <div class="field"><label for="ipB"><span class="chip b">B</span> Laptop B's IP</label><input id="ipB" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="192.168.0.105"><small>From A's <code>table</code></small></div>
+      <div class="field"><label for="ipC"><span class="chip c">C</span> Laptop C's IP</label><input id="ipC" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="test 1 only"><small>From A's <code>table</code></small></div>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="setup">
+  <div class="section-head">
+    <h2 id="setup">Before you start</h2>
+    <p class="muted">All laptops on the same network. Campus Wi-Fi worked for the field tests; a phone hotspot is the fallback. No clock needs to match another: every number is read from one laptop's own log.</p>
+  </div>
+  <ol class="steps">
+    <li><div class="step-text"><p>Find A's IP: it's the number after <code>src</code>. Put it in the box above.</p>
+      <div class="cmd"><div class="cmd-bar"><span class="chip a">A</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>ip route get 1.1.1.1</code></pre></div></div></li>
+    <li><div class="step-text"><p>Build from <b>this branch</b>: graph 4 needs the <code>bytes=</code> field it adds to <code>"rpc received"</code> log lines. Then send <code>lab/node-linux</code> to B and C over USB, Drive or Telegram.</p>
+      <div class="cmd"><div class="cmd-bar"><span class="chip a">A</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>git checkout eval/performance-graphs &amp;&amp; go build -o lab/node ./cmd/node &amp;&amp; cp lab/node lab/node-linux</code></pre></div></div></li>
+    <li><div class="step-text"><p>Make the received file runnable.</p>
+      <div class="cmd"><div class="cmd-bar"><span class="chip bc">B + C</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>chmod +x node-linux</code></pre></div></div></li>
+    <li><div class="step-text"><p>Check the firewall on every laptop. If it says <code>Status: active</code>, open port 9000 for UDP (the network) and TCP (file data).</p>
+      <div class="cmd"><div class="cmd-bar"><span class="chip ab">all laptops</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>sudo ufw status</code></pre></div>
+      <div class="cmd"><div class="cmd-bar"><span class="chip ab">all laptops</span><span class="where">terminal, only if active</span><button class="copy" type="button">Copy</button></div><pre><code>sudo ufw allow 9000/udp &amp;&amp; sudo ufw allow 9000/tcp</code></pre></div></div></li>
+    <li><div class="step-text"><p>Make the test files: 4 MiB for test 1 (64 pieces of 64 KiB — bigger than the field tests' 2 MiB file, so there's room for a kill point that clearly loses the file, one right at the edge, and one that clearly survives), and the four sizes for test 2.</p>
+      <div class="cmd"><div class="cmd-bar"><span class="chip a">A</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>head -c 4M /dev/urandom &gt; lab/four-mb.bin &amp;&amp; for s in 64K 1M 10M 100M; do head -c $s /dev/urandom &gt; lab/f-$s.bin; done</code></pre></div></div></li>
+  </ol>
+</section>
+
+<section aria-labelledby="g3">
+  <div class="section-head">
+    <h2 id="g3">Graph 3 · three laptops</h2>
+  </div>
+
+  <article class="test" id="t1">
+    <div class="test-head"><div class="title"><span class="num">Test 1 · 9 runs</span><h3>Kill the seeder at 40%, 60% and 80%</h3><p class="why">Does the file survive its seeder, and how long until every leecher is receiving pieces again? 3 trials at each kill point. Every node sends each piece 1 s late, so there's time to act; B and C fetch one piece at a time, as in field test 4. These kill points aren't an arbitrary 25/50/75 split: with this file size and stagger, B and C's pieces naturally cover the whole file by the time B itself is ~60% done (measured by running with no kill at all and watching where the union first reaches 64/64) — so 40% reliably loses the file, 60% sits right at that boundary, and 80% reliably survives it, a deliberate spread instead of three points landing on the same side.</p></div></div>
+    <ol class="steps">
+      <li><div class="step-text"><p>Fresh start, saving every log.</p>
+        <div class="cmd"><div class="cmd-bar"><span class="chip a">A</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>./lab/node --port 9000 --id-seed laptopA --advertise-ip {A} --debug-serve-delay 1s 2&gt;&amp;1 | tee a.log</code></pre></div>
+        <div class="cmd"><div class="cmd-bar"><span class="chip b">B</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>rm -f four-mb.bin; ./node-linux --port 9000 --id-seed laptopB --bootstrap {A}:9000 --debug-serve-delay 1s --max-inflight 1 2&gt;&amp;1 | tee b.log</code></pre></div>
+        <div class="cmd"><div class="cmd-bar"><span class="chip c">C</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>rm -f four-mb.bin; ./node-linux --port 9000 --id-seed laptopC --bootstrap {A}:9000 --debug-serve-delay 1s --max-inflight 1 2&gt;&amp;1 | tee c.log</code></pre></div></div></li>
+      <li><div class="step-text"><p>A shares the file; send the printed key to B and C over chat. B starts fetching.</p>
+        <div class="cmd"><div class="cmd-bar"><span class="chip a">A</span><span class="where">node console</span><button class="copy" type="button">Copy</button></div><pre><code>share lab/four-mb.bin</code></pre></div>
+        <div class="cmd"><div class="cmd-bar"><span class="chip b">B</span><span class="where">node console</span><button class="copy" type="button">Copy</button></div><pre><code>fetch &lt;key&gt; four-mb.bin</code></pre></div></div></li>
+      <li><div class="step-text"><p>When B's log shows <code>have=8</code>, C starts too.</p>
+        <div class="expect"><span class="label">On B, look for</span><pre class="out">msg="piece received" … of=64 from={A}:9000 bytes=65536 have=8 inflight=0</pre></div>
+        <div class="cmd"><div class="cmd-bar"><span class="chip c">C</span><span class="where">node console</span><button class="copy" type="button">Copy</button></div><pre><code>fetch &lt;key&gt; four-mb.bin</code></pre></div></div></li>
+      <li><div class="step-text"><p>When B's log shows the kill point, <b>A presses <kbd>Ctrl</kbd>+<kbd>C</kbd></b>: <code>have=26</code> for 40%, <code>have=39</code> for 60%, <code>have=52</code> for 80%.</p></div></li>
+      <li><div class="step-text"><p>Wait until B and C both end. Either is a valid result.</p>
+        <div class="expect"><span class="label">Survived</span><pre class="out">fetched "four-mb.bin" (4194304 bytes, 64 pieces) into four-mb.bin in …</pre></div>
+        <div class="expect"><span class="label">Lost: a piece only A had (about 15 s after the kill)</span><pre class="out bad">fetch failed: transfer: stalled for 15s with … of 64 pieces: no live provider has the rest</pre></div></div></li>
+      <li><div class="step-text"><p>On B and C: from the moment each noticed A was gone (its own <code>provider failed</code> line for A) to its next piece, or <code>lost</code>. Both times come from that laptop's own log.</p>
+        <div class="expect"><span class="label">The line each one measures from</span><pre class="out">level=WARN msg="provider failed, trying the next one" … provider={A}:9000 error="read response header: EOF"</pre></div>
+        <div class="cmd"><div class="cmd-bar"><span class="chip b">B</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>awk -v seeder='{A}:9000' 'function ms(t){sub(/^time=/,"",t);split(t,a,"T");split(substr(a[2],1,12),h,":");return int((h[1]*3600+h[2]*60+h[3])*1000+0.5)} /msg="provider failed, trying the next one"/ &amp;&amp; index($0, " provider=" seeder " ") &amp;&amp; !k {k=ms($1)} /msg="piece received"/ &amp;&amp; k &amp;&amp; !f {f=1; r=ms($1)-k} /msg="download complete"/{ok=1; if(!k) early=1} END{if(!ok) print "lost"; else if(early) print "finished before the kill"; else printf "%d ms\n", (k &amp;&amp; f) ? r : 0}' b.log</code></pre></div>
+        <div class="cmd"><div class="cmd-bar"><span class="chip c">C</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>awk -v seeder='{A}:9000' 'function ms(t){sub(/^time=/,"",t);split(t,a,"T");split(substr(a[2],1,12),h,":");return int((h[1]*3600+h[2]*60+h[3])*1000+0.5)} /msg="provider failed, trying the next one"/ &amp;&amp; index($0, " provider=" seeder " ") &amp;&amp; !k {k=ms($1)} /msg="piece received"/ &amp;&amp; k &amp;&amp; !f {f=1; r=ms($1)-k} /msg="download complete"/{ok=1; if(!k) early=1} END{if(!ok) print "lost"; else if(early) print "finished before the kill"; else printf "%d ms\n", (k &amp;&amp; f) ? r : 0}' c.log</code></pre></div>
+        <div class="expect"><span class="label">Expect on each</span><pre class="out">1052 ms</pre></div></div></li>
+      <li><div class="step-text"><p>Record the trial, then do a fresh start for the next one.</p>
+        <div class="recorder" id="rec3">
+          <h4>Record a graph 3 trial</h4>
+          <div class="fields">
+            <div class="field"><label for="r3pct">Kill point</label><select id="r3pct"><option value="40">40% (have=26)</option><option value="60">60% (have=39)</option><option value="80">80% (have=52)</option></select></div>
+            <div class="field"><label for="r3trial">Trial</label><select id="r3trial"><option>1</option><option>2</option><option>3</option></select></div>
+            <div class="field"><label for="r3b"><span class="chip b">B</span> printed</label><input id="r3b" autocomplete="off" spellcheck="false" placeholder="1052 ms or lost"></div>
+            <div class="field"><label for="r3c"><span class="chip c">C</span> printed</label><input id="r3c" autocomplete="off" spellcheck="false" placeholder="980 ms or lost"></div>
+          </div>
+          <p class="msg" id="r3msg">Fill in both results.</p>
+          <div class="cmd"><div class="cmd-bar"><span class="chip a">A</span><span class="where">terminal, repo folder</span><button class="copy" type="button">Copy</button></div><pre id="r3out"><code></code></pre></div>
+        </div></div></li>
+    </ol>
+    <div class="passwhen"><strong>What the row means</strong><p><code>survived</code> is 1 when both B and C finished. <code>recovery_s</code> is the slower of the two, the moment the whole swarm is moving again; it's empty when the file was lost. A <b>lost</b> trial is a real result, not a failed run: the seeder died while some piece existed only on it.</p></div>
+  </article>
+</section>
+
+<section aria-labelledby="g4">
+  <div class="section-head">
+    <h2 id="g4">Graph 4 · two laptops</h2>
+  </div>
+
+  <article class="test" id="t2">
+    <div class="test-head"><div class="title"><span class="num">Test 2 · 12 runs</span><h3>DHT bytes vs. file bytes, four file sizes</h3><p class="why">How much DHT traffic does sharing and downloading a file cost, next to the file itself? 3 trials per size. No <code>--debug-serve-delay</code> here: the download runs at the network's real speed.</p></div></div>
+    <div class="fields"><div class="field"><label for="size">File size for this run</label><select id="size"><option value="64K">64K</option><option value="1M">1M</option><option value="10M">10M</option><option value="100M">100M</option></select></div></div>
+    <ol class="steps">
+      <li><div class="step-text"><p>Fresh start, saving both logs.</p>
+        <div class="cmd"><div class="cmd-bar"><span class="chip a">A</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>./lab/node --port 9000 --id-seed laptopA --advertise-ip {A} 2&gt;&amp;1 | tee a.log</code></pre></div>
+        <div class="cmd"><div class="cmd-bar"><span class="chip b">B</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>rm -f got.bin; ./node-linux --port 9000 --id-seed laptopB --bootstrap {A}:9000 2&gt;&amp;1 | tee b.log</code></pre></div></div></li>
+      <li><div class="step-text"><p>A shares the file; B fetches it.</p>
+        <div class="cmd"><div class="cmd-bar"><span class="chip a">A</span><span class="where">node console</span><button class="copy" type="button">Copy</button></div><pre><code>share lab/f-{S}.bin</code></pre></div>
+        <div class="cmd"><div class="cmd-bar"><span class="chip b">B</span><span class="where">node console</span><button class="copy" type="button">Copy</button></div><pre><code>fetch &lt;key&gt; got.bin</code></pre></div>
+        <div class="expect"><span class="label">Expect on B</span><pre class="out">fetched "f-{S}.bin" (… bytes, … pieces) into got.bin in …</pre></div></div></li>
+      <li><div class="step-text"><p>Count the DHT bytes A received from its share on (its first request is the share: during B's join A only answered).</p>
+        <div class="cmd"><div class="cmd-bar"><span class="chip a">A</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>awk '/msg="rpc sent"/{on=1} on &amp;&amp; /msg="rpc received"/{match($0,/ bytes=[0-9]+/); s+=substr($0,RSTART+7,RLENGTH-7)} END{printf "control=%d\n", s}' a.log</code></pre></div></div></li>
+      <li><div class="step-text"><p>Count the DHT bytes B received after joining, and the file bytes it downloaded.</p>
+        <div class="cmd"><div class="cmd-bar"><span class="chip b">B</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>awk 'on &amp;&amp; /msg="rpc received"/{match($0,/ bytes=[0-9]+/); s+=substr($0,RSTART+7,RLENGTH-7)} /msg="bootstrap complete"/{on=1} /msg="download complete"/ &amp;&amp; !p {match($0,/ bytes=[0-9]+/); p=substr($0,RSTART+7,RLENGTH-7)} END{printf "control=%d payload=%d\n", s, p}' b.log</code></pre></div></div></li>
+      <li><div class="step-text"><p>Record the trial, then do a fresh start for the next one.</p>
+        <div class="recorder" id="rec4">
+          <h4>Record a graph 4 trial (size: <span id="r4size">64K</span>)</h4>
+          <div class="fields">
+            <div class="field"><label for="r4trial">Trial</label><select id="r4trial"><option>1</option><option>2</option><option>3</option></select></div>
+            <div class="field"><label for="r4a"><span class="chip a">A</span> printed</label><input id="r4a" autocomplete="off" spellcheck="false" placeholder="control=1236"></div>
+            <div class="field"><label for="r4b"><span class="chip b">B</span> printed</label><input id="r4b" autocomplete="off" spellcheck="false" placeholder="control=432 payload=65536"></div>
+          </div>
+          <p class="msg" id="r4msg">Fill in both results.</p>
+          <div class="cmd"><div class="cmd-bar"><span class="chip a">A</span><span class="where">terminal, repo folder</span><button class="copy" type="button">Copy</button></div><pre id="r4out"><code></code></pre></div>
+        </div></div></li>
+    </ol>
+    <div class="passwhen"><strong>What the row means</strong><p><code>control_bytes</code> is A's and B's DHT bytes added up: every UDP message is received exactly once, so that's all the DHT traffic of the share and the download, each message counted once. <code>payload_bytes</code> is the file.</p></div>
+  </article>
+</section>
+
+<section aria-labelledby="after">
+  <div class="section-head">
+    <h2 id="after">Afterwards</h2>
+  </div>
+  <ol class="steps">
+    <li><div class="step-text"><p>Draw all six graphs; the real-host rows sit next to the localhost ones.</p>
+      <div class="cmd"><div class="cmd-bar"><span class="chip a">A</span><span class="where">terminal, repo folder</span><button class="copy" type="button">Copy</button></div><pre><code>eval/.venv/bin/python eval/plot_graphs.py</code></pre></div></div></li>
+  </ol>
+</section>
+
+<section aria-labelledby="trouble">
+  <div class="section-head">
+    <h2 id="trouble">Troubleshooting</h2>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>What you see</th><th>Why</th><th>Fix</th></tr></thead>
+      <tbody>
+        <tr><td><code>error: bootstrap failed: …</code></td><td>The joining laptop's packets never reach A: different networks, Wi-Fi that blocks laptops from each other, or a firewall</td><td>Same phone hotspot; check <code>sudo ufw status</code> on A</td></tr>
+        <tr><td>A fetch fails mentioning <code>127.0.0.1</code> or <code>unknown content key</code></td><td>A was started without <code>--advertise-ip</code></td><td>Stop every node, then a fresh start with the commands above</td></tr>
+        <tr><td>Test 2's A count prints <code>control=0</code></td><td>The binary predates this branch: no <code>bytes=</code> on <code>"rpc received"</code> lines</td><td>Rebuild on <code>eval/performance-graphs</code> and resend <code>node-linux</code></td></tr>
+        <tr><td><code>finished before the kill</code></td><td>That laptop completed without ever noticing A was gone: Ctrl+C came too late</td><td>Redo the trial and stop A at the right <code>have=</code></td></tr>
+        <tr><td><code>fetch failed: … file exists</code></td><td>Downloads never overwrite</td><td>The <code>rm -f</code> in the start command; run it again</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<footer>
+  <p>Same steps on localhost, scripted: <code>eval/scripts/recovery_time.sh</code> and <code>eval/scripts/bytes_overhead.sh</code>.</p>
+  <p>Background for every graph: <a href="../../docs/10-performance-graphs.md"><code>docs/10-performance-graphs.md</code></a>.</p>
+</footer>
+</div>
+
+<script>
+(function () {
+  var store = {
+    get: function (k) { try { return window.localStorage.getItem(k); } catch (e) { return null; } },
+    set: function (k, v) { try { window.localStorage.setItem(k, v); } catch (e) {} }
+  };
+  var IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
+  var SIZE_BYTES = { "64K": 65536, "1M": 1048576, "10M": 10485760, "100M": 104857600 };
+  function esc(s) {
+    return s.replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; });
+  }
+  function $(id) { return document.getElementById(id); }
+
+  // Each command and expected-output block keeps its original text as a template.
+  var templated = Array.prototype.slice.call(document.querySelectorAll(".cmd pre:not([id]), pre.out"));
+  templated.forEach(function (el) { el.dataset.tpl = el.textContent; });
+
+  function values() {
+    var vals = {};
+    ["A", "B", "C"].forEach(function (r) {
+      var input = $("ip" + r), v = input.value.trim();
+      input.setAttribute("aria-invalid", v && !IPV4.test(v) ? "true" : "false");
+      vals[r] = v && IPV4.test(v) ? v : "";
+    });
+    vals.S = $("size").value;
+    return vals;
+  }
+  var LABEL = { A: "A-IP", B: "B-IP", C: "C-IP", S: "size" };
+
+  function render() {
+    var vals = values();
+    templated.forEach(function (el) {
+      var html = esc(el.dataset.tpl).replace(/\{([ABCS])\}/g, function (_, r) {
+        return vals[r] ? '<span class="ip">' + esc(vals[r]) + "</span>" : '<span class="ph">&lt;' + LABEL[r] + "&gt;</span>";
+      });
+      el.innerHTML = el.tagName === "PRE" && !el.classList.contains("out") ? "<code>" + html + "</code>" : html;
+    });
+    $("r4size").textContent = vals.S;
+    record3();
+    record4();
+  }
+
+  // "1052 ms" -> 1052, "lost" -> null, anything else -> undefined
+  function parseResult(s) {
+    s = s.trim().toLowerCase();
+    if (s === "lost") return null;
+    var m = /^(-?\d+)\s*ms$/.exec(s);
+    return m ? Number(m[1]) : undefined;
+  }
+  function show(outId, msgId, row, csv, msg) {
+    $(msgId).textContent = msg;
+    $(msgId).classList.toggle("err", !row);
+    $(outId).innerHTML = row ? "<code>" + esc("echo '" + row + "' >> eval/results/" + csv) + "</code>" : "<code></code>";
+  }
+
+  function record3() {
+    var b = parseResult($("r3b").value), c = parseResult($("r3c").value);
+    if (!$("r3b").value.trim() || !$("r3c").value.trim()) return show("r3out", "r3msg", "", "", "Fill in both results.");
+    if (b === undefined || c === undefined) return show("r3out", "r3msg", "", "", "Each result must be what the one-liner printed: a number of ms, or lost.");
+    var survived = b !== null && c !== null;
+    var rec = survived ? (Math.max(b, c) / 1000).toFixed(3) : "";
+    var row = [$("r3pct").value, $("r3trial").value, "real_hosts", survived ? 1 : 0, rec].join(",");
+    show("r3out", "r3msg", row, "recovery_time.csv",
+      survived ? "Survived; the swarm was moving again after " + rec + " s." : "Lost: recorded with survived=0.");
+  }
+
+  function record4() {
+    var a = /control=(\d+)/.exec($("r4a").value), b = /control=(\d+)\s+payload=(\d+)/.exec($("r4b").value);
+    if (!$("r4a").value.trim() || !$("r4b").value.trim()) return show("r4out", "r4msg", "", "", "Fill in both results.");
+    if (!a || !b) return show("r4out", "r4msg", "", "", "Paste each line exactly as printed (control=… and control=… payload=…).");
+    var size = $("size").value, payload = Number(b[2]);
+    if (payload !== SIZE_BYTES[size]) return show("r4out", "r4msg", "", "", "B's payload is " + payload + " bytes, but a " + size + " file has " + SIZE_BYTES[size] + ": wrong size selected, or the download didn't finish.");
+    var control = Number(a[1]) + Number(b[1]);
+    var row = [SIZE_BYTES[size], $("r4trial").value, "real_hosts", control, payload].join(",");
+    show("r4out", "r4msg", row, "bytes_overhead.csv",
+      "DHT traffic was " + (100 * control / (control + payload)).toFixed(4) + "% of the total.");
+  }
+
+  ["ipA", "ipB", "ipC"].forEach(function (id) {
+    var saved = store.get("evalfield." + id);
+    if (saved) $(id).value = saved;
+    $(id).addEventListener("input", function () { store.set("evalfield." + id, $(id).value.trim()); render(); });
+  });
+  var savedSize = store.get("evalfield.size");
+  if (savedSize && SIZE_BYTES[savedSize]) $("size").value = savedSize;
+  $("size").addEventListener("change", function () { store.set("evalfield.size", $("size").value); render(); });
+  ["r3pct", "r3trial", "r3b", "r3c", "r4trial", "r4a", "r4b"].forEach(function (id) {
+    $(id).addEventListener("input", render);
+    $(id).addEventListener("change", render);
+  });
+  render();
+
+  // Copy buttons: copy the command as currently shown (with the values filled in).
+  document.addEventListener("click", function (ev) {
+    var btn = ev.target.closest(".copy");
+    if (!btn) return;
+    var pre = btn.closest(".cmd").querySelector("pre");
+    var text = pre.textContent;
+    function selectIt() {
+      var range = document.createRange(); range.selectNodeContents(pre);
+      var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+      btn.textContent = "Selected: press Ctrl+C";
+    }
+    try {
+      navigator.clipboard.writeText(text).then(function () { btn.textContent = "Copied"; }, selectIt);
+    } catch (e) { selectIt(); }
+    setTimeout(function () { btn.textContent = "Copy"; }, 1800);
+  });
+})();
+</script>
+</body>
+</html>

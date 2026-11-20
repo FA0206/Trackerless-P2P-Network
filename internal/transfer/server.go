@@ -33,6 +33,46 @@ type server struct {
 	// (the default) means no delay. Atomic because it can be set while
 	// connections are being served.
 	debugServeDelay atomic.Int64
+
+	// DEBUG ONLY (--debug-upload-rate): caps this node's total upload, over
+	// all its connections, at a fixed number of bytes per second. Loopback
+	// has no bandwidth limit, so without it a localhost swarm can't show
+	// what P2P is for: a central server's one uplink is shared by every
+	// client, while each peer adds its own (docs/10-performance-graphs.md,
+	// graph 2). 0 (the default) means no cap.
+	uplink uplink
+}
+
+// uplink paces writes so that, across every connection, no more than rate
+// bytes per second leave this node. Each write reserves len/rate seconds
+// on one shared timeline and sleeps until its slot ends, like bytes
+// queueing for a link. No burst allowance: a link has none either.
+type uplink struct {
+	mu   sync.Mutex
+	rate int64 // bytes per second; 0 = unlimited
+	next time.Time
+}
+
+func (u *uplink) setRate(bytesPerSec int64) {
+	u.mu.Lock()
+	u.rate = bytesPerSec
+	u.mu.Unlock()
+}
+
+func (u *uplink) wait(n int) {
+	u.mu.Lock()
+	if u.rate <= 0 {
+		u.mu.Unlock()
+		return
+	}
+	now := time.Now()
+	if u.next.Before(now) {
+		u.next = now
+	}
+	u.next = u.next.Add(time.Duration(int64(n) * int64(time.Second) / u.rate))
+	d := u.next.Sub(now)
+	u.mu.Unlock()
+	time.Sleep(d)
 }
 
 // listen opens the TCP listening socket. port 0 lets the OS pick.
@@ -153,6 +193,7 @@ func (s *server) answer(req request) ([]byte, error) {
 }
 
 func (s *server) writeData(conn net.Conn, data []byte) error {
+	s.uplink.wait(len(data))
 	header, _ := json.Marshal(responseHeader{OK: true})
 	if err := framing.Write(conn, header); err != nil {
 		return err

@@ -355,6 +355,12 @@ who shared first. A provider that answered far slower (still running
 next piece only after answering the previous one, and a piece once
 assigned is asked of that provider alone.
 
+The page's sibling,
+[`eval/scripts/eval-field-tests.html`](../eval/scripts/eval-field-tests.html),
+uses the same setup to record numbers instead of pass/fail: the
+real-laptop halves of performance graphs 3 (recovery after the seeder
+dies) and 4 (DHT bytes vs. file bytes), [10](10-performance-graphs.md).
+
 - Use a phone hotspot or a home router. Campus and office Wi-Fi often
   block traffic between devices ("client isolation").
 - Build once (`go build -o lab/node ./cmd/node`), so macOS's firewall
@@ -378,7 +384,7 @@ assigned is asked of that provider alone.
 | One node per device, or all on one machine; replies pass contacts on as observed (`closestExcluding`) | No: the multi-device demo runs one node per device, and large networks run one per namespace | Only if several nodes per device across machines are ever needed: filter loopback contacts out of replies to remote requesters |
 | The advertise IP is detected from one route, the one to the bootstrap node (`chooseAdvertiseIP`) | No, on one subnet | Behind NAT, or with several interfaces: learn how peers see us (an "observed address" reply, as libp2p's identify does) |
 | One subnet; no NAT traversal | No for the demo | Across the internet: an overlay VPN (Tailscale, ZeroTier) needs no code change; real NAT traversal is its own project |
-| UDP fragments are measured, not avoided (`transport.go`) | Not yet | If `rpcs_failed` under Wi-Fi-like loss hurts the graphs: RPC retries, or smaller replies |
+| UDP fragments are measured, not avoided (`transport.go`) | Not yet | If `rpcs_failed` under Wi-Fi-like loss hurts the graphs: RPC retries, or smaller replies. (Graph 4's byte counts can't show fragmentation itself: `bytes=` is the UDP payload, the same on any MTU; fragments only add IP headers.) |
 | IPv4 only (`udp4`, `tcp4`) | No | If ever needed |
 
 ## Where this lives in the code
@@ -406,8 +412,10 @@ Each is its own later step:
   (`sendAndWait` matches by RPC ID only);
 - RPC retries for Wi-Fi packet loss (measure F4 first);
 - automating the lab (a namespace mode for `scripts/lib/`), to run
-  `demo-big-network.sh`, the edge cases and the evaluation graphs across
-  namespaces;
+  `demo-big-network.sh` and the edge cases across namespaces. (The
+  evaluation graphs went another way: scalable runs on localhost, real
+  laptops by hand for the two graphs that need a real network;
+  [10](10-performance-graphs.md));
 - one visualizer reading every node's `--api` across machines, which is a
   security question (NODE-API.md);
 - the internet: NAT traversal, or an overlay VPN with no code change.

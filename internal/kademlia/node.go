@@ -161,9 +161,9 @@ func (n *Node) RoutingTableSnapshot() map[int][]Contact {
 // updates the routing table for whoever sent it (paper Sec. 2.2: "when a
 // node receives any message... it updates the appropriate k-bucket for the
 // sender's node ID"), then dispatches on message type.
-func (n *Node) handleMessage(from *net.UDPAddr, env Envelope) {
+func (n *Node) handleMessage(from *net.UDPAddr, env Envelope, size int) {
 	sender := ContactFromUDPAddr(env.SenderID, from)
-	n.logger.Info("rpc received", "type", string(env.Type), "from", sender.String(), "rpc_id", shortID(env.RPCID))
+	n.logger.Info("rpc received", "type", string(env.Type), "from", sender.String(), "rpc_id", shortID(env.RPCID), "bytes", size)
 	n.warnIfAdvertisingLoopback(sender)
 
 	n.touchContact(sender)
