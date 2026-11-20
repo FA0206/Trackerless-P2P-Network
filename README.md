@@ -40,7 +40,7 @@ evaluation includes performance graphs:
 | Per-node HTTP API (for the visual demo) | ✅ Done: `--api` serves node info, routing table, stored values, files (with download progress) as JSON, plus a live event stream (SSE) of every RPC, stored value and piece; `--api-control` adds POST lookup/ping/put/get/share/fetch | `internal/nodeapi`, [docs/NODE-API.md](docs/NODE-API.md) |
 | Visual demo | ⬜ Not started | — |
 | Performance graphs (the four above) | ⬜ Not started | — |
-| Merkle trees | 🟡 Steps 1–3 of 4 on branch `feature/merkle` (`scripts/demo-merkle.sh` catches a dishonest provider and prints a manifest-size table): the tree, proofs and verification (RFC 6962, tested against the standard test vectors), and transfers use them. The manifest carries one root (138 bytes for a 1 MiB file, against 1,146 before), every piece travels with its proof, and partial seeders pass proofs on | [docs/09](docs/09-merkle-trees.md), `internal/transfer/merkle.go` |
+| Merkle trees | ✅ Done on branch `feature/merkle` (4 steps, including a diagram of a real file's tree) (`scripts/demo-merkle.sh` catches a dishonest provider and prints a manifest-size table): the tree, proofs and verification (RFC 6962, tested against the standard test vectors), and transfers use them. The manifest carries one root (138 bytes for a 1 MiB file, against 1,146 before), every piece travels with its proof, and partial seeders pass proofs on | [docs/09](docs/09-merkle-trees.md), `internal/transfer/merkle.go` |
 
 In short: nodes find each other and join, and any node can store and
 find small values. A file shared by one node is downloaded by others

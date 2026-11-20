@@ -1,13 +1,12 @@
 # 09 — Merkle trees: one hash for the whole file, a short proof per piece
 
-> **Status:** steps 1–3 of 4 are built:
+> **Status:** all 4 steps are built:
 > 1. the tree, proofs and verification (`internal/transfer/merkle.go`);
 > 2. transfers using them: the manifest carries the root, and every piece
 >    travels with its proof;
 > 3. a demo, `scripts/demo-merkle.sh`, where a dishonest provider is
->    caught and the manifest stays the same size from 1 to 2,048 pieces.
->
-> Step 4, a diagram, comes next; see the end.
+>    caught and the manifest stays the same size from 1 to 2,048 pieces;
+> 4. a diagram of a real file's tree (see the end).
 
 ## The problem it solves
 
@@ -194,8 +193,36 @@ under `-race`).
 2. ~~Use it in transfers: the root in the manifest, a proof with every
    piece, partial seeders passing proofs on.~~
 3. ~~A tamper demo and a manifest-size comparison~~ (below).
-4. **A diagram of a real file's tree,** with one piece's proof path
-   highlighted.
+4. ~~A diagram of a real file's tree~~ (below).
+
+## The diagram
+
+An interactive diagram (an HTML page, made for slides) draws the real
+tree of `merkle-demo.bin`, a reproducible 1 MiB file:
+- piece `i` (0–15) is the line `Piece NN of the Merkle tree demo file.\n`
+  (NN = the two-digit index), repeated and cut to 65,536 bytes;
+- the file's SHA-256 is `688da393…c951223`.
+
+A node shared it and logged:
+
+```
+msg="share complete" key=1231940f875eee8614112eb600523231578dd1b0 name=merkle-demo.bin size=1048576 pieces=16 merkle_root=778798a830691588daaac7288b91c9024f763886f41498b94ca61f1fbfa3460e manifest_bytes=141
+```
+
+All 31 hashes in the diagram were recomputed independently (Python
+`hashlib`) from the file's bytes, and the root matched the node's
+exactly. The page highlights piece 10's path to the root and its 4 proof
+hashes:
+
+| Proof hash | Level | Sibling | Hash |
+|---|---|---|---|
+| 1 | leaves | piece 11 | `ccce1c7e…` |
+| 2 | 1 | node 4 | `a5dffabe…` |
+| 3 | 2 | node 3 | `42be902a…` |
+| 4 | 3 | node 0 | `c00a0bf1…` |
+
+It also lists the verification steps, and selecting any piece shows that
+piece's proof instead.
 
 ## Seeing it work: `scripts/demo-merkle.sh`
 
