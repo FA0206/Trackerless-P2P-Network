@@ -95,6 +95,7 @@ Each file depends only on files in lower layers:
 | `protocol.go` | TCP request/response shapes, op names, frame size limits | `kademlia.ID` |
 | `bitfield.go` | `Bitfield` (`Has`, `Set`, `Count`), `decodeBitfield` validation. **No I/O.** | — |
 | `picker.go` | `pickPiece`: rarest needed piece with an idle holder, random ties. **No I/O.** | `bitfield.go` |
+| `merkle.go` | `MerkleTree` over piece hashes: `LeafHash`, `Root`, `Proof`, `VerifyMerkleProof` (RFC 6962 / 9162). Not used by transfers yet. **No I/O.** | — |
 | `library.go` | key → (manifest, file path, `have` bitfield); `addComplete`/`addPartial`/`markHave`/`remove`; `readPiece` serves only pieces it has | `manifest.go`, `bitfield.go` |
 | `server.go` | accept loop; `handleConn` request loop; `answer` (`GET_MANIFEST`, `GET_BITFIELD`, `GET_PIECE`); tracks open connections so `close` ends them; the DEBUG ONLY `debugServeDelay` (`--debug-serve-delay`) | `library.go`, `protocol.go`, framing |
 | `client.go` | `dialProvider`; `providerConn.fetch` | `protocol.go`, framing |
@@ -222,7 +223,7 @@ way.
    placeholder. That's why `Bootstrap` PINGs first.
 3. **A node never stores or returns itself, and replies never return the
    requester** (`closestExcluding`).
-4. **`Bucket`, `staleTracker`, `valueStore`, `Manifest`, `Bitfield`, and `pickPiece` do
+4. **`Bucket`, `staleTracker`, `valueStore`, `Manifest`, `Bitfield`, `pickPiece`, and `MerkleTree` do
    no network I/O.** Logic that's easy to get wrong stays unit-testable.
 5. **Register `pending[rpcID]` before sending.**
 6. **Every UDP message fits in one datagram** (`maxDatagramSize` = 8 KB).

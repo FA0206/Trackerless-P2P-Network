@@ -40,7 +40,7 @@ evaluation includes performance graphs:
 | Per-node HTTP API (for the visual demo) | ✅ Done: `--api` serves node info, routing table, stored values, files (with download progress) as JSON, plus a live event stream (SSE) of every RPC, stored value and piece; `--api-control` adds POST lookup/ping/put/get/share/fetch | `internal/nodeapi`, [docs/NODE-API.md](docs/NODE-API.md) |
 | Visual demo | ⬜ Not started | — |
 | Performance graphs (the four above) | ⬜ Not started | — |
-| Merkle trees | ⬜ Not started — optional; see [FAQ](docs/FAQ.md#do-merkle-trees-make-sense-here) | — |
+| Merkle trees | 🟡 Step 1 of 4 on branch `feature/merkle`: the tree, proofs and their verification (RFC 6962), tested against the standard test vectors; not used by transfers yet | [docs/09](docs/09-merkle-trees.md), `internal/transfer/merkle.go` |
 
 In short: nodes find each other and join, and any node can store and
 find small values. A file shared by one node is downloaded by others
@@ -62,6 +62,7 @@ needed, and which function implements it.
 6. [06 — STORE and FIND_VALUE](docs/06-store-and-find-value.md)
 7. [07 — File transfer over TCP](docs/07-file-transfer-over-tcp.md)
 8. [08 — Swarming: parallel downloads and partial seeding](docs/08-swarming.md)
+9. [09 — Merkle trees: one hash for the whole file, a short proof per piece](docs/09-merkle-trees.md)
 
 **Reference:**
 
@@ -451,6 +452,7 @@ internal/transfer/   file sharing on top of the DHT
   download.go        Download: event loop + workers (parallel, rarest-first, partial seeding)
   picker.go          rarest-first piece picker (pure)
   bitfield.go        which pieces a peer has (BitTorrent's layout)
+  merkle.go          Merkle tree over pieces: root, proofs, verification (RFC 6962; not used by transfers yet)
 internal/nodeapi/    the optional per-node HTTP API (docs/NODE-API.md)
   api.go             JSON snapshot endpoints, the SSE endpoint
   events.go          log tap (TeeHandler) + non-blocking event fan-out to viewers
@@ -463,7 +465,7 @@ scripts/demo-parallel.sh   one download from 3 providers at once, with a timelin
 scripts/lib/nodes.sh       shared helper: start N nodes with console FIFOs (bash 3.2)
 scripts/lib/edge.sh        helpers for the edge cases: brute-force closest nodes, wait for the Nth log line
 scripts/edge/              edge-case scripts, one per case, and run-all.sh (docs/EDGE-CASES.md)
-docs/                concept docs 01-07 + reference docs
+docs/                concept docs 01-09 + reference docs
 .vscode/launch.json  debug configurations
 ```
 

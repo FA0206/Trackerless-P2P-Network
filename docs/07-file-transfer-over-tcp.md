@@ -155,7 +155,8 @@ that serves a corrupted piece is detected and dropped
 (`TestCorruptProviderIsSkipped`). This is BitTorrent v1's design (a flat
 list of piece hashes). A Merkle tree would replace the list with one root
 hash; see [FAQ](FAQ.md#do-merkle-trees-make-sense-here) for why that's
-optional here.
+optional here. The tree itself is built and tested on branch
+`feature/merkle` ([09](09-merkle-trees.md)); transfers don't use it yet.
 
 ## How the downloader knows where each piece goes
 

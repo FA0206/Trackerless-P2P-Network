@@ -617,6 +617,11 @@ The flat-list design keeps an easy upgrade path: replace "list of piece
 hashes" with "Merkle root", and add a proof to each piece response. It's
 a good stretch goal if you want a concrete thing to show.
 
+**Now in progress** on branch `feature/merkle`: the tree, its proofs and
+their verification are built and tested (step 1 of 4). How it works,
+with a worked example using real hashes, is in
+[09-merkle-trees.md](09-merkle-trees.md).
+
 ## Compared with BitTorrent / libtorrent
 
 ### Is our wire protocol the same as libtorrent's? Could it be made the same easily?

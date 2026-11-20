@@ -33,7 +33,8 @@ const (
 //
 // This is BitTorrent v1's approach, a flat list of piece hashes. A Merkle
 // tree would replace PieceHashes with one root hash plus a per-piece proof;
-// see docs/FAQ.md for why that isn't needed at this project's scale.
+// see docs/FAQ.md for why that isn't needed at this project's scale. The
+// tree itself is in merkle.go (docs/09-merkle-trees.md), not used here yet.
 type Manifest struct {
 	Name        string   `json:"name"` // informational only; never used as a path
 	Size        int64    `json:"size"`
