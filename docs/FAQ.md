@@ -269,9 +269,36 @@ slow the DHT.
 
 Add `--api-control` and a program can also make the node act: POST
 `lookup`, `ping`, `put`, `get`, `share` or `fetch`, the console's
-commands. That's how the visual demo will let you click a node to make
-it look something up. Leave it off when you don't need it: any web page
-open in your browser could send those commands too.
+commands. That's how the visualizer's runner (`cmd/vizrun`) makes nodes
+share, fetch and look things up, one scene at a time. Leave it off when
+you don't need it: any web page open in your browser could send those
+commands too.
+
+### Is the visualizer a simulation? How do we know it isn't faked?
+
+No. `go run ./cmd/vizrun` starts 20 real `cmd/node` processes, and the
+page draws only what they report: each node's `/api/events` stream (its
+own log records), its snapshots (`/api/table`, …), and facts from the
+runner (which node it killed, the SHA-256 of each downloaded file). The
+runner also writes every event to `events.jsonl`; after a run, the
+page's own counters equalled that file's for every message kind checked
+(DRY-RUN part 9). Two things are slowed down, and both are labeled on
+screen: DHT scenes are **replayed** right after they happen, in their
+real order with their real duration on the badge (a lookup takes ~4 ms
+on localhost), and pieces are served once a second
+(`--debug-serve-delay`, a DEBUG-only flag). See
+[11](11-visualizer.md).
+
+### Why does the visualizer replay lookups instead of showing them live?
+
+A whole 3-round lookup takes about 4 ms on one machine: drawn live, all
+its arrows would flash at once. A fixed slow-motion factor big enough to
+see it (~1000×) would also blow a 2 ms scheduler hiccup up into a
+2-second pause. So the page buffers the real events of each action and
+replays them in their real order, one round at a time. Order is what the
+scene teaches (round 2 asks the nodes round 1's replies named); the real
+duration is printed on the badge. File transfers are slow enough to show
+live.
 
 ## Wire protocol
 

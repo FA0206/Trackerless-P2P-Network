@@ -37,6 +37,13 @@ Dependencies only point downward:
 - `internal/nodeapi` uses `kademlia.Node` and `transfer.Peer` through
   their public methods only, the same ones the console uses. Neither of
   them knows it exists.
+- The visualizer ([11](11-visualizer.md)) sits outside the diagram,
+  next to `curl`: `cmd/vizrun` (Go) imports nothing from `internal/`; it
+  runs `cmd/node` processes and talks to them only over the HTTP API
+  (`--api`, `--api-control`) and with signals. `viz/` (the page, plain
+  JS) only reads nodes' snapshots and `/api/events`, and asks `vizrun`
+  for each scene. So a node never knows it's being watched, and nothing
+  in the core changed for it.
 
 Go's `internal/` rule means only code in this module can import these.
 
@@ -299,5 +306,6 @@ way.
 | Change the network-namespace lab | `scripts/netns/*.sh`, doc `09` ("The lab"), `DRY-RUN.md` part 6 |
 | Change how `--id-seed` maps to an ID | `scripts/demo.sh` recomputes IDs with `shasum` |
 | Add a CLI flag or console command | `cmd/node`, README, `DEBUGGING.md`, `.vscode/launch.json` if relevant; a new console command probably wants a matching control endpoint (`internal/nodeapi/control.go`, NODE-API.md) |
-| Add or change an HTTP API endpoint or field | `internal/nodeapi/api.go` and `api_test.go`, `docs/NODE-API.md` (with real output); the visual demo, once it exists, reads these JSON field names |
-| Rename or remove any log message or attribute | it is also an `/api/events` event name/field: update the event table in `docs/NODE-API.md` and the visual demo (in addition to the demo scripts listed above) |
+| Add or change an HTTP API endpoint or field | `internal/nodeapi/api.go` and `api_test.go`, `docs/NODE-API.md` (with real output); the visualizer reads these JSON field names: `cmd/vizrun` (`/api/node` `id`, `routing_table_size`; `/api/table` `buckets[].contacts[].id`; `/api/store` `keys[].key`; the answers of `lookup` `rounds`/`rpcs_sent`/`closest[].id`, `put` `key`/`stored_at`/`stored_locally`, `get` `values[].text`/`from_local_store`/`rounds`, `share` `key`/`name`/`pieces`/`magnet`, `fetch` `pieces_from`/`already_had`) and `viz/` (`/api/node` `id`/`ip`/`udp_port`, `/api/table` `k`/`buckets[].index`/`contacts[].id`) |
+| Rename or remove any log message or attribute | it is also an `/api/events` event name/field: update the event table in `docs/NODE-API.md`, the demo scripts listed above, and the visualizer: `viz/rpc.js` pairs `rpc sent` / `rpc received` by `type`, `to`, `from`, `rpc_id` and knows `lookup round starting` (`round`, `batch`), `lookup converged`, `find_value finished`, `find_value answered from local store`, `value stored`, `store complete` (`stored_at`, `stored_locally`), `provider announced` (`replicas`), `share complete`; `viz/main.js` and `viz/scenes.js` use `piece received` (`index`, `of`, `from`, `have`), `provider failed, trying the next one` (`provider`), `download stalled: …`, `download gave up, still serving its pieces`, `download resumed` (shown in the log ticker), `download complete`, `new providers found`, `providers found`, `bucket full, pinging…`, `stale contact still alive…`, `stale contact unresponsive…`; `cmd/vizrun` counts `lookup round starting` / `lookup converged` (`rounds`), `piece received` (`index`, `of`), `download complete`, and waits for the node log line `bootstrap complete`; `scripts/demo-viz.sh` greps 14 event names in `events.jsonl` (its list) and vizrun's `vizrun: PASS` / `check: ok sha256: … matches the original` |
+| Change the visualizer's scenes | `cmd/vizrun/scenes.go` (actions, titles, checks) and `viz/scenes.js` (drawing), matched by `id`; the slides' titles; doc `11` (scene table, presenter's notes); `DRY-RUN.md` part 9; `scripts/demo-viz.sh` if an event kind or a check line changes |

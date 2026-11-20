@@ -1,0 +1,54 @@
+<!doctype html>
+<!--
+  The visualizer page (docs/11-visualizer.md). It only READS nodes through
+  their HTTP API (--api): snapshots and one /api/events stream per node.
+  It never POSTs to a node: to run the next scene it asks cmd/vizrun
+  (POST /viz/next), which serves this page:
+    go run ./cmd/vizrun          then open http://127.0.0.1:8790/
+  Without the runner, any static server works for watching nodes started
+  by hand:  ?nodes=viz0@127.0.0.1:8700,viz1@127.0.0.1:8701
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>P2P Visualizer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="viz.css">
+</head>
+<body>
+<div id="stage">
+  <header class="badge" id="badge">
+    <span class="dot"></span>
+    <span id="badge-text">CONNECTING</span>
+  </header>
+
+  <svg id="ring" class="ring" viewBox="0 0 1920 1080" width="1920" height="1080" aria-label="Nodes placed on the ID ring"></svg>
+
+  <section class="panel" id="panel" aria-live="polite"></section>
+
+  <section class="ticker" aria-label="Real log lines">
+    <ol id="ticker-list"></ol>
+  </section>
+
+  <footer class="caption" id="caption">
+    <h1 id="scene-title">Trackerless P2P, live</h1>
+    <p id="scene-caption">Connecting to the nodes…</p>
+  </footer>
+
+  <div class="hint" id="hint"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script src="format.js"></script>
+<script src="config.js"></script>
+<script src="streams.js"></script>
+<script src="ring.js"></script>
+<script src="rpc.js"></script>
+<script src="replay.js"></script>
+<script src="scenes.js"></script>
+<script src="main.js"></script>
+</body>
+</html>

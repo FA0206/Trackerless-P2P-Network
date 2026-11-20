@@ -6,7 +6,10 @@ serve. It also streams what it does as it happens, and, if you allow it,
 takes commands. It's built for the **visual demo**: a browser page
 reads each node's API, draws the network, and lets you click to make
 nodes act. It also works from `curl`, which makes it a debugging tool
-too.
+too. That page is `viz/` ([11-visualizer.md](11-visualizer.md)): it reads
+snapshots and one `/api/events?level=debug` stream per node, while
+`cmd/vizrun` drives the nodes through the control endpoints. Both use
+only what this document describes.
 
 | Part | Endpoints | Flag |
 |---|---|---|

@@ -24,6 +24,10 @@
   the seeder dies too early, both leechers give up with the same pieces
   and keep serving them, and fetching again resumes
   ([jump](#part-8--scriptsdemo-give-up-resumesh-giving-up-keeps-seeding-fetching-again-resumes)).
+- **Part 9** (branch `feature/magnet-links`) — the visualizer: `vizrun`
+  runs eight scenes on 20 live nodes, the page replays and draws them, and
+  `scripts/demo-viz.sh` checks a headless run
+  ([jump](#part-9--the-visualizer-cmdvizrun--viz)).
 
 > **On branch `feature/parallel-partial-seeding`**, parts 2–4 were
 > recorded before parallel downloads existed. The piece-by-piece numbers
@@ -1357,3 +1361,260 @@ is the same. Then node1 runs exactly the same `fetch`:
   way; the script shows only node1.
 - **Real devices.** Field test 4 in `scripts/multi-device/field-tests.html`
   is the same scenario on laptops.
+
+---
+
+# Part 9 — the visualizer (`cmd/vizrun` + `viz/`)
+
+Same branch. The concept is in [11](11-visualizer.md). These runs were
+made while the visualizer still had a ninth scene, give-up/resume (then
+scene 8), which is now removed until a core bug it hit is fixed; its
+lines are kept below as the evidence. Two kinds of run are traced here: `vizrun --auto` (headless, what `scripts/demo-viz.sh`
+does; ports 9740–9760 / 8740–8760) and a full step-mode run in Chrome
+(`go run ./cmd/vizrun`, ports 9700–9720 / 8700–8720). Node IDs are
+`SHA-1("viz<i>")`, so yours match: viz0 `34fbf035`, viz7 `0157e7dc`,
+viz10 `eb716d9b`, viz11 `617ea758`… RPC IDs, file keys and piece order
+differ per run.
+
+## The runner's own output (headless)
+
+```
+vizrun: scene 1: No tracker, just peers
+vizrun: check: ok join: 20 nodes running, 0 with an empty routing table
+vizrun: scene 2: Who you know: k-buckets
+vizrun: check: ok buckets: viz0 knows 12 nodes in 4 buckets, none over k=4
+vizrun: scene 3: Find anyone in a few hops
+vizrun: check: ok lookup: viz7 → viz10: 3 'lookup round starting' events, 'lookup converged' rounds=3, response rounds=3, rpcs_sent=8
+vizrun: check: ok lookup: the closest node found is viz10 itself
+vizrun: scene 4: Storage with no server
+vizrun: check: ok store: viz4 put "greeting" on 3 node(s) (+self: true); viz12 got it back over the network in 2 round(s)
+vizrun: scene 5: Share a file, get a magnet link
+vizrun: check: ok share: viz11 shared lecture-notes.bin (32 pieces), key 4cc38429
+vizrun: scene 6: Swarming
+vizrun: scene 7: Kill the seeder. The file survives.
+vizrun: check: ok kill: SIGKILL viz11: the leechers together hold all 32 pieces, and none has finished map[viz15:10 viz3:17 viz9:12]
+vizrun: check: ok sha256: viz3's copy matches the original (c260ed875d41c510…)
+vizrun: check: ok sha256: viz9's copy matches the original (c260ed875d41c510…)
+vizrun: check: ok sha256: viz15's copy matches the original (c260ed875d41c510…)
+vizrun: scene 8: Giving up keeps seeding; fetching again resumes
+vizrun: check: ok give up: viz6 and viz17 both stopped short and kept their pieces: 11 and 11 of 16
+vizrun: check: ok sha256: viz6's copy matches the original (5b0d2e6744318b0a…)
+vizrun: check: ok resume: viz6's second fetch logged 'download resumed'
+vizrun: scene 9: Live, not faked
+vizrun: check: ok events recorded=4243 dropped=0 (dropped must be 0)
+vizrun: PASS
+```
+
+Then `vizrun: stopped 21 node(s)`, and `ss -lunt` shows none of the
+ports. The lines below are from that run's `events.jsonl` (one JSON
+object per event, written here as log lines; `[viz7]` is the stream it
+came on).
+
+## Scene 1 — a join, seen from the receiving side
+
+viz1 joins through viz0. Its own stream isn't open yet (it joins within
+milliseconds of starting), so the join is what **viz0** logged:
+
+```
+23:48:02.234 [viz0] msg="rpc received" from=749d0d9d…@127.0.0.1:9741 rpc_id=73fcc6e8 type=PING
+23:48:02.234 [viz0] msg="rpc received" from=749d0d9d…@127.0.0.1:9741 rpc_id=a35eedc5 type=FIND_NODE
+```
+
+A PING, then the FIND_NODE of viz1's self-lookup: `Bootstrap` in
+`node.go`. In the page these become two comets viz1 → viz0, then lines
+from viz1 to the contacts in its `/api/table`. Each later newcomer that
+asked viz0 shows up the same way, half a second apart
+(`23:48:02.744 [viz0] … from=af50cd66…` is viz2's self-lookup).
+
+## Scene 3 — the lookup the page replays
+
+viz7 looks up viz10 (`eb716d9b`), the node farthest from it that isn't in
+its table. Every request appears twice, once on each side, with the same
+`rpc_id` (replies, logged by viz7 as `FIND_NODE_RESP`, are left out
+here):
+
+```
+23:48:11.881 [viz7]  msg="lookup round starting" batch=3 round=1 target=eb716d9b…
+23:48:11.881 [viz7]  msg="rpc sent" rpc_id=f3624a44 to=5ca89cdd…@127.0.0.1:9752 type=FIND_NODE
+23:48:11.881 [viz7]  msg="rpc sent" rpc_id=b8e73b2c to=4fe02097…@127.0.0.1:9749 type=FIND_NODE
+23:48:11.881 [viz7]  msg="rpc sent" rpc_id=21b18621 to=749d0d9d…@127.0.0.1:9741 type=FIND_NODE
+23:48:11.882 [viz12] msg="rpc received" from=0157e7dc…@127.0.0.1:9747 rpc_id=f3624a44 type=FIND_NODE
+23:48:11.882 [viz9]  msg="rpc received" from=0157e7dc…@127.0.0.1:9747 rpc_id=b8e73b2c type=FIND_NODE
+23:48:11.882 [viz1]  msg="rpc received" from=0157e7dc…@127.0.0.1:9747 rpc_id=21b18621 type=FIND_NODE
+23:48:11.883 [viz7]  msg="lookup round starting" batch=3 round=2 target=eb716d9b…
+23:48:11.883 [viz7]  msg="rpc sent" rpc_id=488562e5 to=af50cd66…@127.0.0.1:9742 type=FIND_NODE
+23:48:11.883 [viz7]  msg="rpc sent" rpc_id=9c00cc41 to=e32ed232…@127.0.0.1:9748 type=FIND_NODE
+23:48:11.883 [viz7]  msg="rpc sent" rpc_id=a0c594c0 to=a9853e91…@127.0.0.1:9745 type=FIND_NODE
+23:48:11.884 [viz7]  msg="lookup round starting" batch=2 round=3 target=eb716d9b…
+23:48:11.884 [viz7]  msg="rpc sent" rpc_id=280fc741 to=c8affceb…@127.0.0.1:9756 type=FIND_NODE
+23:48:11.884 [viz7]  msg="rpc sent" rpc_id=e5cc4044 to=eb716d9b…@127.0.0.1:9750 type=FIND_NODE
+23:48:11.885 [viz7]  msg="lookup converged" closest_found=4 rounds=3 rpcs_sent=8 rpcs_failed=0 target=eb716d9b…
+```
+
+Four milliseconds. `rpc.js` turns the window's 50 events into these
+steps (printed by running it under Node on that `events.jsonl`):
+
+```
+round 1
+launch FIND_NODE viz7->viz12 viz7->viz1 viz7->viz9
+reply            viz7->viz12 viz7->viz9 viz7->viz1
+round 2
+launch FIND_NODE viz7->viz8 viz7->viz2 viz7->viz5
+reply            viz7->viz2 viz7->viz8 viz7->viz5
+round 3
+launch FIND_NODE viz7->viz16 viz7->viz10
+reply            viz7->viz10 viz7->viz16
+launch PING      viz7->viz2
+label  lookup converged
+reply            viz7->viz2
+```
+
+Three rounds, as `lookup converged` says; the page shows `✓ replayed
+rounds match 'lookup converged'`. Round 3 reaches viz10 itself. The PING
+near the end isn't part of the lookup: viz7's bucket was full when a
+reply introduced a new contact, so it pinged its oldest one (the
+eviction check, [02](02-routing-table-and-kbuckets.md)). It's real
+traffic, so it's drawn.
+
+## Scenes 6–7 — the kill and the finish
+
+The runner polls its own record of `piece received` every 50 ms. At the
+first moment the three leechers together hold all 32 pieces (17 + 12 +
+10, overlapping), it SIGKILLs viz11. All three in-flight requests to it
+fail in the same millisecond:
+
+```
+23:48:30.656 [viz15] msg="provider failed, trying the next one" error="read response header: EOF" provider=127.0.0.1:9751
+23:48:30.656 [viz3]  msg="provider failed, trying the next one" error="read response header: EOF" provider=127.0.0.1:9751
+23:48:30.656 [viz9]  msg="provider failed, trying the next one" error="read response header: EOF" provider=127.0.0.1:9751
+23:48:45.696 [viz3]  msg="download complete" bytes=2097152 duration=32.103s failed_providers=1 … pieces=32 providers=3
+23:48:50.708 [viz9]  msg="download complete" bytes=2097152 duration=33.082s failed_providers=1 … pieces=32 providers=3
+23:48:52.711 [viz15] msg="download complete" bytes=2097152 duration=33.067s failed_providers=1 … pieces=32 providers=3
+```
+
+viz9 is one of the 4 nodes closest to the file's key, so its once-a-second
+rediscovery is answered from its own store, and the record count there
+grows as the others announce: `find_value answered from local store …
+values_found=2`, then `=3`, then `=4`.
+
+In the browser run, the `/api/fetch` answers split the pieces like this
+(the page writes them under each grid): viz3 got 8 from viz9, 18 from
+viz11, 6 from viz15; viz9 got 9 from viz3, 14 from viz11, 9 from viz15;
+viz15 got 14 from viz3, 5 from viz9, 13 from viz11. Every copy's SHA-256
+matched.
+
+## The removed give-up/resume scene (then scene 8)
+
+viz13 shares 16 pieces; it is SIGKILLed when the second leecher has 2.
+
+```
+23:49:06.812 [viz17] msg="provider failed, trying the next one" error="read response header: EOF" provider=127.0.0.1:9753
+23:49:06.813 [viz6]  msg="provider failed, trying the next one" error="read response header: EOF" provider=127.0.0.1:9753
+23:49:06.813 [viz6]  msg="download stalled: no live provider has the missing pieces; looking for more" have=10 of=16
+23:49:08.339 [viz6]  msg="download stalled: no live provider has the missing pieces; looking for more" have=11 of=16
+23:49:14.827 [viz17] msg="download stalled: no live provider has the missing pieces; looking for more" have=10 of=16
+23:49:15.828 [viz17] msg="download stalled: no live provider has the missing pieces; looking for more" have=11 of=16
+23:49:23.437 [viz6]  msg="download gave up, still serving its pieces" … have=11 of=16 error="transfer: stalled for 15s with 11 of 16 pieces: …"
+23:49:30.891 [viz17] msg="download gave up, still serving its pieces" … have=11 of=16 error="transfer: stalled for 15s with 11 of 16 pieces: …"
+23:49:30.956 [viz6]  msg="download resumed" have=11 key=eba42e20… of=16
+23:49:30.956 [viz6]  msg="provider failed, trying the next one" error="dial tcp4 127.0.0.1:9753: connect: connection refused" provider=127.0.0.1:9753
+23:49:30.962 [viz6]  msg="download complete" bytes=1048576 duration=8ms failed_providers=1 … pieces=16 providers=3
+```
+
+viz6 stalled at 10, got viz17's one extra piece (`have=11`), and stalled
+again: each stall is logged afresh, because the node resets its 15 s
+clock whenever it can progress (`download.go` `run`). That's why the
+page's countdown restarts on each `download stalled…` event and stops
+when a piece arrives. Then viz20 (no serve delay) shared the same bytes,
+and the same fetch resumed with 11 pieces on disk and finished in 8 ms.
+
+**A run that failed, and what it showed.** In an earlier version, scene 8
+always used viz6 and viz17. In one run viz6 was among the 4 nodes closest
+to the file's key, so it held a provider record itself. Its second fetch
+was answered from its own store, saw only the dead viz13's record, and
+failed at once:
+
+```
+23:47:04.161 [viz20] msg="provider announced" key=6060f440… tcp_addr=127.0.0.1:9760 replicas=3
+23:47:04.162 [viz6]  msg="find_value answered from local store" key=6060f440… values_found=1
+```
+
+viz20's record went to 3 nodes, but viz6 never asked them. Picking
+leechers that hold no record wasn't enough: in two later runs the chosen
+leechers (viz5 and viz2; then viz4) got records anyway, from their own
+announces:
+
+```
+23:58:06.892 [viz5] msg="store complete" key=75f66e91… stored_at=… stored_locally=true
+23:58:14.936 [viz2] msg="store complete" key=75f66e91… stored_at=… stored_locally=true
+23:58:36.095 [viz20] msg="lookup converged" closest_found=2 rounds=3 rpcs_failed=2 rpcs_sent=7 target=75f66e91…
+23:58:36.097 [viz5] msg="find_value answered from local store" key=75f66e91… values_found=1
+```
+
+viz11 (dead since scene 7) was among the 4 IDs closest to that key, so
+lookups for it ended with fewer than 4 live nodes (`closest_found=2`),
+and `selfAmongClosest` counts "fewer than k found" as "I'm among the
+closest": every announcer kept its own record, and viz5's fetch, seeing
+only that, failed with `no providers found`. The runner now shares fresh
+bytes until the key has no dead node among its k closest, and picks the
+resuming leecher at resume time
+([11](11-visualizer.md#the-scenes-as-built)). In that same run the
+two leechers also gave up unequal, 10 vs 11: viz17's last piece came from
+the seeder, and its provider record took 4 s to store (lookups touching
+viz11, dead since scene 7, wait out the 2 s RPC timeout), so viz6's
+rediscovery never found it.
+
+## The page, checked against the file
+
+After the browser run, the page's own per-message counters
+(`Viz.app.counts`) and the runner's `events.jsonl`:
+
+```
+rpc sent               file=  701 page=  701 =
+rpc received           file= 1497 page= 1497 =
+lookup converged       file=   11 page=   11 =
+value stored           file=   37 page=   37 =
+provider announced     file=    9 page=    9 =
+piece received         file=  122 page=  122 =
+download complete      file=    4 page=    4 =
+tcp request served     file=  426 page=  426 =
+download resumed       file=    1 page=    1 =
+bucket updated         file= 1261 page= 1261 =
+total 5054 max dropped 0
+```
+
+21 event streams on one page, none dropping an event.
+
+## `scripts/demo-viz.sh`
+
+```
+=== Checks ===
+  vizrun's checks: all ok
+  events recorded: 4608
+    636  rpc sent
+   1361  rpc received
+    159  lookup round starting
+     11  lookup converged
+  …
+      2  download gave up, still serving its pieces
+      1  download resumed
+   1226  bucket updated
+  dropped: 0 on every event
+  SHA-256: 4 of 4 downloaded copies match their originals
+  no port left bound after the run
+
+PASS: every scene ran on live nodes, every event kind the page draws was recorded, nothing was dropped, and every copy matched.
+```
+
+## What part 9 doesn't show
+
+- **The give-up/resume scene,** until the bug above is fixed in the core.
+
+- **Nodes on other laptops.** The page takes any API addresses
+  (`--watch`), but the runner, the hashes and `--api-control` are
+  localhost-only for now ([11](11-visualizer.md#later)).
+- **A recorded video.** Deferred; `?mode=auto` is ready for it.
+- **The scene-7 VOID path in the browser.** It happens only if the
+  presenter waits until a leecher holds the whole file; the runner's
+  `recorder.spread` test covers the rule.
+

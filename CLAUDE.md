@@ -52,6 +52,8 @@ bash scripts/demo-parallel.sh                   # one download from 3 providers 
 bash scripts/demo-magnet.sh                     # share prints a magnet link; fetch by link; lying name ignored; BitTorrent link refused; must print PASS
 bash scripts/demo-give-up-resume.sh             # seeder dies too early: both leechers give up with the same pieces, keep serving, then fetch resumes; must print PASS (~1 min)
 bash scripts/edge/run-all.sh                    # every edge case; each PASS = behaved as docs/EDGE-CASES.md predicts
+bash scripts/demo-viz.sh                        # visualizer headless: all 8 scenes on 20 live nodes, dropped=0, hashes match; must print PASS (~1 min)
+go run ./cmd/vizrun                             # the visualizer: open http://127.0.0.1:8790/, → runs the next scene (docs/11-visualizer.md)
 ```
 
 A core fix (lookup, refresh, republish) is expected to flip some edge-case
@@ -63,7 +65,9 @@ Packages: `internal/kademlia` (the DHT, opaque values), `internal/transfer`
 `[length][body]` frames), `internal/nodeapi` (optional per-node HTTP API:
 `--api` for snapshots and the event stream, `--api-control` for console-style
 commands; public APIs only), `cmd/node` (CLI + console). Dependencies point
-only downward; see `docs/ARCHITECTURE.md`.
+only downward; see `docs/ARCHITECTURE.md`. The visualizer, `cmd/vizrun`
+(runner) + `viz/` (page), uses nodes only through their HTTP API and
+signals; it imports nothing from `internal/` (`docs/11-visualizer.md`).
 
 ## Invariants that are easy to break (details: docs/ARCHITECTURE.md)
 
