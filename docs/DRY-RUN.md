@@ -16,6 +16,10 @@
   with network namespaces: a node detects its own address, joins, and
   downloads across them
   ([jump](#part-6--two-machines-a-join-and-a-download-across-namespaces)).
+- **Part 7** (branch `feature/magnet-links`) — `scripts/demo-magnet.sh`:
+  fetching with a magnet link, a link whose name lies, and a refused
+  BitTorrent link
+  ([jump](#part-7--scriptsdemo-magnetsh-fetching-with-a-link)).
 
 > **On branch `feature/parallel-partial-seeding`**, parts 2–4 were
 > recorded before parallel downloads existed. The piece-by-piece numbers
@@ -1038,3 +1042,170 @@ most one request per provider.
   logs.
 - Several providers, a seeder dying mid-download, and real Wi-Fi: those
   are in 09's test checklist, for the lab and then for real devices.
+
+---
+
+# Part 7 — `scripts/demo-magnet.sh`: fetching with a link
+
+Branch `feature/magnet-links`. The concept is in
+[10-magnet-links.md](10-magnet-links.md). The point of this part: **a
+magnet link costs nothing on the wire.** It is parsed into the content
+key on the downloading node, and from then on the fetch is the same as
+one typed with the bare key.
+
+Three nodes with k = 3, so every node is among the k closest to every
+key, and every provider record reaches all three. The file's content key
+was `637e2199…` in this run. It differs every run, because the file is
+random.
+
+## The cast
+
+| Node | Ports | ID (seed) | Role |
+|---|---|---|---|
+| node0 | 9600 | `2b370ab7…` (`demo0`) | first node; later fetches with a link whose name lies |
+| node1 | 9601 | `10f71961…` (`demo1`) | shares `holiday.bin` (200 000 bytes, 4 pieces) |
+| node2 | 9602 | `db612776…` (`demo2`) | fetches with the link, then is handed a BitTorrent link |
+
+## Phase 1 — `share holiday.bin` (node1)
+
+```
+console.go     consoleEnv.share
+peer.go          Peer.Share            BuildManifest → 4 pieces; EncodeManifest → 340 bytes; ContentKey → 637e2199…
+peer.go          announce → Node.Store  lookup (1 round, 2 FIND_NODE), then STORE to node0 and node2
+console.go       consoleEnv.magnetFor   Library.List → SharedFile.Magnet → MagnetLink(key, "holiday.bin")
+```
+
+```
+[node1] msg="lookup converged" target=637e2199… rounds=1 rpcs_sent=2 rpcs_failed=0 closest_found=2
+[node1] msg="store complete" key=637e2199… stored_at=2 stored_locally=true failed=0
+[node1] msg="provider announced" key=637e2199… tcp_addr=127.0.0.1:9601 replicas=3
+[node1] msg="share complete" key=637e2199… name=holiday.bin size=200000 pieces=4
+shared /tmp/tmp.KwtOD0BkDi/holiday.bin
+  content key: 637e2199d6798bd6c983adb58129deb1dfb32242
+  magnet link: magnet:?xt=urn:tp2p:637e2199d6798bd6c983adb58129deb1dfb32242&dn=holiday.bin
+  others can run: fetch 637e2199d6798bd6c983adb58129deb1dfb32242 <out-path>
+```
+
+The `magnet link:` line is new, and the lines around it are unchanged
+(the other demos grep `content key:`). The script takes the link with
+`awk '{print $3}'`. It's one field because `MagnetLink` escapes the
+name, so a link never contains a space.
+
+## Phase 2 — `fetch <link> node2.bin` (node2)
+
+```
+console.go   consoleEnv.fetch
+magnet.go      ParseKeyOrMagnet    starts with "magnet:" → ParseMagnet
+magnet.go        ParseMagnet       url.Parse → Scheme "magnet", RawQuery "xt=urn:tp2p:637e…&dn=holiday.bin"
+                                   url.ParseQuery → xt = [urn:tp2p:637e…], dn = [holiday.bin]
+                                   one xt, prefix urn:tp2p: → kademlia.IDFromHex → key 637e2199…
+                                   (dn "holiday.bin" is returned; ParseKeyOrMagnet drops it)
+peer.go        Peer.Download(637e2199…, node2.bin)    from here on, exactly a key-based fetch (docs 07, 08)
+```
+
+node2 was one of the k closest in phase 1 (`[node2] msg="value stored"
+key=637e2199… bytes=87`), so `FIND_VALUE` is answered from its own store
+with no RPC. It then downloads from node1, and after its first piece
+announces itself as a provider ([08](08-swarming.md)):
+
+```
+[node2] msg="find_value answered from local store" key=637e2199… values_found=1
+[node2] msg="providers found" key=637e2199… count=1
+[node2] msg="tcp connected to provider" provider=127.0.0.1:9601
+[node2] msg="find_value answered from local store" key=637e2199… values_found=1
+[node2] msg="piece requested" index=3 from=127.0.0.1:9601 inflight=1
+[node2] msg="piece received" index=3 of=4 from=127.0.0.1:9601 bytes=3392 have=1 inflight=0
+[node2] msg="piece requested" index=1 from=127.0.0.1:9601 inflight=1
+[node2] msg="rpc sent" type=FIND_NODE to=10f71961…@127.0.0.1:9601 rpc_id=349588a2
+[node2] msg="rpc sent" type=FIND_NODE to=2b370ab7…@127.0.0.1:9600 rpc_id=2ded9aad
+[node2] msg="rpc received" type=FIND_NODE_RESP from=2b370ab7…@127.0.0.1:9600 rpc_id=2ded9aad
+[node2] msg="rpc received" type=FIND_NODE_RESP from=10f71961…@127.0.0.1:9601 rpc_id=349588a2
+[node2] msg="lookup converged" target=637e2199… rounds=1 rpcs_sent=2 rpcs_failed=0 closest_found=2
+[node2] msg="rpc sent" type=STORE to=10f71961…@127.0.0.1:9601 rpc_id=3c806b32
+[node2] msg="rpc sent" type=STORE to=2b370ab7…@127.0.0.1:9600 rpc_id=2ccb148b
+[node2] msg="piece received" index=1 of=4 from=127.0.0.1:9601 bytes=65536 have=2 inflight=0
+[node2] msg="piece requested" index=2 from=127.0.0.1:9601 inflight=1
+[node2] msg="rpc received" type=STORE_RESP from=2b370ab7…@127.0.0.1:9600 rpc_id=2ccb148b
+[node2] msg="rpc received" type=STORE_RESP from=10f71961…@127.0.0.1:9601 rpc_id=3c806b32
+[node2] msg="store complete" key=637e2199… stored_at=2 stored_locally=true failed=0
+[node2] msg="provider announced" key=637e2199… tcp_addr=127.0.0.1:9602 replicas=3
+[node2] msg="piece received" index=2 of=4 from=127.0.0.1:9601 bytes=65536 have=3 inflight=0
+[node2] msg="piece requested" index=0 from=127.0.0.1:9601 inflight=1
+[node2] msg="piece received" index=0 of=4 from=127.0.0.1:9601 bytes=65536 have=4 inflight=0
+[node2] msg="download complete" key=637e2199… name=holiday.bin bytes=200000 pieces=4 providers=1 failed_providers=0 max_inflight=1 duration=5ms
+fetched "holiday.bin" (200000 bytes, 4 pieces) into /tmp/tmp.KwtOD0BkDi/node2.bin in 5ms
+    4 piece(s) from 127.0.0.1:9601
+```
+
+node1's side of the same TCP connection:
+
+```
+[node1] msg="tcp connection accepted" from=127.0.0.1:48044
+[node1] msg="tcp request served" to=127.0.0.1:48044 op=GET_MANIFEST index=0 bytes=340
+[node1] msg="tcp request served" to=127.0.0.1:48044 op=GET_PIECE index=3 bytes=3392
+[node1] msg="tcp request served" to=127.0.0.1:48044 op=GET_PIECE index=1 bytes=65536
+[node1] msg="tcp request served" to=127.0.0.1:48044 op=GET_PIECE index=2 bytes=65536
+[node1] msg="tcp request served" to=127.0.0.1:48044 op=GET_PIECE index=0 bytes=65536
+```
+
+**What node2's fetch sent:**
+
+| | Messages |
+|---|---|
+| DHT: finding providers | 0 (local store) |
+| DHT: announcing itself (lookup + STORE) | 2 `FIND_NODE` + 2 `STORE` |
+| TCP | 1 connection: 1 `GET_MANIFEST` (340 bytes) + 4 `GET_PIECE` |
+
+The link itself accounts for none of these. A `fetch 637e2199… node2.bin`
+would have sent the same messages.
+
+## Phase 3 — the same link with `dn=lies.txt` (node0)
+
+The script rewrites the link with `sed 's/&dn=.*/\&dn=lies.txt/'`.
+`ParseMagnet` returns the name `lies.txt`, and `ParseKeyOrMagnet` drops it
+with the rest of the link. By now node2 is a provider too, so node0
+finds two:
+
+```
+[node0] msg="find_value answered from local store" key=637e2199… values_found=2
+[node0] msg="providers found" key=637e2199… count=2
+[node0] msg="download complete" key=637e2199… name=holiday.bin bytes=200000 pieces=4 providers=2 failed_providers=0 max_inflight=2 duration=3ms
+fetched "holiday.bin" (200000 bytes, 4 pieces) into /tmp/tmp.KwtOD0BkDi/node0.bin in 3ms
+    2 piece(s) from 127.0.0.1:9601
+    2 piece(s) from 127.0.0.1:9602
+```
+
+`name=holiday.bin` comes from the manifest, which was checked against
+the key. The link's `dn` never reached the downloader.
+
+## Phase 4 — a BitTorrent link (node2)
+
+The script sends `fetch magnet:?xt=urn:btih:637e2199…&dn=holiday.bin
+node2-btih.bin`: the same 40 hex characters, labelled as a BitTorrent
+info hash. `ParseMagnet` sees the `urn:btih:` prefix and returns an
+error, and `consoleEnv.fetch` prints it and returns before
+`Peer.Download`. Here is node2's log from that line to the end, in full:
+
+```
+transfer: this is a BitTorrent magnet link (xt=urn:btih:...): it names a torrent in the BitTorrent network, not a file in this one, whose links use xt=urn:tp2p:<key>
+[node2] msg="shutting down"
+```
+
+No RPC and no TCP connection, and no `node2-btih.bin` was created.
+
+## Phase 5 — verification
+
+`cmp` finds `node2.bin` and `node0.bin` identical to `holiday.bin`.
+node0's `fetched` line names `holiday.bin`, and `node2-btih.bin` doesn't
+exist:
+
+```
+PASS: both links delivered identical copies, the lying name was ignored (the manifest says "holiday.bin"), and the BitTorrent link was refused.
+```
+
+## What part 7 doesn't show
+
+- The HTTP API taking a link: [NODE-API.md](NODE-API.md#post-apishare-and-post-apifetch)
+  has real `curl` output, and `TestFetchAcceptsMagnetLink` tests it.
+- A link carried to another machine: parsing is local, so it's the same
+  on any device; [09](09-multi-device.md) covers running across devices.

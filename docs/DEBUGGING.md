@@ -88,9 +88,9 @@ Each node reads **console commands** from its terminal
 | `ping <host:port>` | PING an address, report the reply time |
 | `put <name> <text…>` | STORE the text under key SHA-1(name); prints which nodes kept it |
 | `get <name>` | FIND_VALUE for SHA-1(name); says whether it was answered locally or via the network |
-| `share <path>` | publish a file; prints its content key |
-| `fetch <hex-key> <out-path>` | download a file; prints pieces per provider and any failed providers |
-| `files` | files this node can serve, with how many pieces it has (`has 7/16` while downloading) |
+| `share <path>` | publish a file; prints its content key and a magnet link carrying it ([10](10-magnet-links.md)) |
+| `fetch <key\|magnet> <out-path>` | download a file by content key or magnet link (the link's name is ignored); prints pieces per provider and any failed providers |
+| `files` | files this node can serve, with how many pieces it has (`has 7/16` while downloading) and each one's magnet link |
 
 Log lines and console output share the terminal. Use `--quiet` on the
 pane you're typing into. If you start a node in the background with `&`
@@ -150,7 +150,8 @@ go run ./cmd/node --port 9002 --id-seed demo2 --k 3 --quiet --bootstrap 127.0.0.
 go run ./cmd/node --port 9003 --id-seed demo3 --k 3 --quiet --bootstrap 127.0.0.1:9000
 ```
 
-- pane 2: `share README.md` → copy the printed content key
+- pane 2: `share README.md` → copy the printed content key (or the
+  magnet link: `fetch` takes either)
 - pane 3: `fetch <key> /tmp/copy1.md` → all pieces from `127.0.0.1:9001`
 - any pane: `table` ends with `holding values for N keys`, which is
   non-zero on the 3 nodes holding the provider records
@@ -468,6 +469,9 @@ what "connection refused" is.
 | A download pauses ~2 s before starting | Its `FIND_VALUE` round included a dead node (synchronous rounds; see DRY-RUN part 2). |
 | `download stalled: no live provider has the missing pieces` | Every node that had the missing pieces is gone. It keeps rediscovering for 15 s, then fails and deletes the partial file. |
 | `fetch failed: … is already in the library` | This node already shares or is downloading that key. |
+| `transfer: this is a BitTorrent magnet link …` | The link says `xt=urn:btih:`, a BitTorrent info hash. This network's links say `xt=urn:tp2p:` ([10](10-magnet-links.md#why-tp2p-and-not-btih)). |
+| `transfer: want a 40-hex-char content key or a magnet:?xt=urn:tp2p:... link: …` | `fetch`'s first argument is neither: a mistyped key, or a link missing its `magnet:` start. |
+| `usage: fetch …` after pasting a link | The pasted link contains a space, so the console saw extra arguments. Links printed by `share` and `files` never contain one (a space in a name is `+`). |
 | After a long pause at a breakpoint in the download loop, providers get marked dead | While the loop is paused no new requests go out. Providers close connections idle for their IO timeout (10 s), and the next request on such a connection fails. Use logpoints, or pause only briefly. |
 | `bootstrap node … did not answer PING` | Seed not started yet, wrong port, or seed paused in the debugger with a short `--rpc-timeout`. |
 | Lookup shows `rpcs_failed` while debugging | Some node was paused at a breakpoint longer than `--rpc-timeout`. Raise it. |

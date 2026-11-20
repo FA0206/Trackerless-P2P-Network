@@ -276,10 +276,11 @@ type File struct {
 	Pieces int         `json:"pieces"`
 	Have   int         `json:"have"` // pieces on disk and servable; == Pieces once complete
 	Path   string      `json:"path"`
+	Magnet string      `json:"magnet"` // what to hand to someone else: POST /api/fetch accepts it as key
 }
 
 func fileOf(f transfer.SharedFile) File {
-	return File{Key: f.Key, Name: f.Name, Size: f.Size, Pieces: f.Pieces, Have: f.Have, Path: f.Path}
+	return File{Key: f.Key, Name: f.Name, Size: f.Size, Pieces: f.Pieces, Have: f.Have, Path: f.Path, Magnet: f.Magnet()}
 }
 
 func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
@@ -296,5 +297,10 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ") // readable with plain curl
-	enc.Encode(v)           // the status is already sent; a write error means the client left
+	// By default Go writes & < > as & < >, which only matters
+	// for JSON pasted into an HTML page. Here it would turn a magnet link's
+	// "&dn=" into "&dn=", and a link copied from curl's output into a
+	// console would no longer parse. Both forms decode to the same string.
+	enc.SetEscapeHTML(false)
+	enc.Encode(v) // the status is already sent; a write error means the client left
 }

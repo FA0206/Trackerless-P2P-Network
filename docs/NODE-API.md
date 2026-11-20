@@ -172,7 +172,7 @@ store. It was added for this API, and the DHT itself never calls it.
 
 ### `GET /api/files`: files this node can serve
 
-This is node2 halfway through downloading a 4-piece file (the seeder ran
+This is node2 one piece into downloading a 4-piece file (the seeder ran
 with `--debug-serve-delay 400ms` so the download is slow enough to catch):
 
 ```
@@ -180,12 +180,13 @@ $ curl -s 127.0.0.1:8722/api/files
 {
   "files": [
     {
-      "key": "06c461bcbe27e57e7ef20e4654b89d62683ed400",
+      "key": "16fc6af0cf2598518cfc151c1ba6d408c8be4541",
       "name": "photo.bin",
       "size": 200000,
       "pieces": 4,
-      "have": 2,
-      "path": "/tmp/tmp.YkL1uMJUr9/copy.bin"
+      "have": 1,
+      "path": "copy.bin",
+      "magnet": "magnet:?xt=urn:tp2p:16fc6af0cf2598518cfc151c1ba6d408c8be4541&dn=photo.bin"
     }
   ]
 }
@@ -193,8 +194,15 @@ $ curl -s 127.0.0.1:8722/api/files
 
 The files the node shared, plus the ones it is downloading or has
 downloaded (`Peer.Library().List()`), sorted by name. `key` is the
-content key others pass to `fetch`. With no files, it's `{"files": []}`,
-an empty list rather than `null`.
+content key, and `magnet` is the same key as a link to hand to someone
+else ([10](10-magnet-links.md)). `fetch` accepts either. With no files,
+it's `{"files": []}`, an empty list rather than `null`.
+
+`magnet` contains a raw `&`. Go's JSON encoder would normally write it as
+`&` (an escape meant for JSON embedded in HTML pages). That decodes
+to the same string, but a link copied from `curl`'s output into a console
+would no longer parse, so `writeJSON` turns that escaping off
+(`SetEscapeHTML(false)`). The `/api/events` stream is unchanged.
 
 **`have` is how many pieces the node holds** and can serve. With partial
 seeding ([08](08-swarming.md)) a download enters the library as soon as
@@ -336,7 +344,7 @@ text.
 | `POST /api/put` | `{"name": "…", "text": "…"}` | STORE text under SHA-1(name) | `put` | `Node.Store` |
 | `POST /api/get` | `{"name": "…"}` | FIND_VALUE for SHA-1(name) | `get` | `Node.FindValue` |
 | `POST /api/share` | `{"path": "…"}` | publish a local file | `share` | `Peer.Share` |
-| `POST /api/fetch` | `{"key": "<40 hex>", "out": "…"}` | download a file | `fetch` | `Peer.Download` |
+| `POST /api/fetch` | `{"key": "<40 hex or magnet link>", "out": "…"}` | download a file | `fetch` | `Peer.Download` |
 
 **Requests** must send `Content-Type: application/json` (otherwise
 **415**; why is under "Safety" below). Unknown fields are rejected, so a
@@ -346,7 +354,7 @@ ones are relative to the node's working directory.
 
 **Responses:**
 - **200** with the result;
-- **400** `{"error": …}` when the request itself is wrong (bad hex, missing field);
+- **400** `{"error": …}` when the request itself is wrong (bad hex, a magnet link that isn't ours, missing field);
 - **500** `{"error": "<command> failed: …"}` when the node tried and failed (timeout, no providers, a value over 256 bytes, an existing `out` file).
 
 The request blocks until the operation finishes, just as the console
@@ -451,48 +459,56 @@ value. A key nobody holds gives `"values": []` with status 200.
 
 ### `POST /api/share` and `POST /api/fetch`
 
+All three nodes ran in one directory, so the relative paths below
+(`photo.bin`, `copy.bin`) are relative to it.
+
 ```
-$ curl -s -X POST -H 'Content-Type: application/json' -d '{"path":"/tmp/…/photo.bin"}' 127.0.0.1:8721/api/share
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"path":"photo.bin"}' 127.0.0.1:8721/api/share
 {
-  "key": "06c461bcbe27e57e7ef20e4654b89d62683ed400",
+  "key": "16fc6af0cf2598518cfc151c1ba6d408c8be4541",
   "name": "photo.bin",
   "size": 200000,
   "pieces": 4,
   "have": 4,
-  "path": "/tmp/tmp.YkL1uMJUr9/photo.bin"
+  "path": "photo.bin",
+  "magnet": "magnet:?xt=urn:tp2p:16fc6af0cf2598518cfc151c1ba6d408c8be4541&dn=photo.bin"
 }
 
-$ curl -s -X POST -H 'Content-Type: application/json' -d '{"key":"06c461bc…","out":"/tmp/…/copy.bin"}' 127.0.0.1:8722/api/fetch
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"key":"magnet:?xt=urn:tp2p:16fc6af0…&dn=photo.bin","out":"copy.bin"}' 127.0.0.1:8722/api/fetch
 {
-  "key": "06c461bcbe27e57e7ef20e4654b89d62683ed400",
+  "key": "16fc6af0cf2598518cfc151c1ba6d408c8be4541",
   "name": "photo.bin",
   "size": 200000,
   "pieces": 4,
-  "out": "/tmp/tmp.YkL1uMJUr9/copy.bin",
+  "out": "copy.bin",
   "providers_found": 1,
   "pieces_from": {
     "127.0.0.1:9721": 4
   },
   "failed_providers": [],
   "max_inflight": 1,
-  "duration_ms": 1610
+  "duration_ms": 1609
 }
 ```
 
 (This is the slow download from the `/api/files` example: 4 pieces at
 400 ms each.) `share` answers with the same shape as an `/api/files`
-entry. `fetch`'s `pieces_from` is keyed by each provider's TCP address,
-and `max_inflight` is the most piece requests it had outstanding at once:
-here 1, because a download keeps at most one request per provider
-([08](08-swarming.md)). The copy was byte-for-byte identical.
+entry, `magnet` included. `fetch`'s `key` takes the 40-hex content key or
+a magnet link (`transfer.ParseKeyOrMagnet`, the same parser as the
+console). Only the key inside the link is used; its `dn` is ignored
+([10](10-magnet-links.md)). `fetch`'s `pieces_from` is keyed by each
+provider's TCP address, and `max_inflight` is the most piece requests it
+had outstanding at once: here 1, because a download keeps at most one
+request per provider ([08](08-swarming.md)). The copy was byte-for-byte
+identical.
 
-A `fetch` can fail before any network traffic in two ways. On the same
+A `fetch` can fail before any network traffic in three ways. On the same
 node again, the file is already in its library (shared, downloading, or
 downloaded):
 
 ```
 {
-  "error": "fetch failed: transfer: 06c461bcbe27e57e7ef20e4654b89d62683ed400 is already in the library"
+  "error": "fetch failed: transfer: 16fc6af0cf2598518cfc151c1ba6d408c8be4541 is already in the library"
 }
 ```
 
@@ -501,7 +517,17 @@ On another node into the same `out` path, the path exists, and
 
 ```
 {
-  "error": "fetch failed: open /tmp/tmp.YkL1uMJUr9/copy.bin: file exists"
+  "error": "fetch failed: open copy.bin: file exists"
+}
+```
+
+A BitTorrent magnet link (`xt=urn:btih:…`), even one with the same 40 hex
+characters, is a **400**: it names a torrent in BitTorrent's network, not
+a file in this one ([10](10-magnet-links.md#why-tp2p-and-not-btih)):
+
+```
+{
+  "error": "key must be 40 hex characters or a magnet link: transfer: this is a BitTorrent magnet link (xt=urn:btih:...): it names a torrent in the BitTorrent network, not a file in this one, whose links use xt=urn:tp2p:<key>"
 }
 ```
 
@@ -613,6 +639,11 @@ state:
 - `share` on one node, `fetch` on another, with the file compared byte
   for byte, and a second fetch refused without touching the existing
   file;
+- `fetch` with the `magnet` link `share` returned, and with a copy whose
+  `dn` lies: both download the real file, named by its manifest
+  (`TestFetchAcceptsMagnetLink`); a `btih` link is a 400;
+- `/api/files` entries carry `magnet`, with `&` written as-is in the raw
+  body;
 - `/api/files` showing a slow download with `0 < have < pieces`, then
   `have == pieces` once it's done;
 - `ping` of a live and a dead address;

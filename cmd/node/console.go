@@ -72,9 +72,10 @@ func (c *consoleEnv) help() {
   put <name> <text...>       STORE text under key SHA-1(name) on the k closest nodes
   get <name>                 FIND_VALUE for key SHA-1(name)
 Files:
-  share <path>               publish a local file; prints its content key
-  fetch <hex-key> <out-path> download a shared file (out-path must not exist)
-  files                      files this node can serve`)
+  share <path>               publish a local file; prints its content key and magnet link
+  fetch <key|magnet> <out>   download a shared file by content key or magnet link
+                             (out must not exist; the link's name is ignored)
+  files                      files this node can serve, each with its magnet link`)
 }
 
 func (c *consoleEnv) table() {
@@ -202,15 +203,31 @@ func (c *consoleEnv) share(ctx context.Context, args []string) {
 		fmt.Fprintln(c.out, "share failed:", err)
 		return
 	}
-	fmt.Fprintf(c.out, "shared %s\n  content key: %s\n  others can run: fetch %s <out-path>\n", args[0], key, key)
+	// The "content key:" line must stay as it is: the demo scripts grep it
+	// and take its third field (docs/ARCHITECTURE.md, "If you change X").
+	fmt.Fprintf(c.out, "shared %s\n  content key: %s\n  magnet link: %s\n  others can run: fetch %s <out-path>\n",
+		args[0], key, c.magnetFor(key), key)
+}
+
+// magnetFor returns the magnet link for a file in this node's library,
+// named by its manifest (docs/10-magnet-links.md).
+func (c *consoleEnv) magnetFor(key kademlia.ID) string {
+	for _, f := range c.peer.Library().List() {
+		if f.Key == key {
+			return f.Magnet()
+		}
+	}
+	return transfer.MagnetLink(key, "") // not reached after a successful Share
 }
 
 func (c *consoleEnv) fetch(ctx context.Context, args []string) {
 	if len(args) != 2 {
-		fmt.Fprintln(c.out, "usage: fetch <40-char-hex-key> <out-path>")
+		fmt.Fprintln(c.out, "usage: fetch <40-char-hex-key|magnet-link> <out-path>")
 		return
 	}
-	key, err := kademlia.IDFromHex(args[0])
+	// Only the key matters: a magnet link's dn (name) is never trusted
+	// and never used as a path, so out-path stays required.
+	key, err := transfer.ParseKeyOrMagnet(args[0])
 	if err != nil {
 		fmt.Fprintln(c.out, err)
 		return
@@ -240,5 +257,6 @@ func (c *consoleEnv) files() {
 	}
 	for _, f := range list {
 		fmt.Fprintf(c.out, "%s  %s  %d bytes, has %d/%d pieces  (%s)\n", f.Key, f.Name, f.Size, f.Have, f.Pieces, f.Path)
+		fmt.Fprintf(c.out, "    %s\n", f.Magnet())
 	}
 }

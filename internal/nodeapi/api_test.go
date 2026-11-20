@@ -3,11 +3,13 @@ package nodeapi
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -209,9 +211,22 @@ func TestFilesEndpointListsSharedFiles(t *testing.T) {
 	}
 	var files Files
 	get(t, nodes[0], "/api/files", &files)
-	want := File{Key: key, Name: "notes.txt", Size: int64(transfer.DefaultPieceSize + 1), Pieces: 2, Have: 2, Path: path}
+	want := File{Key: key, Name: "notes.txt", Size: int64(transfer.DefaultPieceSize + 1), Pieces: 2, Have: 2, Path: path,
+		Magnet: "magnet:?xt=urn:tp2p:" + key.String() + "&dn=notes.txt"}
 	if len(files.Files) != 1 || files.Files[0] != want {
 		t.Errorf("got %+v, want [%+v]", files.Files, want)
+	}
+
+	// The raw body must show the link as people will copy it: "&dn=", not
+	// Go's default HTML-safe "&dn=" (writeJSON).
+	resp, err := http.Get(nodes[0].api.URL + "/api/files")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(raw), want.Magnet) {
+		t.Errorf("raw /api/files body doesn't contain %q verbatim:\n%s", want.Magnet, raw)
 	}
 }
 

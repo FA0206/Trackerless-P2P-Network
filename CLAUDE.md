@@ -49,6 +49,7 @@ bash scripts/demo-transfer.sh                   # put/get + file transfer + kill
 bash scripts/demo-seeder-death.sh               # seeder dies mid-download; PASS = file survives (on main: PASS = file lost)
 bash scripts/demo-big-network.sh                # 20 nodes, random joins, lookups vs brute force + transfer; must print PASS
 bash scripts/demo-parallel.sh                   # one download from 3 providers at once; must print PASS
+bash scripts/demo-magnet.sh                     # share prints a magnet link; fetch by link; lying name ignored; BitTorrent link refused; must print PASS
 bash scripts/edge/run-all.sh                    # every edge case; each PASS = behaved as docs/EDGE-CASES.md predicts
 ```
 
@@ -73,7 +74,7 @@ only downward; see `docs/ARCHITECTURE.md`.
 3. A node never stores or returns itself, and replies never return the
    requester (`closestExcluding`).
 4. `Bucket`, `valueStore`, `Manifest`, `Bitfield`, `pickPiece` (and
-   `id.go`) do no network I/O; the eviction ping lives in `Node`.
+   `id.go`, `magnet.go`) do no network I/O; the eviction ping lives in `Node`.
 5. Register `pending[rpcID]` before sending a request.
 6. A lookup's candidate state, and a download's `swarmDownload` state,
    live in one goroutine (the download's event loop, `download.go`);

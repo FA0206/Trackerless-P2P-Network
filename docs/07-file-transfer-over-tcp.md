@@ -36,7 +36,7 @@ Code: package [`internal/transfer`](../internal/transfer). It uses
 |---|---|---|
 | **piece** | A fixed-size chunk of a file (64 KiB; the last piece holds the remainder). The unit of transfer and verification. | `DefaultPieceSize` |
 | **manifest** | The file's description: name, size, piece size, and the SHA-256 of every piece. ~1.1 KB for a 1 MiB file. | `Manifest` in `manifest.go` |
-| **content key** | The file's DHT key = SHA-256(manifest bytes), truncated to 160 bits. What you hand to someone so they can download. | `ContentKey` |
+| **content key** | The file's DHT key = SHA-256(manifest bytes), truncated to 160 bits. What you hand to someone so they can download, usually inside a magnet link ([10](10-magnet-links.md)). | `ContentKey` |
 | **provider record** | The DHT value under a content key: `{"node_id", "ip", "tcp_port"}`. One per peer holding the file. ~90 bytes. | `ProviderRecord` in `provider.go` |
 | **provider / seeder** | A peer that has the whole file and serves it over TCP. | `Peer`, `server.go` |
 | **downloader / leecher** | A peer fetching the file. It becomes a provider when it finishes. | `Peer.Download` |
@@ -57,9 +57,15 @@ Code: package [`internal/transfer`](../internal/transfer). It uses
    machine; [09](09-multi-device.md)), and its TCP port.
 
 No file data has moved yet. Sharing only puts a ~90-byte pointer into
-the DHT.
+the DHT. The console prints the content key and a **magnet link**
+carrying it (`magnet:?xt=urn:tp2p:<key>&dn=<name>`), which is what you
+hand to others ([10](10-magnet-links.md)).
 
-## Downloading a file (`fetch <key> <out-path>`)
+## Downloading a file (`fetch <key|magnet> <out-path>`)
+
+`fetch` takes the content key or a magnet link. A link is parsed into
+the key locally (`ParseKeyOrMagnet`, `magnet.go`), so everything below
+is the same either way ([10](10-magnet-links.md#what-fetch-does-with-a-link)).
 
 `Peer.Download` in [`peer.go`](../internal/transfer/peer.go):
 
@@ -271,6 +277,7 @@ with pieces arriving rarest-first and in parallel.
 | Share, announce | `Peer.Share`, `Peer.announce` | `peer.go` |
 | Download (event loop, workers, failover) | `Peer.Download`, `swarmDownload` | `download.go` (see [08](08-swarming.md)) |
 | Frames on a stream | `framing.Write`, `framing.Read` | `internal/framing/framing.go` |
+| Magnet links: build, parse, key-or-link | `MagnetLink`, `ParseMagnet`, `ParseKeyOrMagnet` | `magnet.go` (see [10](10-magnet-links.md)) |
 | Console `share` / `fetch` / `files` | `consoleEnv.share`, `.fetch`, `.files` | `cmd/node/console.go` |
 
 Tests: `manifest_test.go` (piece layout, empty file, corrupted /
@@ -284,4 +291,5 @@ pieces, and an unknown key.
 
 [08-swarming.md](08-swarming.md): parallel downloads, rarest-first
 piece selection, and partial seeding, which together let a file survive
-its seeder.
+its seeder. [10-magnet-links.md](10-magnet-links.md) covers how the
+content key travels from person to person.
