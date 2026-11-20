@@ -75,7 +75,9 @@ func (p *Peer) Download(ctx context.Context, key kademlia.ID, outPath string) (*
 		}
 	}()
 	start := time.Now()
-	lookup, err := p.node.FindValue(ctx, key)
+	// FindAllValues, not FindValue: providers are a list spread over the
+	// k closest nodes, and this node's own store may hold only part of it.
+	lookup, err := p.node.FindAllValues(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -540,7 +542,7 @@ func (d *swarmDownload) startDiscovery() {
 	go func() {
 		ev := event{kind: evDiscovered}
 		var lookup *kademlia.LookupResult
-		if lookup, ev.err = p.node.FindValue(ctx, key); ev.err == nil {
+		if lookup, ev.err = p.node.FindAllValues(ctx, key); ev.err == nil {
 			ev.records = p.decodeProviders(lookup.Values)
 		}
 		events <- ev

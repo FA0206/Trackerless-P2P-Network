@@ -312,7 +312,7 @@ full list is every `logger.Debug/Info/Warn/Error` call in
 | `bucket full, pinging…`, `stale contact still alive…`, `stale contact unresponsive, evicted` | DEBUG | `stale`, `candidate` / `kept` / `evicted`, `replacement` | `node.go` | the eviction check ([02](02-routing-table-and-kbuckets.md)) |
 | `lookup round starting` | DEBUG | `target`, `round`, `batch` | `lookup.go` | one α-wide round of a lookup |
 | `lookup converged` | INFO | `target`, `rounds`, `rpcs_sent`, `rpcs_failed`, `closest_found` | `lookup.go` | a FIND_NODE lookup finished |
-| `find_value finished` | INFO | `key`, `values_found`, `rounds`, … | `lookup.go` | a FIND_VALUE lookup finished |
+| `find_value finished` | INFO | `key`, `values_found`, `rounds`, `rpcs_sent`, `rpcs_failed`, `ask_all` | `lookup.go` | a FIND_VALUE lookup finished. `ask_all=true` is `FindAllValues` (a download looking for providers: it asks all k closest live nodes); `false` is `FindValue` (`get`: stops at the first holder) |
 | `value stored` | INFO | `key`, `bytes` | `node.go` `replyStore` | this node now holds a value for the network |
 | `store complete` | INFO | `key`, `stored_at`, `stored_locally`, `failed` | `values.go` | this node finished publishing a value |
 | `provider announced` | INFO | `key`, `tcp_addr`, `replicas` | `peer.go` | this node is now a provider of a file: after `share`, and for a downloader after its first piece (partial seeding, [08](08-swarming.md)) |

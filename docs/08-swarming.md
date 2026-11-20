@@ -68,7 +68,14 @@ Asking for a piece a stale bitfield says the provider has is always safe.
 **New providers** are found by re-running `FIND_VALUE(content key)`:
 every 1 s while downloading, and immediately when stalled (below). Any
 record not seen before becomes a new provider whose bitfield is fetched
-on first contact.
+on first contact. Both the first provider lookup and these rediscoveries
+use `FindAllValues` ([06](06-store-and-find-value.md#reading-a-list-findallvalues)):
+it asks every one of the k closest live nodes and merges their records
+with this node's own. Plain `FindValue` stops at this node's own store
+or at the first holder, and a downloader that holds a record itself
+would then never see providers whose records went elsewhere: that's how
+a resumed fetch once failed with `no providers found` while a new seeder
+was online.
 
 ### Which piece next: rarest first, ties random
 

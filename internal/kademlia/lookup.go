@@ -27,8 +27,16 @@ type LookupResult struct {
 type lookupCandidate struct {
 	contact Contact
 	queried bool
-	failed  bool
 }
+
+// lookupMode says which RPC a lookup sends and when it stops.
+type lookupMode int
+
+const (
+	modeFindNode      lookupMode = iota // FIND_NODE until the k closest live nodes have answered
+	modeFindValue                       // FIND_VALUE; stop after the first round that returns values
+	modeFindAllValues                   // FIND_VALUE to every one of the k closest live nodes; merge all values
+)
 
 // Lookup is Kademlia's node-lookup procedure (paper Sec. 2.3): the
 // "most important procedure a Kademlia participant must perform", used to
@@ -38,12 +46,23 @@ type lookupCandidate struct {
 // Algorithm, following the paper: start from the alpha closest contacts
 // this node already knows of (from its own routing table). Query them in
 // parallel with FIND_NODE. Merge every contact they return into a
-// candidate list, keeping only the k closest seen so far. Repeat, each
-// round querying up to alpha of the k-closest candidates that haven't
-// been queried yet, until every one of the k closest has been queried (or
-// failed). That exact stopping rule -- "queried and gotten responses from
-// the k closest nodes it has seen" -- is what makes this terminate in
-// O(log n) rounds instead of needing a fixed iteration count.
+// candidate list. Repeat, each round querying up to alpha of the k
+// closest candidates that haven't been queried yet, until every one of
+// the k closest has been queried and has answered. That exact stopping
+// rule -- "queried and gotten responses from the k closest nodes it has
+// seen" -- is what makes this terminate in O(log n) rounds instead of
+// needing a fixed iteration count.
+//
+// A candidate that doesn't answer (a dead node) is dropped from the list
+// for the rest of this lookup -- the paper: nodes that fail to respond
+// "are removed from consideration until and unless they do respond" --
+// so the next-closest live candidate moves up into the k closest and gets
+// asked. The list is seeded with the whole routing table, nearest first,
+// so there are spares to move up even when every one of this node's own
+// closest contacts is dead. Only the k closest live candidates are ever
+// queried, so with nobody dead this asks exactly the nodes it asked
+// before. The answer is the k closest nodes that answered: fewer than k
+// only if fewer than k live nodes could be found at all.
 //
 // SIMPLIFICATION: the paper additionally short-circuits early once a round
 // returns nothing closer than what's already known UNLESS the k closest
@@ -60,23 +79,28 @@ type lookupCandidate struct {
 // lands. A dead contact therefore costs one full rpcTimeout per round.
 // See docs/05-iterative-parallel-lookup.md.
 func (n *Node) Lookup(ctx context.Context, target ID) (*LookupResult, error) {
-	return n.iterativeFind(ctx, target, false)
+	return n.iterativeFind(ctx, target, modeFindNode)
 }
 
 // iterativeFind is the lookup algorithm shared by FIND_NODE and FIND_VALUE
 // (paper Sec. 2.3: "value lookups use FIND_VALUE rather than FIND_NODE
 // RPCs. Moreover, the procedure halts immediately when any node returns
-// the value"). With findValue set, each RPC is a FIND_VALUE, and the
-// lookup stops after the first round in which any node returned values.
-func (n *Node) iterativeFind(ctx context.Context, target ID, findValue bool) (*LookupResult, error) {
+// the value"). In modeFindValue each RPC is a FIND_VALUE, and the lookup
+// stops after the first round in which any node returned values. In
+// modeFindAllValues it doesn't stop early: it asks every one of the k
+// closest live nodes and merges whatever values they hold (see
+// FindAllValues in values.go).
+func (n *Node) iterativeFind(ctx context.Context, target ID, mode lookupMode) (*LookupResult, error) {
 	result := &LookupResult{Target: target}
+	findValue := mode != modeFindNode
 
 	candidates := make(map[ID]*lookupCandidate)
-	var order []ID // candidate IDs, kept sorted nearest-to-target first
+	var order []ID          // live candidate IDs, kept sorted nearest-to-target first
+	failed := map[ID]bool{} // didn't answer: out of this lookup, even if a reply names them again
 
 	addCandidate := func(c Contact) {
-		if c.ID == n.ID {
-			return // never chase ourselves
+		if c.ID == n.ID || failed[c.ID] {
+			return // never chase ourselves, nor a node that already failed to answer
 		}
 		if _, exists := candidates[c.ID]; exists {
 			return
@@ -84,7 +108,9 @@ func (n *Node) iterativeFind(ctx context.Context, target ID, findValue bool) (*L
 		candidates[c.ID] = &lookupCandidate{contact: c}
 		order = append(order, c.ID)
 	}
-	for _, c := range n.rt.Closest(target, n.k) {
+	// Seed with every contact we know: the k nearest are queried first,
+	// the rest are spares for when some of those don't answer.
+	for _, c := range n.rt.Closest(target, n.rt.Size()) {
 		addCandidate(c)
 	}
 
@@ -94,6 +120,15 @@ func (n *Node) iterativeFind(ctx context.Context, target ID, findValue bool) (*L
 		})
 	}
 	sortByDistance()
+
+	// closestK is the part of the list that matters: the k nearest live
+	// candidates. Everything farther is a spare.
+	closestK := func() []ID {
+		if len(order) > n.k {
+			return order[:n.k]
+		}
+		return order
+	}
 
 	type rpcOutcome struct {
 		candidate *lookupCandidate
@@ -108,7 +143,7 @@ func (n *Node) iterativeFind(ctx context.Context, target ID, findValue bool) (*L
 		}
 
 		var batch []*lookupCandidate
-		for _, id := range order {
+		for _, id := range closestK() {
 			if len(batch) >= n.alpha {
 				break
 			}
@@ -117,7 +152,7 @@ func (n *Node) iterativeFind(ctx context.Context, target ID, findValue bool) (*L
 			}
 		}
 		if len(batch) == 0 {
-			break // every one of the k closest candidates has been queried: converged
+			break // every one of the k closest live candidates has answered: converged
 		}
 
 		result.Rounds++
@@ -143,7 +178,12 @@ func (n *Node) iterativeFind(ctx context.Context, target ID, findValue bool) (*L
 			o := <-outcomes
 			result.RPCsSent++
 			if o.err != nil {
-				o.candidate.failed = true
+				// Removed from consideration (Sec. 2.3): the next-closest
+				// live candidate moves up into the k closest.
+				id := o.candidate.contact.ID
+				failed[id] = true
+				delete(candidates, id)
+				order = slices.DeleteFunc(order, func(x ID) bool { return x == id })
 				result.RPCsFailed++
 				n.logger.Debug("lookup rpc failed", "target", target.String(), "contact", o.candidate.contact.String(), "error", o.err)
 				continue
@@ -157,16 +197,8 @@ func (n *Node) iterativeFind(ctx context.Context, target ID, findValue bool) (*L
 			}
 		}
 		sortByDistance()
-		// Trim to the k closest: anything farther can't end up in the
-		// final answer and would only add bookkeeping to later rounds.
-		if len(order) > n.k {
-			for _, id := range order[n.k:] {
-				delete(candidates, id)
-			}
-			order = order[:n.k]
-		}
 
-		if len(result.Values) > 0 {
+		if mode == modeFindValue && len(result.Values) > 0 {
 			// FIND_VALUE found something: stop. Every reply in this round
 			// was already collected (rounds are synchronous), so values
 			// from several holders in the same round are merged.
@@ -174,14 +206,13 @@ func (n *Node) iterativeFind(ctx context.Context, target ID, findValue bool) (*L
 		}
 	}
 
-	for _, id := range order {
-		if c := candidates[id]; !c.failed {
-			result.Closest = append(result.Closest, c.contact)
-		}
+	for _, id := range closestK() {
+		result.Closest = append(result.Closest, candidates[id].contact)
 	}
 	if findValue {
 		n.logger.Info("find_value finished", "key", target.String(), "values_found", len(result.Values),
-			"rounds", result.Rounds, "rpcs_sent", result.RPCsSent, "rpcs_failed", result.RPCsFailed)
+			"rounds", result.Rounds, "rpcs_sent", result.RPCsSent, "rpcs_failed", result.RPCsFailed,
+			"ask_all", mode == modeFindAllValues)
 	} else {
 		n.logger.Info("lookup converged", "target", target.String(), "rounds", result.Rounds,
 			"rpcs_sent", result.RPCsSent, "rpcs_failed", result.RPCsFailed, "closest_found", len(result.Closest))

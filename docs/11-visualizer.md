@@ -265,8 +265,9 @@ too early, both leechers give up after 15 s but keep serving, a new
 provider appears, the same fetch resumes). Three of its first seven runs
 failed at the resume because of a bug in the core (below). Making it
 pass by choosing a lucky file and lucky leechers would have been a scene
-staged around the bug, so it was taken out instead. It comes back once
-the core is fixed; the real runs, including the failures, are in
+staged around the bug, so it was taken out instead. The core has since
+been fixed (both points below); the scene comes back in its own step.
+The real runs, including the failures, are in
 [DRY-RUN.md part 9](DRY-RUN.md#part-9--the-visualizer-cmdvizrun--viz).
 
 ## Working around what the API doesn't say
@@ -283,6 +284,13 @@ the core is fixed; the real runs, including the failures, are in
 
 ## What the runs showed (worth knowing beyond the visualizer)
 
+Both of these are **fixed in the core** now: a lookup drops a node that
+doesn't answer and asks the next live one ([05](05-iterative-parallel-lookup.md)),
+and downloads find providers with `FindAllValues`, which asks the k
+closest live nodes even when this node holds records itself
+([06](06-store-and-find-value.md#reading-a-list-findallvalues)). What
+they were:
+
 - **A record holder never looks past its own store.** `FindValue`
   returns early when the node holds any value for the key. A downloader
   that holds a record for its file's key therefore rediscovers only the
@@ -295,10 +303,7 @@ the core is fixed; the real runs, including the failures, are in
   dead node is among the k closest to a key, lookups for it converge with
   fewer than k live nodes, and `selfAmongClosest` returns true for
   anyone, so every `Store` for that key also stores locally. Combined
-  with the point above, those nodes stop asking the network. Worth
-  raising with the team: a fix belongs in the core (e.g. keep looking
-  past failed candidates until k live ones answer, or let a downloader's
-  FIND_VALUE always ask the network), in its own increment.
+  with the point above, those nodes stopped asking the network.
 - **Leechers don't always give up with the same pieces.** DRY-RUN part 8
   shows them ending equal. One scene-8 run ended 10 vs 11: the second
   leecher's last piece came from the seeder just before the kill, and its

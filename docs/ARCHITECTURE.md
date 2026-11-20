@@ -72,7 +72,7 @@ Each file depends only on files in lower layers:
 | `logging.go` | slog logger tagged with the node ID | `id.go` |
 | `node.go` | `Node`, `Config`; matching replies to requests (`pending`); `handleMessage` dispatch; `replyFindNode/Store/FindValue`; eviction; `Bootstrap` | all of the above |
 | `lookup.go` | `iterativeFind` (alpha-parallel, synchronous rounds), `Lookup`, `LookupResult` | `node.go` |
-| `values.go` | `Store` (lookup + STORE to the k closest), `FindValue` (local, then lookup) | `lookup.go`, `node.go` |
+| `values.go` | `Store` (lookup + STORE to the k closest), `FindValue` (local, then lookup), `FindAllValues` (lookup to the end, merged with local) | `lookup.go`, `node.go` |
 
 ## `internal/transfer`
 
@@ -114,7 +114,8 @@ kademlia.NewNode(kademlia.Config{ID, Port, AdvertiseIP, K, Alpha, RPCTimeout, Lo
 (*Node).Bootstrap(ctx, *net.UDPAddr) (*LookupResult, error)
 (*Node).Lookup(ctx, target ID) (*LookupResult, error)
 (*Node).Store(ctx, key ID, value []byte) (*StoreResult, error)
-(*Node).FindValue(ctx, key ID) (*LookupResult, error)        // result.Values
+(*Node).FindValue(ctx, key ID) (*LookupResult, error)        // result.Values; local store first, stops at the first holder (get)
+(*Node).FindAllValues(ctx, key ID) (*LookupResult, error)    // every value the k closest live nodes and this node hold (providers)
 (*Node).Ping(ctx, Contact) bool; FindNode(ctx, Contact, ID)   // single RPCs
 (*Node).Addr(), Self(), Logger(), RoutingTableSize(), RoutingTableSnapshot(), StoredKeyCount()
 (*Node).StoredValues() map[ID][][]byte                       // copies; for the HTTP API only
@@ -163,7 +164,7 @@ framing.Write / Read        // frames on a stream
  console.go fetch
    ▼
  download.go Peer.Download ── Library.claimForResume(key, path): fresh | resume | refuse
-             kademlia FindValue(key) ──► provider records
+             kademlia FindAllValues(key) ──► provider records
              fresh:  swarmDownload.fetchManifest (one provider at a time) → DecodeManifest
                      openFile: O_EXCL + Library.addPartial   ← from here on, we serve what we have
              resume: reopenFile: re-hash the pieces on disk, have = library's bitfield (no manifest fetch)
@@ -171,7 +172,7 @@ framing.Write / Read        // frames on a stream
  download.go run (event loop, ONE goroutine owns all state)
     schedule ─┬─ pickPiece (picker.go) → startPiece ──► worker: dial/fetch GET_PIECE → VerifyPiece ─┐
               ├─ stale bitfield       → startBitfield ─► worker: fetch GET_BITFIELD → decodeBitfield ─┤
-              ├─ every 1 s            → startDiscovery ► worker: kademlia FindValue → records ───────┤ events
+              ├─ every 1 s            → startDiscovery ► worker: kademlia FindAllValues → records ───┤ events
               └─ after 1st piece*     → startAnnounce ─► worker: Peer.announce (kademlia Store) ─────┤ channel
     wait ◄──────────────────────────────────────────────────────────────────────────────────────┘
     handle: WriteAt → have.Set → Library.markHave   (write, then publish)
@@ -290,7 +291,7 @@ way.
 |---|---|
 | Add a DHT RPC | `messages.go` (types), `node.go` (`handleMessage` case, `replyXxx`, an `xxxRPC` client), check it fits a datagram, docs `03`/`06`, FAQ |
 | Change the bucket rule | `bucket.go`, `bucket_test.go`, `node.go` (`touchContact`/`resolveEviction`), doc `02` |
-| Change lookup termination / concurrency | `lookup.go`, `integration_test.go`, `values_test.go`, doc `05`, `DRY-RUN.md` numbers |
+| Change lookup termination / concurrency | `lookup.go`, `integration_test.go`, `values_test.go`, `deadnodes_test.go` (dead candidates drop out, spares move up), doc `05`, `DRY-RUN.md` numbers, `scripts/edge/b1-*.sh` / `b2-*.sh` and their EDGE-CASES.md sections |
 | Change value limits or storage rules | `store.go`, `store_test.go`, doc `06` |
 | Change the TCP protocol | `protocol.go`, `server.go`, `client.go`, doc `07` (and `08` for `GET_BITFIELD`) |
 | Change what happens when a download gives up, or how it resumes | `download.go` (`stopButKeepServing`, `reopenFile`, the claim in `Download`), `library.go` (`claimForResume`, `stopDownloading`), `swarm_test.go`/`library_test.go`, doc `08` ("Why giving up mustn't delete", "Resuming"), invariant 8, `scripts/demo-give-up-resume.sh`, `DRY-RUN.md` part 8, field tests 2 and 4 |

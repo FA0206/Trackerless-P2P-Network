@@ -250,11 +250,16 @@ It's worth fixing before measuring latency or recovery time.
 
 It also doesn't get better with time. A timeout doesn't remove the dead
 contact from the routing table, so the next lookup asks it again and
-waits again. And the dead node keeps its place among the lookup's k
-closest candidates, so the answer comes back with fewer than k nodes.
-[EDGE-CASES.md, case B1](EDGE-CASES.md#b1--half-the-network-dies-at-once)
-kills half of a 16-node network. The same lookups go from ~130 ms to
-~10 s, stay there on a repeat, and every answer is short.
+waits again. [EDGE-CASES.md, case B1](EDGE-CASES.md#b1--half-the-network-dies-at-once)
+kills half of a 16-node network: 4 lookups go from 63 ms to about 26 s
+in total, some running out of the console's 10 s, and a repeat is no
+faster.
+
+The answer is still right, though: a node that doesn't answer is dropped
+from the lookup, and the next-closest live node is asked in its place, so
+the lookup returns the k closest *live* nodes
+([05](05-iterative-parallel-lookup.md)). Before that fix, the dead node
+kept its slot and every answer came back short.
 
 ### How can a program (or the visual demo) see what a node knows?
 

@@ -37,21 +37,42 @@ Then, repeatedly:
    immediately (so a slow reply doesn't cause it to be re-queried next
    round), and wait for the round to finish.
 3. For every contact any of those replies returned, add it to the
-   candidate list if it's new.
-4. Re-sort the whole candidate list by distance to the target, and trim it
-   down to the closest `k` — anything farther out can never end up in the
-   final answer anyway, so there's no reason to keep tracking it.
-5. If every one of the (now up to `k`) closest candidates has already been
-   queried, stop. Otherwise, go back to step 1.
+   candidate list if it's new. A candidate that **didn't answer** (RPC
+   timeout: a dead node) is removed from the list for the rest of this
+   lookup, and isn't re-added if a later reply names it again.
+4. Re-sort the candidate list by distance to the target. Only its first
+   `k` entries, the **k closest live candidates**, are ever queried; the
+   rest are spares.
+5. If every one of those `k` closest candidates has been queried and has
+   answered, stop. Otherwise, go back to step 1.
+
+The list starts with **every contact in this node's routing table**,
+nearest first. With nobody dead, only the nearest `k` are ever looked at,
+so the lookup asks exactly the same nodes it would with a list of `k`.
+The spares matter when nodes don't answer: each dead candidate drops out,
+and the next-closest live one moves up into the `k` closest and gets
+asked.
 
 The stopping condition is the paper's (Sec. 2.3): "the lookup terminates
 when the initiator has queried and gotten responses from the k closest
-nodes it has seen." A contact that fails to respond (RPC timeout) still
-counts as "queried" for this purpose — it's excluded from the final
-answer, but it doesn't block the lookup from terminating. So a dead node
-along the path costs one RPC timeout in this implementation, not a failed
-lookup. (The paper goes further, with *no* timeout delay at all; see the
-synchronous-rounds simplification below.)
+nodes it has seen", where nodes that fail to respond "are removed from
+consideration until and unless they do respond". So a dead node along
+the path costs one RPC timeout, never a wrong answer: the result is the
+`k` closest nodes that answered, and has fewer than `k` only when fewer
+than `k` live nodes could be reached at all. (The paper goes further,
+with *no* timeout delay at all; see the synchronous-rounds simplification
+below.)
+
+**Before this was fixed**, a failed candidate kept its slot among the `k`
+closest, and the list only ever started from the `k` nearest contacts. So
+a lookup next to one dead node returned `k-1` nodes, and one whose `k`
+nearest contacts were all dead returned none, while live nodes were known
+([EDGE-CASES.md](EDGE-CASES.md), B1 and B2). Worse, `Store` then believed
+it was itself among the closest (`selfAmongClosest`: "fewer than `k`
+found") and kept a copy even when it was far from the key ([06](06-store-and-find-value.md)).
+`TestLookupSkipsADeadNodeNearTheKey` and
+`TestLookupFindsLiveNodesWhenAllNearestAreDead` (`deadnodes_test.go`) pin
+the fix: both fail on the old code with 2 and 0 contacts.
 
 Why this converges in `O(log n)` rounds rather than needing some fixed
 iteration count: each round that finds anything closer than what's
@@ -149,7 +170,8 @@ inside `RoutingTable`/`Bucket` for the routing-table side of things.
 
 | Concept | Function | File |
 |---|---|---|
-| The lookup algorithm itself | `Node.Lookup`, `Node.lookup` | `lookup.go` |
+| The lookup algorithm itself | `Node.Lookup`, `Node.iterativeFind` | `lookup.go` |
+| Dropping a node that didn't answer; spares from the routing table | the `failed` set and `closestK` in `iterativeFind` | `lookup.go` |
 | Per-RPC send/receive this builds on | `Node.FindNode`, `Node.sendAndWait` | `node.go` |
 | Result type / what the demo reports | `LookupResult` | `lookup.go` |
 

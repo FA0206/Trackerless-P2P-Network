@@ -29,6 +29,7 @@ evaluation includes performance graphs:
 | **Peer discovery (the DHT core):** 160-bit IDs, XOR metric, k-bucket routing table, `PING`/`FIND_NODE` over UDP, joining via one known node, iterative α-parallel lookup | ✅ Done | `main` — this README, [docs 01–05](#documentation) |
 | Unit + integration tests for the core; runnable demos (5-process chain, 20-node random joins with brute-force-checked lookups) | ✅ Done | `internal/kademlia/*_test.go`, `scripts/demo.sh`, `scripts/demo-big-network.sh` |
 | Debugging tooling: logs, per-node console, VSCode debug configs | ✅ Done | [docs/DEBUGGING.md](docs/DEBUGGING.md) |
+| Lookups skip dead nodes; providers found with `FindAllValues` | ✅ Done: answers are exact after nodes die (B1); re-sharing brings back a lost file (B2) | `internal/kademlia/lookup.go`, `values.go`, `deadnodes_test.go`, [docs/05](docs/05-iterative-parallel-lookup.md), [docs/06](docs/06-store-and-find-value.md) |
 | Edge-case stress tests: node setups chosen to find what breaks | ✅ Done: 6 cases (A2 thundering herd, A3 bridge between islands, A4 tiny buckets, B1 half the network dies, B2 record holders die, B3 late joiners), ranked by fix priority. `scripts/edge/run-all.sh` runs them all | `scripts/edge/`, [docs/EDGE-CASES.md](docs/EDGE-CASES.md) |
 | `STORE` / `FIND_VALUE` (the DHT holds "who has file X") | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/06](docs/06-store-and-find-value.md) |
 | File transfer over TCP: pieces, SHA-256 verification, content keys | ✅ Done | `main` (merged from `feature/store-findvalue-tcp`) — [docs/07](docs/07-file-transfer-over-tcp.md) |
@@ -288,23 +289,28 @@ islands through one bridge node and kills it. If nobody had looked
 anything up across the bridge, the islands are cut apart for good (0 of
 5 found, every time). If one lookup had crossed it, the islands survive.
 
-B1 kills 8 of 16 nodes. The same 4 lookups go from 133 ms to ~10 s,
-don't get faster when repeated, and every one returns fewer than the k
-closest live nodes:
+B1 kills 8 of 16 nodes. The same 4 lookups go from 63 ms to about 26 s
+in total, and don't get faster when repeated. Every answer that comes
+back is exactly the k closest live nodes, but some lookups run out of
+the console's 10 s while they wait out timeouts on dead nodes:
 
 ```
-  pass 1  6da4c727…  rounds=2  rpcs=4   failed=0    111ms  ok
-  pass 2  6da4c727…  rounds=2  rpcs=4   failed=3    2.06s  SHORT: got [0] want [0 3 6 8]
-  pass 3  6da4c727…  rounds=2  rpcs=4   failed=3    2.08s  SHORT: got [0] want [0 3 6 8]
+  pass 2  6da4c727…  rounds=4  rpcs=8   failed=4    4.06s  ok
+  pass 2  d4183492…  rounds=6  rpcs=13  failed=7    8.11s  ok
+  pass 2  64416b78…  rounds=4  rpcs=8   failed=4    4.09s  ok
+  pass 2  e66a18d1…  lookup failed: context deadline exceeded  10.05s
 ```
 
 B2 kills the 3 nodes holding a file's provider record while the seeder
-stays up. The file can't be found, and re-sharing doesn't bring it back:
+stays up. The file can't be found, because nothing republishes the
+record. Re-sharing brings it back: the re-announce skips the dead holders
+and reaches the 3 closest live nodes:
 
 ```
   node4: fetch failed: transfer: no providers found for 93accc52…
-  node1's re-announce lookup: rounds=1 rpcs_sent=3 rpcs_failed=3 closest_found=0
-PASS: with every record holder dead the file could not be found, though 2 providers were online, and re-sharing did not bring it back.
+  node1's re-announce lookup: rounds=2 rpcs_sent=6 rpcs_failed=3 closest_found=3
+  node5: fetched "shared-1-1.bin" (262144 bytes, 4 pieces) into …/node5.bin in 6.009s
+PASS: with every record holder dead the file could not be found, though 2 providers were online; re-sharing brought it back.
 ```
 
 B3 adds 4 nodes whose IDs are closer to a stored value's key than its
@@ -464,17 +470,21 @@ Here is whether each one blocks the end goal:
 | No choking, upload limits, or fairness ([08](docs/08-swarming.md)) | Not in the goal list. | Later, if ever. |
 | No security (ID spoofing, Sybil, rate limits) | Not in the goal list. | Later, if at all. |
 
-**Found by the edge cases, not (yet) a labeled simplification:** a
-lookup starts from only the k closest contacts in the routing table, and
-a contact that times out stays there, and failed candidates keep their
-slots in the lookup's k-closest list. After nodes die, lookups return
-short answers, or nothing, even though the node knows live nodes farther
-away. Edge case B1 shows every lookup coming back short after half the
-network dies ([EDGE-CASES.md](docs/EDGE-CASES.md#b1--half-the-network-dies-at-once)).
-B2 shows it losing a file whose seeder is still online
+
+**Found by the edge cases and partly fixed:** a lookup used to keep a
+node that didn't answer among its k closest, so after nodes died it
+returned short answers, or nothing, and `Store` then kept copies on
+nodes far from the key. That's fixed: a lookup now drops a node that
+doesn't answer and asks the next-closest live one
+([05](docs/05-iterative-parallel-lookup.md)), and downloads find
+providers with `FindAllValues`, which asks the k closest live nodes
+instead of trusting the node's own store
+([06](docs/06-store-and-find-value.md)). Still open: a dead contact
+never leaves a routing table and rounds are synchronous, so lookups near
+dead nodes are slow (B1), and nothing republishes records, so a file
+whose record holders all die stays unfindable until it's shared again
 ([EDGE-CASES.md](docs/EDGE-CASES.md#b2--the-provider-record-holders-all-die)).
-It blocks the churn and recovery experiments. Fix it in `lookup.go`
-together with republishing, before measuring recovery.
+Fix those before measuring recovery time.
 
 **Bottom line:** per-piece availability, the first item that blocked the
 end goal, is done on this branch. Before the end-goal measurements, in

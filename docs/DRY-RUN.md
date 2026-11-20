@@ -1608,7 +1608,10 @@ PASS: every scene ran on live nodes, every event kind the page draws was recorde
 
 ## What part 9 doesn't show
 
-- **The give-up/resume scene,** until the bug above is fixed in the core.
+- **The give-up/resume scene,** removed when it hit the bug above. The
+  core is now fixed ([05](05-iterative-parallel-lookup.md),
+  [06](06-store-and-find-value.md#reading-a-list-findallvalues)); the
+  scene returns in its own step.
 
 - **Nodes on other laptops.** The page takes any API addresses
   (`--watch`), but the runner, the hashes and `--api-control` are

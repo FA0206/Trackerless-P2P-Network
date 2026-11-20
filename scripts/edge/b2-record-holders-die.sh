@@ -19,13 +19,15 @@
 # providers are online. Values are never republished (store.go,
 # SIMPLIFICATION), so records live only on the nodes chosen at share time.
 #
-# Step 4 ALSO fails, which the first version of this script got wrong (it
-# predicted success): the seeder's re-announce lookup starts from the k
-# closest contacts in its own routing table, which are exactly the dead
-# holders. Dead contacts are never removed from a routing table on a
-# timeout, and failed candidates still fill the lookup's k-closest list
-# (lookup.go). So the lookup finds no live node, Store keeps the record
-# only on the seeder itself, and nobody else's lookup reaches it.
+# Step 4 WORKS: re-sharing brings the file back. The seeder's re-announce
+# lookup starts from its own closest contacts, which are exactly the dead
+# holders; a node that doesn't answer is dropped from the lookup and the
+# next-closest live one is asked instead (lookup.go), so the record lands
+# on the k closest LIVE nodes, and the third leecher finds it.
+# (History: before that lookup fix, failed candidates kept their slots,
+# the lookup found nobody, the record stayed on the seeder alone, and step
+# 4 failed too. This script predicted that until the fix; see
+# docs/EDGE-CASES.md.)
 # The script PASSES when all four steps behave as predicted.
 #
 # Usage: scripts/edge/b2-record-holders-die.sh   (env: N=8 BASE_PORT=9525 SEED=1)
@@ -133,7 +135,7 @@ else
 fi
 
 echo
-echo "=== Step 4: node$SEEDER shares the file again (predicted: this doesn't help) ==="
+echo "=== Step 4: node$SEEDER shares the file again (predicted: this brings it back) ==="
 SHARES="$(count_lines "$WORK/node$SEEDER.log" "content key:")"
 send "$SEEDER" "share $FILE"
 wait_for_count "$WORK/node$SEEDER.log" "content key:" $((SHARES + 1)) 60
@@ -142,25 +144,25 @@ STORE="$(grep "msg=\"store complete\".*key=$KEY" "$WORK/node$SEEDER.log" | tail 
 echo "  node$SEEDER's re-announce lookup: $LOOKUP"
 echo "  node$SEEDER's store:              $STORE"
 case "$LOOKUP $STORE" in
-*"closest_found=0"*"stored_at=0 stored_locally=true"*)
-	echo "  as predicted: every contact it started from was a dead holder, so the record stayed on node$SEEDER alone" ;;
+*"closest_found=$K"*"stored_at="[1-9]*)
+	echo "  as predicted: the lookup skipped the dead holders and reached the $K closest live nodes" ;;
 *)
-	echo "  UNEXPECTED: the re-announce reached live nodes"
+	echo "  UNEXPECTED: the re-announce didn't reach $K live nodes"
 	STATUS=1 ;;
 esac
 send "$L3" "fetch $KEY $WORK/node$L3.bin"
 wait_for_log "$WORK/node$L3.log" '^fetch' 60
 echo "  node$L3: $(grep '^fetch' "$WORK/node$L3.log" | head -1)"
-if grep -q '^fetch failed: transfer: no providers found' "$WORK/node$L3.log"; then
-	echo "  as predicted: node$L3's lookup also stops at the dead holders and never reaches node$SEEDER"
+if grep -q '^fetched ' "$WORK/node$L3.log" && cmp -s "$FILE" "$WORK/node$L3.bin"; then
+	echo "  as predicted: node$L3 found the re-shared record and its copy is identical"
 else
-	echo "  UNEXPECTED: node$L3's download did not fail with \"no providers found\""
+	echo "  UNEXPECTED: node$L3 didn't get an identical copy"
 	STATUS=1
 fi
 
 echo
 if [ "$STATUS" -eq 0 ]; then
-	echo "PASS: with every record holder dead the file could not be found, though 2 providers were online, and re-sharing did not bring it back."
+	echo "PASS: with every record holder dead the file could not be found, though 2 providers were online; re-sharing brought it back."
 else
 	echo "FAIL (repeat this exact run with SEED=$SEED)"
 fi
