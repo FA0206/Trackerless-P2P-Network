@@ -105,7 +105,7 @@ the banner would say **VOID** in red.
 | 3 | Where it lives | `viz/` for the page, `cmd/vizrun` for the runner. Stdlib Go; it talks to nodes **only over HTTP and signals**, never imports `internal/`. |
 | 4 | Event transport | One `EventSource` per node, from the page straight to each node's `/api/events?level=debug`. 21 streams on one page worked without trouble. |
 | 5 | API additions | **None.** Every gap is worked around (below). |
-| 6 | Branch | `feature/magnet-links`. |
+| 6 | Branch | `feature/demo-ready`. |
 | 7 | Video | Not now (see Status). |
 
 Also decided by the team: ~20 nodes with **k = 4** (so "the k closest"

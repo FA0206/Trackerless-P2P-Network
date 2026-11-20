@@ -16,15 +16,15 @@
   with network namespaces: a node detects its own address, joins, and
   downloads across them
   ([jump](#part-6--two-machines-a-join-and-a-download-across-namespaces)).
-- **Part 7** (branch `feature/magnet-links`) — `scripts/demo-magnet.sh`:
+- **Part 7** (branch `feature/demo-ready`) — `scripts/demo-magnet.sh`:
   fetching with a magnet link, a link whose name lies, and a refused
   BitTorrent link
   ([jump](#part-7--scriptsdemo-magnetsh-fetching-with-a-link)).
-- **Part 8** (branch `feature/magnet-links`) — `scripts/demo-give-up-resume.sh`:
+- **Part 8** (branch `feature/demo-ready`) — `scripts/demo-give-up-resume.sh`:
   the seeder dies too early, both leechers give up with the same pieces
   and keep serving them, and fetching again resumes
   ([jump](#part-8--scriptsdemo-give-up-resumesh-giving-up-keeps-seeding-fetching-again-resumes)).
-- **Part 9** (branch `feature/magnet-links`) — the visualizer: `vizrun`
+- **Part 9** (branch `feature/demo-ready`) — the visualizer: `vizrun`
   runs nine scenes on 21 live nodes, the page replays and draws them, and
   `scripts/demo-viz.sh` checks a headless run
   ([jump](#part-9--the-visualizer-cmdvizrun--viz)).
@@ -1055,7 +1055,7 @@ most one request per provider.
 
 # Part 7 — `scripts/demo-magnet.sh`: fetching with a link
 
-Branch `feature/magnet-links`. The concept is in
+Branch `feature/demo-ready`. The concept is in
 [10-magnet-links.md](10-magnet-links.md). The point of this part: **a
 magnet link costs nothing on the wire.** It is parsed into the content
 key on the downloading node, and from then on the fetch is the same as
