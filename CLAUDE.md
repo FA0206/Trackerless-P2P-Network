@@ -52,7 +52,7 @@ bash scripts/demo-parallel.sh                   # one download from 3 providers 
 bash scripts/demo-magnet.sh                     # share prints a magnet link; fetch by link; lying name ignored; BitTorrent link refused; must print PASS
 bash scripts/demo-give-up-resume.sh             # seeder dies too early: both leechers give up with the same pieces, keep serving, then fetch resumes; must print PASS (~1 min)
 bash scripts/edge/run-all.sh                    # every edge case; each PASS = behaved as docs/EDGE-CASES.md predicts
-bash scripts/demo-viz.sh                        # visualizer headless: all 8 scenes on 20 live nodes, dropped=0, hashes match; must print PASS (~1 min)
+bash scripts/demo-viz.sh                        # visualizer headless: all 9 scenes on 21 live nodes, dropped=0, hashes match; must print PASS (~90 s)
 go run ./cmd/vizrun                             # the visualizer: open http://127.0.0.1:8790/, → runs the next scene (docs/11-visualizer.md)
 ```
 

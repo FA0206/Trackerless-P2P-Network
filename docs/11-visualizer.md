@@ -7,16 +7,16 @@ the control endpoints). The scenes show what
 [10](10-magnet-links.md) explain.
 
 > **Status:** built, increments 1–7 (plan, page, ring, comets + replay,
-> runner, scenes, headless check). Increment 8, recording a video, is
-> deferred: the team presents live in step mode, and the next recording
-> will be the cross-laptop demo. Real runs are in
+> runner, scenes, headless check), plus a recorded video of one
+> continuous run ("How this was recorded" below). The team presents live
+> in step mode. Real runs are in
 > [DRY-RUN.md part 9](DRY-RUN.md#part-9--the-visualizer-cmdvizrun--viz).
 
 ## What it is, in one paragraph
 
 A web page that draws a network of **real nodes of this codebase** while
 they work, one mechanism at a time: joining, k-buckets, a lookup,
-put/get, sharing, swarming, and the seeder dying. The
+put/get, sharing, swarming, the seeder dying, giving up and resuming. The
 page only **reads** each node's HTTP API (`--api`): snapshots and the
 live event stream. A small Go program, `cmd/vizrun`, starts the nodes,
 serves the page, and **acts**: when the presenter presses →, it runs the
@@ -48,7 +48,7 @@ go run ./cmd/vizrun            # builds ./cmd/node, starts viz0, serves the page
 - **Continuous mode:** `http://127.0.0.1:8790/?mode=auto` advances by
   itself after a 4 s hold. For a later recording.
 - **Headless check:** `bash scripts/demo-viz.sh` runs every scene without
-  a browser (`vizrun --auto`) and prints PASS (about a minute).
+  a browser (`vizrun --auto`) and prints PASS (~90 s).
 - **Watch nodes started by hand:** `go run ./cmd/vizrun --watch
   nodes.json` with `{"nodes":[{"name":"a","api":"127.0.0.1:8700"}]}`:
   the page then only watches (no scenes). Or, with no runner at all,
@@ -62,7 +62,7 @@ Reload the page after restarting the runner.
 
 **Before presenting:** close other browser tabs (the nodes run with
 `--api-control`, and CORS is open, so any page could drive them; see
-NODE-API.md "Safety"); check that ports 9700–9719, 8700–8719 and 8790 are
+NODE-API.md "Safety"); check that ports 9700–9720, 8700–8720 and 8790 are
 free (`ss -lunt`, or `lsof -nP -i :9700` on macOS). Keep the tab in
 front and the laptop awake: in one test the browser suspended a
 background tab's network I/O (`net::ERR_NETWORK_IO_SUSPENDED`), every
@@ -79,17 +79,22 @@ again, and reload.
 | 3 | Find anyone in a few hops | `→ next` | 10 s |
 | 4 | Storage with no server | `→ next` | 25 s (put, then get) |
 | 5 | Share a file, get a magnet link | `→ next` | 15 s |
-| 6 | Swarming | `→ next` | until you press: the download keeps going |
-| 7 | Kill the seeder. The file survives. | the hint says **every piece is in the swarm · → kills the seeder** | 20 s until every copy is verified |
-| 8 | Live, not faked | `→ next` | holds |
+| 6 | Swarming | `→ next` | ~10 s, then it moves on to 7 **by itself** |
+| 7 | Kill the seeder. The file survives. | no key: starts on its own | ~30 s until every copy is verified |
+| 8 | Giving up keeps seeding; fetching again resumes | `→ next` | ~40 s, with two real 15 s stalls: talk over the countdown |
+| 9 | Live, not faked | `→ next` | holds |
 
-Scene 7 is triggered by you. The runner kills the seeder at the first
-moment, *from your key press on*, that the leechers together hold every
-piece and none holds them all. The hint tells you when that's true. You
-have roughly 15 s (in the runs, the leading leecher still needed about
-half the file then, at one piece a second). If you're late and a leecher already finished,
-the seeder is still killed, but the banner says **VOID** in red: honest,
-and the file still survives.
+**Scenes 6 and 7 run back to back, without a key press in between.**
+The moment that proves the point (the leechers *together* hold every
+piece, but none holds them all) lasts only about 15 s at one piece a
+second. When the kill waited for the presenter's key, it often came too
+late: all three leechers already had 32/32, so killing the seeder proved
+nothing (the banner said VOID). Now the runner goes straight from
+scene 6 into scene 7 (`chain` in `cmd/vizrun/scenes.go`) and SIGKILLs the
+seeder itself at that moment; the title switches to scene 7 on its own,
+so move to the next slide when it does. Press → again only for scene 8.
+If a leecher ever did finish first, the seeder would still be killed and
+the banner would say **VOID** in red.
 
 ## Decisions (asked and answered before any code)
 
@@ -98,7 +103,7 @@ and the file still survives.
 | 1 | Rendering | **SVG + GSAP 3.12.5** from cdnjs. The team asked for "the coolest"; GSAP's easing and sequencing make the motion look polished. SVG keeps nodes and text crisp at 1080p. Comets are computed along quadratic arcs, so no GSAP plugin is needed. No build step: plain `<script>` tags. |
 | 2 | Fonts | Google Fonts (Space Grotesk, IBM Plex Sans, JetBrains Mono). The page waits for `document.fonts.ready`. The presentation room has internet, so nothing is vendored. |
 | 3 | Where it lives | `viz/` for the page, `cmd/vizrun` for the runner. Stdlib Go; it talks to nodes **only over HTTP and signals**, never imports `internal/`. |
-| 4 | Event transport | One `EventSource` per node, from the page straight to each node's `/api/events?level=debug`. 21 streams on one page (20 nodes plus one added in an earlier version of the scenes) worked without trouble. |
+| 4 | Event transport | One `EventSource` per node, from the page straight to each node's `/api/events?level=debug`. 21 streams on one page worked without trouble. |
 | 5 | API additions | **None.** Every gap is worked around (below). |
 | 6 | Branch | `feature/magnet-links`. |
 | 7 | Video | Not now (see Status). |
@@ -120,7 +125,7 @@ new node flag, and scene titles match the slide titles.
                         └──────────┬───────────────────────────────────────────┬──────────────────────┘
                                    │ same origin                                │ CORS, read only
                                    ▼                                            ▼
-  cmd/vizrun  (127.0.0.1:8790) ──── POST /api/lookup, put, get, share, fetch ──►  20 × cmd/node
+  cmd/vizrun  (127.0.0.1:8790) ──── POST /api/lookup, put, get, share, fetch ──►  21 × cmd/node
    • builds ./cmd/node, starts nodes                                            --api 127.0.0.1:87xx
    • serves viz/ and /viz/config, /viz/status                                   --api-control
    • runs scene N on /viz/next                                                  --console=false
@@ -154,7 +159,7 @@ Rules that keep it honest and simple:
 | `nodes.go` | start a node process (flags below), wait for its API and, if it joins, its `bootstrap complete` log line; SIGKILL / SIGTERM |
 | `recorder.go` | one `/api/events?level=debug` subscription per node: every event to `events.jsonl`, counts, `dropped`, each node's pieces (for the kill rule), taps for scenes |
 | `server.go` | the HTTP side: page, `/viz/*` endpoints, the status hub; the HTTP client for nodes |
-| `scenes.go` | the eight scenes' actions and checks |
+| `scenes.go` | the nine scenes' actions and checks |
 
 Every node runs `cmd/node --port <9700+i> --id-seed viz<i> --k 4 --api
 127.0.0.1:<8700+i> --api-control --console=false --max-inflight 1
@@ -185,7 +190,7 @@ files; default a new temp dir), `--watch <file>`, `--auto`, `--node-bin`.
 | `ring.js` | nodes at angle = ID / 2^160, label lanes, comets, edges, key markers, dimming | no |
 | `rpc.js` | turns a window's events into replay steps, pairing by `rpc_id` | no |
 | `replay.js` | the replay buffer and queue | no |
-| `scenes.js` | the eight scenes' drawing: panels, grids, captions | no |
+| `scenes.js` | the nine scenes' drawing: panels, grids, captions | no |
 | `main.js` | glue: streams, status stream, keys, live (non-replayed) drawing | GET, POST to vizrun |
 
 ## Ground rules for what's on screen
@@ -222,6 +227,19 @@ Scenes 6–8 (file transfer) are **live**, slowed by `--debug-serve-delay
 Scene 2 replays viz0's own `/api/table` snapshots, taken after each join
 in scene 1.
 
+### Who fed whom: piece colours
+
+In scenes 6–8 every node in the grids has a colour: the seeder amber
+(the file-payload colour), the others lavender, rose and ivory, in the
+order they appear. Each received piece is painted in the **sender's**
+colour, from the `from` of its `piece received` event, and its comet on
+the ring takes the same colour; the node's name in its grid is written
+in its own colour, so the grids double as a legend. Under each leecher, a
+tally counts pieces per sender. When a download completes, the page
+compares that tally with the download's own count (`pieces_from` in the
+`/api/fetch` answer) and says whether they agree, so the colours are
+checked against a second, independent source.
+
 ### Pairing events across nodes
 
 Events carry no node ID: the stream an event came on says which node
@@ -243,8 +261,9 @@ node with the same `ip:port` as its UDP address. That holds because
 
 ## The scenes, as built
 
-20 nodes in all: viz0 starts with the runner; scene 1 adds viz1…viz19.
-Ports 9700–9719 (UDP and TCP), 8700–8719 (API). Destructive scenes come last: provider records never
+21 nodes in all: viz0 starts with the runner; scene 1 adds viz1…viz19;
+scene 8 adds viz20. Ports 9700–9720 (UDP and TCP),
+8700–8720 (API). Destructive scenes come last: provider records never
 expire, and a dead contact stalls each lookup round that touches it for
 the 2 s RPC timeout.
 
@@ -255,19 +274,22 @@ the 2 s RPC timeout.
 | 3 | viz7 looks up the node farthest from it (XOR) that isn't in its table (`/api/table`): viz10 with these seeds. | Target marker, each round's FIND_NODEs out and replies back, a row per round; `lookup converged`'s rounds and RPCs, with ✓ when the replayed round count equals it. | replay |
 | 4 | viz4 puts `greeting`; then the node farthest from the key that `/api/store` shows isn't a holder gets it. | Key marker, STOREs to the k closest, `value stored` holders, `store complete`; the getter's FIND_VALUE rounds, `find_value finished`; the value (from the `/api/get` answer). | replay |
 | 5 | viz11 shares 2 MiB of fresh random bytes (32 pieces). | Key marker, the announce's STOREs, record holders, `provider announced`; the magnet link from the `/api/share` answer. | replay |
-| 6 | viz3, viz9, viz15 fetch the link: the second when the first has 4 pieces, the third when the second has 2. | Piece grids (seeder full), an amber comet per `piece received`, "now also a provider" on each leecher's `provider announced`, the union count. | live |
-| 7 | Waits for "together every piece, none complete", SIGKILLs viz11, waits for all three fetches, hashes the files. | The banner with the runner's reason; viz11 greyed (its stream closed); `provider failed…` on each leecher; each grid completing, with `pieces_from` from the `/api/fetch` answer; a SHA-256 line under each grid, green when it matches. | live |
-| 8 | Sends the totals. | Events recorded, `dropped` (runner and page), RPCs, pieces, downloads, nodes; k, α, max-inflight, the serve-delay disclosure, the replay rule, seeds, commit, date. | static |
+| 6 | viz3, viz9, viz15 fetch the link: the second when the first has 4 pieces, the third when the second has 2. | Piece grids (seeder full); each received piece painted, and its comet drawn, in the colour of the node that sent it (`piece received`'s `from`), with a live per-sender tally under each grid; "now also a provider" on each leecher's `provider announced`; the union count. | live |
+| 7 | Waits for "together every piece, none complete", SIGKILLs viz11, waits for all three fetches, hashes the files. | The banner with the runner's reason; viz11 greyed (its stream closed); `provider failed…` on each leecher; each grid completing, with a check that its per-sender tally (from the events) equals the download's own count (`pieces_from` in the `/api/fetch` answer); `✓ SHA-256 = original` on each grid's last line, green when it matches; the killed seeder's grid collapses to its header. | live |
+| 8 | viz13 shares 1 MiB of fresh bytes (16 pieces); viz6 fetches, viz17 starts once viz6 has 6 pieces; viz13 is SIGKILLed once viz17 has 2. Both stall 15 s and give up. viz20 starts and shares the same bytes (same 1 s per piece, so the transfer is visible); viz6 fetches again into the same file, and viz17 once viz6 has its first new piece. | Grids; the kill banner (too early: the union is short); each `download stalled…` with a **real** countdown from that event's time, stopped when a piece arrives (the node resets its clock then); `download gave up, still serving its pieces`; viz20's grid; `download resumed` on both; their missing pieces arriving in viz20's colour; `already_had` from each answer; both SHA-256 checks. | live |
+| 9 | Sends the totals. | **The finale.** Every live node's routing table (`/api/table`, read right then) drawn as one glowing mesh, every node gently pulsing; the headline "No tracker. No server. Just peers."; six tiles, each appearing with its final number: nodes, DHT messages (`rpc sent`), pieces moved (`piece received`), seeders killed (`killed` status), copies verified (`sha256` matches), log events recorded; one footnote with the honest fine print (replay rule, serve delay, k, α, seeds, date). | static |
 
-**The give-up/resume scene ("Giving up keeps seeding; fetching again
-resumes", once scene 8) is removed for now.** It ran DRY-RUN part 8's story on this network (the seeder dies
-too early, both leechers give up after 15 s but keep serving, a new
-provider appears, the same fetch resumes). Three of its first seven runs
-failed at the resume because of a bug in the core (below). Making it
-pass by choosing a lucky file and lucky leechers would have been a scene
-staged around the bug, so it was taken out instead. The core has since
-been fixed (both points below); the scene comes back in its own step.
-The real runs, including the failures, are in
+**Scene 8's history.** Its first version failed 3 of its first 7 runs at
+the resume, because of two bugs in the core (below): the leecher held a
+provider record itself, answered its own `FIND_VALUE` from it, and never
+saw the new seeder. Rather than stage the scene around the bug (pick a
+lucky file and lucky leechers), it was taken out, the core was fixed
+(lookups skip dead nodes; downloads use `FindAllValues`), and the scene
+came back unchanged, with its fixed cast: **5 of 5** headless runs then
+passed, and both leechers gave up with the same count every time (11/11,
+10/10, 12/12, 9/9, 8/8), because rediscovery now finds the other
+leecher's record.
+The failed runs are in
 [DRY-RUN.md part 9](DRY-RUN.md#part-9--the-visualizer-cmdvizrun--viz).
 
 ## Working around what the API doesn't say
@@ -298,7 +320,7 @@ they were:
   saw its local record count grow 2 → 4 as the other leechers
   announced), but a provider whose record lands elsewhere is invisible
   to it, and a resumed fetch can fail with `no providers found` while a
-  live provider exists. This is why the give-up/resume scene is out.
+  live provider exists. Scene 8 hit exactly this.
 - **One dead node near a key makes every announcer keep a copy.** If a
   dead node is among the k closest to a key, lookups for it converge with
   fewer than k live nodes, and `selfAmongClosest` returns true for
@@ -315,7 +337,9 @@ they were:
 
 1. **Runner side**, `cmd/vizrun/scenes.go`: write `func sceneX(ctx
    context.Context, r *runner) error` and add `{"x", "Slide title",
-   sceneX}` to `allScenes()` at the right place. Make nodes act only
+   sceneX, false}` to `allScenes()` at the right place (`true` instead of
+   `false` makes the next scene start as soon as this one ends, without a
+   key press, as scene 6 does). Make nodes act only
    through `postJSON(ctx, node.API, "/api/…", body, &answer)` and
    `node.kill(sig)`. Wrap a fast action in `r.window("x", "slow",
    fields, func() (map[string]any, error) {…})` so the page replays it;
@@ -335,16 +359,44 @@ they were:
 - `go test ./cmd/vizrun -race`: SSE parsing, XOR ordering, the kill rule
   (`recorder.spread`), `events.jsonl` and `dropped` accounting, watch
   mode, too few nodes refused.
-- `bash scripts/demo-viz.sh` (headless, about a minute): vizrun's own checks
+- `bash scripts/demo-viz.sh` (headless, ~90 s): vizrun's own checks
   (every node joined; no bucket over k; scene 3's `lookup round
   starting` count = `lookup converged` rounds = the answer's rounds; the
-  get came over the network; the kill moment was valid; 3 of 3 SHA-256
-  sums match), every event kind the page draws was recorded,
+  get came over the network; the kill moment was valid; 4 of 4 SHA-256
+  sums match; both scene-8 leechers stopped short; the resume logged
+  `download resumed`), every event kind the page draws was recorded,
   `dropped` is 0 on every event, and no port is left bound.
 - In the browser (one full step-mode run, DRY-RUN part 9): the page's
   per-message counters equalled `events.jsonl`'s for all ten message
   kinds compared (5054 events, `dropped` 0), and the lookup verdict
   showed ✓.
+
+## How this was recorded
+
+One continuous run (`?mode=auto`), recorded on this laptop with no screen
+of its own involved:
+
+1. A fresh `vizrun` on spare ports, so a run on the default ports can keep
+   going: `go run ./cmd/vizrun --base-port 9800 --api-base 8800 --http
+   127.0.0.1:8792`.
+2. A virtual X screen (`xvfb-run -s "-screen 0 1920x1108x24"`) with
+   Chrome for Testing in kiosk mode on `http://127.0.0.1:8792/?mode=auto`.
+   Chrome for Testing shows a 56 px banner at the top that no flag
+   removes, so the page's viewport is 1920×1052 and the stage is drawn at
+   97.4% scale, centred.
+3. `ffmpeg -f x11grab -draw_mouse 0 -framerate 60 -video_size 1920x1080
+   -i "$DISPLAY+0,28" -c:v libx264rgb -preset ultrafast -crf 0 raw.mkv`
+   (lossless), stopped 22 s after the runner prints `scene 9:`.
+4. Encoded for sharing: the first 3 s (fonts loading) trimmed, the stage
+   cropped out exactly (`crop=1870:1052:25:28`) and scaled back to
+   1920×1080, then `-c:v libx264 -preset medium -crf 20 -pix_fmt yuv420p
+   -movflags +faststart` (bt709). Result: 3 min 56 s, 1080p60, 18 MB.
+
+Nothing was cut or sped up inside the run: what the video shows is one
+live run, in real time, with the labeled replays and the disclosed
+1 s serve delay. A browser tab that isn't visible gets no animation
+frames, which is why it's recorded on a virtual screen rather than in a
+background tab. The video itself isn't in the repository.
 
 ## Later
 
@@ -356,7 +408,5 @@ they were:
   `--api-control` (NODE-API.md "Safety"). Ordering across machines must
   pair events (`rpc_id`; provider address + piece index), never trust
   `time` alone: clocks differ. File hashes must come from each laptop.
-- **Recording.** `?mode=auto` plus the Xvfb + ffmpeg recipe from the
-  team's prompt; add "How this was recorded" here then.
 - **A ← key** to re-show an earlier scene's final frame isn't built: a
   scene can't be un-run, and the slides carry the recap.

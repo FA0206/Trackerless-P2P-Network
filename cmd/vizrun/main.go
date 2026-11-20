@@ -42,7 +42,7 @@ type config struct {
 
 func parseFlags() config {
 	var c config
-	flag.IntVar(&c.n, "n", 20, "number of nodes in the network (viz0..viz<n-1>)")
+	flag.IntVar(&c.n, "n", 20, "number of nodes in the network (viz0..viz<n-1>); scene 8 adds one more")
 	flag.IntVar(&c.k, "k", 4, "bucket size / replication k for every node (small, so 'the k closest' is a real subset)")
 	flag.IntVar(&c.basePort, "base-port", 9700, "UDP and TCP port of viz0; node i uses base-port+i")
 	flag.IntVar(&c.apiBase, "api-base", 8700, "HTTP API port of viz0; node i uses api-base+i")

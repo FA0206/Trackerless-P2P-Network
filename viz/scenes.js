@@ -26,21 +26,52 @@ window.Viz = window.Viz || {};
 
   // --- piece grids (scenes 6-8) ---------------------------------------------
 
+  // Every node in a grid gets a colour: the seeder amber (file payload),
+  // the others three calm tones. A received piece is painted in the
+  // colour of the node that sent it (the event's `from`), so the grids
+  // show who fed whom. Four is enough: scenes 7 and 8 have four nodes.
+  const SOURCE_COLORS = ["#ffb547", "#b39dff", "#f39ac7", "#e8e2d0"];
+
+  function colorFor(app, name) {
+    if (!app.colors) app.colors = new Map();
+    if (!app.colors.has(name)) app.colors.set(name, SOURCE_COLORS[app.colors.size % SOURCE_COLORS.length]);
+    return app.colors.get(name);
+  }
+
   // makeGrid draws one node's pieces as cells; set() fills one from a
-  // "piece received" event. The seeder's grid starts full (it shared).
+  // "piece received" event, in the sender's colour. The seeder's grid
+  // starts full (it shared), in its own colour.
   function makeGrid(app, host, name, pieces, role, full) {
+    const me = colorFor(app, name);
     const row = document.createElement("div");
     row.className = `grid-row ${role}`;
-    row.innerHTML = `<div class="grid-head"><span class="grid-name"></span><span class="grid-role"></span><span class="grid-count"></span></div><div class="grid-cells"></div><div class="grid-note"></div>`;
+    row.innerHTML = `<div class="grid-head"><span class="grid-name"></span><span class="grid-role"></span><span class="grid-count"></span></div><div class="grid-cells"></div><div class="grid-from"></div><div class="grid-note"></div>`;
     row.querySelector(".grid-name").textContent = name;
+    row.querySelector(".grid-name").style.color = me;
     row.querySelector(".grid-role").textContent = role;
     const cells = row.querySelector(".grid-cells");
     cells.style.gridTemplateColumns = `repeat(${Math.min(pieces, 16)}, 1fr)`;
     for (let i = 0; i < pieces; i++) {
       const c = document.createElement("span");
-      if (full) c.className = "have";
+      if (full) {
+        c.className = "have";
+        c.style.background = me;
+      }
       cells.appendChild(c);
     }
+    const fromLine = row.querySelector(".grid-from");
+    const tally = new Map(); // sender name -> pieces received from it
+    const renderTally = () => {
+      fromLine.replaceChildren();
+      for (const [who, n] of tally) {
+        const chip = document.createElement("span");
+        chip.className = "from-chip";
+        chip.innerHTML = `<i></i><b></b> ${n}`;
+        chip.querySelector("i").style.background = colorFor(app, who);
+        chip.querySelector("b").textContent = who;
+        fromLine.appendChild(chip);
+      }
+    };
     host.appendChild(row);
     let have = full ? pieces : 0;
     const count = row.querySelector(".grid-count");
@@ -52,11 +83,17 @@ window.Viz = window.Viz || {};
       pieces,
       row,
       have: new Set(full ? [...Array(pieces).keys()] : []),
-      set(index, of, haveN) {
+      tally,
+      set(index, of, haveN, from) {
         const c = cells.children[index];
         if (c && !c.classList.contains("have")) {
           c.classList.add("have");
+          if (from) c.style.background = colorFor(app, from);
           if (window.gsap) gsap.fromTo(c, { scale: 1.6 }, { scale: 1, duration: 0.4, ease: "back.out(3)" });
+        }
+        if (from) {
+          tally.set(from, (tally.get(from) || 0) + 1);
+          renderTally();
         }
         grid.have.add(index);
         have = haveN ?? grid.have.size;
@@ -67,6 +104,14 @@ window.Viz = window.Viz || {};
         note.textContent = text;
         note.className = `grid-note ${cls}`;
       },
+      // addNote appends to the note line (one line per grid saves room).
+      addNote(text, cls = "") {
+        const span = document.createElement("span");
+        span.className = cls;
+        span.textContent = ` · ${text}`;
+        note.appendChild(span);
+      },
+      // dead collapses the grid to its header: a killed node serves nothing.
       dead() {
         row.classList.add("dead");
       },
@@ -356,11 +401,13 @@ window.Viz = window.Viz || {};
   function swarmPanel(app, title) {
     app.setPanel(`
       <div class="eyebrow">${esc(title)}</div>
+      <div class="legend">each piece is painted in the colour of the node that sent it</div>
       <div class="grids" id="grids"></div>
       <div class="spread" id="spread"></div>
       <div class="banner" id="banner"></div>
       <div class="hashes" id="hashes"></div>`);
     app.grids.clear();
+    app.colors = new Map(); // colours restart with each panel
   }
 
   function renderSpread(app, leechers) {
@@ -374,7 +421,6 @@ window.Viz = window.Viz || {};
   const swarm = {
     tallPanel: true,
     caption: "Leechers fetch the rarest pieces first and serve each piece as soon as they have it.",
-    keepsHint: true,
     enter(app) {
       app.ring.clearMarkers();
       app.ring.clearEdges();
@@ -402,17 +448,13 @@ window.Viz = window.Viz || {};
       }
     },
     onPieces(app) {
-      const s = renderSpread(app, swarmLeechers);
-      if (app.mode === "step" && app.holding && s.pieces && s.union >= s.pieces && !s.anyDone) {
-        app.setHint("every piece is in the swarm  ·  → kills the seeder");
-      } else if (app.holding && s.anyDone) {
-        app.setHint("→  next");
-      }
+      renderSpread(app, swarmLeechers);
     },
     done(app) {
-      swarm.onPieces(app);
+      // No key press here: the runner goes straight on to scene 7 and
+      // kills the seeder itself, the moment every piece is in the swarm.
+      app.setHint("the seeder dies the moment every piece is somewhere in the swarm");
     },
-    autoHold: 0,
   };
 
   const kill = {
@@ -441,20 +483,25 @@ window.Viz = window.Viz || {};
         const g = app.grids.get(msg.node);
         if (g && msg.ok) {
           g.done();
+          // The colours came from the live events; the /api/fetch answer
+          // counts the same thing independently (pieces_from). Say whether
+          // they agree.
           const from = msg.result && msg.result.pieces_from ? Object.entries(msg.result.pieces_from) : [];
-          const named = from.map(([addr, k]) => `${app.resolve(addr) || addr}: ${k}`).join(" · ");
-          g.note(`complete · pieces from ${named}`, "ok");
+          const agree = from.length > 0 && from.every(([addr, k]) => g.tally.get(app.resolve(addr)) === k);
+          g.note(agree ? "✓ done · tally = /api/fetch" : `complete · /api/fetch says ${from.map(([a, k]) => `${app.resolve(a) || a}: ${k}`).join(" · ")}`, "ok");
         }
       } else if (msg.type === "sha256") {
         // The runner hashed the original and this copy on disk.
         const g = app.grids.get(msg.node);
-        const row = document.createElement("div");
-        row.className = `hash-line ${msg.match ? "ok" : "bad"}`;
-        row.textContent = msg.match
-          ? `✓ SHA-256 ${String(msg.got).slice(0, 12)}… matches the original`
-          : `✗ SHA-256 ${String(msg.got).slice(0, 12)}… differs from the original`;
-        (g ? g.row : app.$("#hashes")).appendChild(row);
-        if (window.gsap) gsap.from(row, { opacity: 0, x: 20, duration: 0.4 });
+        const text = msg.match ? "✓ SHA-256 = original" : `✗ SHA-256 ${String(msg.got).slice(0, 8)}… differs`;
+        if (g) {
+          g.addNote(text, `hash-line ${msg.match ? "ok" : "bad"}`);
+        } else {
+          const row = document.createElement("div");
+          row.className = `hash-line ${msg.match ? "ok" : "bad"}`;
+          row.textContent = `${msg.node} ${text}`;
+          app.$("#hashes").appendChild(row);
+        }
       }
     },
     onLive(app, n, ev) {
@@ -465,35 +512,152 @@ window.Viz = window.Viz || {};
     },
   };
 
-  // --- 8. outro -----------------------------------------------------------
+  // --- 8. give up / resume --------------------------------------------------
 
-  const outro = {
-    caption: "Every dot, arrow and number on screen came from these nodes' own log events and API answers.",
+  const resume = {
+    tallPanel: true,
+    caption: "If the seeder dies too early, the download gives up after 15 s, but keeps serving its pieces. Later, the same fetch resumes.",
     enter(app) {
-      app.ring.dim(false);
-      app.ring.clearMarkers();
-      app.setPanel(`<div class="eyebrow">this run</div><div id="outro"></div>`);
+      app.ring.dim(true);
+      swarmLeechers = [];
+      swarmPanel(app, `give up, keep seeding, resume · ${app.config.serve_delay} per piece`);
+      app.setBadgeMode(`real time · serve delay ${app.config.serve_delay}`);
+      resume.timers = new Map();
     },
     onStatus(app, msg) {
-      if (msg.type !== "summary") return;
-      const c = msg.counts || {};
-      const dropped = [...app.nodes.values()].reduce((s, n) => s + n.dropped, 0);
-      app.$("#outro").innerHTML = `
-        <dl class="outro">
-          <div><dt>events recorded</dt><dd>${msg.events}</dd></div>
-          <div><dt>dropped</dt><dd class="${msg.dropped === 0 && dropped === 0 ? "ok" : "bad"}">${msg.dropped} · page ${dropped}</dd></div>
-          <div><dt>RPCs sent</dt><dd>${c["rpc sent"] || 0}</dd></div>
-          <div><dt>pieces received</dt><dd>${c["piece received"] || 0}</dd></div>
-          <div><dt>downloads complete</dt><dd>${c["download complete"] || 0}</dd></div>
-          <div><dt>nodes</dt><dd>${msg.nodes}</dd></div>
-        </dl>
-        <div class="panel-sub">k = ${msg.k} · α = ${msg.alpha} · --max-inflight ${msg.max_inflight}<br>
-        --debug-serve-delay ${esc(msg.serve_delay)} on every node: pieces were slowed down to be watchable; DHT traffic was not<br>
-        DHT scenes: replayed in their real order, with their real duration shown<br>
-        seeds ${esc(msg.seeds)} · commit ${esc(msg.commit || "?")} · ${esc(msg.date)}</div>`;
+      if (msg.type === "magnet" && !app.grids.has(msg.node)) {
+        const g = makeGrid(app, app.$("#grids"), msg.node, msg.pieces, swarmLeechers.length ? "new seeder" : "seeder", true);
+        app.ring.light(msg.node, true);
+        if (swarmLeechers.length) g.note("joined just now, shares the same bytes (same key)", "file");
+      } else if (msg.type === "fetch started" && !msg.again) {
+        swarmLeechers.push(msg.node);
+        makeGrid(app, app.$("#grids"), msg.node, msg.pieces, "leecher", false);
+        app.ring.light(msg.node);
+      } else if (msg.type === "fetch started" && msg.again) {
+        app.grids.get(msg.node) && app.grids.get(msg.node).note("fetch again, into the same file…", "file");
+      } else if (msg.type === "node up") {
+        app.ring.light(msg.name);
+      } else if (msg.type === "fetch done" && msg.ok) {
+        const g = app.grids.get(msg.node);
+        const had = msg.result ? msg.result.already_had : "?";
+        if (g) {
+          g.done();
+          g.note(`complete · ${had} pieces were already on disk (resumed)`, "ok");
+        }
+      }
+      if (msg.type === "killed" || msg.type === "sha256") kill.onStatus(app, msg); // banner, hash line
+    },
+    onLive(app, n, ev) {
+      const g = app.grids.get(n.name);
+      if (!g) return;
+      if (ev.msg.startsWith("download stalled")) {
+        // A real countdown from the event's own time: stallTimeout is 15 s.
+        const since = Date.parse(ev.time);
+        clearInterval(resume.timers.get(n.name));
+        const tick = () => g.note(`stalled: nobody alive has the missing pieces · ${Math.min(15, Math.floor((Date.now() - since) / 1000))} s / 15 s`, "fail");
+        tick();
+        resume.timers.set(n.name, setInterval(tick, 250));
+      } else if (ev.msg.startsWith("download gave up")) {
+        clearInterval(resume.timers.get(n.name));
+        resume.timers.delete(n.name);
+        g.note(`gave up with ${ev.attrs.have}/${ev.attrs.of} · still serving them`, "file");
+      } else if (ev.msg === "download resumed") {
+        g.note(`resumed: ${ev.attrs.have}/${ev.attrs.of} on disk, re-hashed`, "file");
+      } else if (ev.msg === "piece received" && resume.timers.has(n.name)) {
+        // A piece arrived, so the node could progress and reset its stall
+        // clock (download.go run(): it logs "download stalled" again if it
+        // stalls again). Stop ours rather than show a timer it isn't running.
+        clearInterval(resume.timers.get(n.name));
+        resume.timers.delete(n.name);
+        g.note(`got piece ${ev.attrs.index} from ${app.resolve(ev.attrs.from) || ev.attrs.from}`, "file");
+      }
     },
   };
 
-  Viz.scenes = { join, buckets, lookup, store, share, swarm, kill, outro };
+  // --- 9. outro: the finale ----------------------------------------------------
+
+  // Every number here is real: from the runner's summary (counted from the
+  // recorded events), or from the status messages this page received.
+  // Nothing counts up through made-up intermediate values; each tile just
+  // appears with its final number.
+  const outro = {
+    tallPanel: true,
+    caption: "Every dot, arrow and number you saw came from these nodes' own log events and API answers.",
+    enter(app) {
+      app.ring.clearMarkers();
+      app.ring.clearEdges();
+      app.ring.dim(false);
+      app.setPanel(`
+        <div class="finale-head">No tracker.<br>No server.<br>Just peers.</div>
+        <div class="finale-sub" id="finale-sub">the network these nodes built for themselves</div>
+        <div class="tiles" id="tiles"></div>
+        <div class="finale-foot" id="finale-foot"></div>`);
+      outro.drawMesh(app);
+    },
+
+    // drawMesh asks every live node for its routing table (/api/table)
+    // and draws each contact as a line: the real network, all at once.
+    async drawMesh(app) {
+      const live = [...app.nodes.values()].filter((n) => n.onRing && !n.dead);
+      const pairs = new Set();
+      for (const n of live) {
+        let table;
+        try {
+          table = await Viz.getJSON(n.api, "/api/table");
+        } catch (err) {
+          continue;
+        }
+        for (const b of table.buckets) {
+          for (const c of b.contacts) {
+            const other = app.resolve(`${c.id}@`);
+            const other_ = app.nodes.get(other);
+            if (!other_ || other_.dead) continue;
+            const key = [n.name, other].sort().join("|");
+            if (pairs.has(key)) continue;
+            pairs.add(key);
+            const line = app.ring.edge(n.name, other, "mesh");
+            if (line && window.gsap) gsap.fromTo(line, { opacity: 0 }, { opacity: 0.32, duration: 1.2, delay: pairs.size * 0.025 });
+          }
+        }
+      }
+      const sub = app.$("#finale-sub");
+      if (sub) sub.textContent = `${live.length} live nodes · ${pairs.size} links, each one a contact some node learned on its own`;
+      // A slow heartbeat across every node: the network is alive.
+      if (window.gsap) {
+        const halos = [...app.ring.nodes.values()].filter((n) => !n.g.classList.contains("dead")).map((n) => n.halo);
+        halos.forEach((h) => h.setAttribute("class", "node-halo"));
+        gsap.fromTo(halos, { attr: { r: 18 }, opacity: 0.7 }, { attr: { r: 34 }, opacity: 0, duration: 1.8, ease: "power2.out", stagger: { each: 0.08, repeat: -1, repeatDelay: 2.4 } });
+      }
+    },
+
+    onStatus(app, msg) {
+      if (msg.type !== "summary") return;
+      const c = msg.counts || {};
+      const verified = app.status.filter((m) => m.type === "sha256" && m.match).length;
+      const killed = app.status.filter((m) => m.type === "killed").length;
+      const tiles = [
+        { n: msg.nodes, label: "nodes started, none in charge", cls: "dht" },
+        { n: c["rpc sent"] || 0, label: "DHT messages", cls: "dht" },
+        { n: c["piece received"] || 0, label: "pieces moved peer to peer", cls: "file" },
+        { n: killed, label: "seeders killed mid-download", cls: "file" },
+        { n: verified, label: "copies verified, SHA-256", cls: "ok" },
+        { n: msg.events, label: "log events behind every frame", cls: "ink" },
+      ];
+      const host = app.$("#tiles");
+      host.innerHTML = tiles
+        .map((t) => `<div class="tile ${t.cls}"><div class="tile-n">${Number(t.n).toLocaleString("en-US")}</div><div class="tile-l">${esc(t.label)}</div></div>`)
+        .join("");
+      app.$("#finale-foot").textContent =
+        `${msg.nodes} live processes on one laptop · k = ${msg.k}, α = ${msg.alpha} · DHT scenes replayed in their real order · ` +
+        `pieces served at ${msg.serve_delay} each (--debug-serve-delay) so you could watch · seeds ${msg.seeds} · ${msg.date}`;
+      if (window.gsap) {
+        gsap.from(".finale-head", { opacity: 0, y: 30, duration: 0.9, ease: "power3.out" });
+        gsap.from("#tiles .tile", { opacity: 0, y: 26, scale: 0.94, duration: 0.7, ease: "back.out(1.6)", stagger: 0.16, delay: 0.5 });
+        gsap.from("#finale-foot", { opacity: 0, duration: 1, delay: 1.7 });
+      }
+    },
+  };
+
+  Viz.scenes = { join, buckets, lookup, store, share, swarm, kill, resume, outro };
   Viz.scenesUtil = { makeGrid, swarmSpread };
 })(window.Viz);

@@ -170,7 +170,7 @@ func (rc *recorder) trackPieces(ev nodeEvent) {
 }
 
 // resetPieces forgets a node's piece state before it starts a download
-// of a new file.
+// of a new file (scene 8 uses fresh nodes, but this keeps it explicit).
 func (rc *recorder) resetPieces(name string) {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()

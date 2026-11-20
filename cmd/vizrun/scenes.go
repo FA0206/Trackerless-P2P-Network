@@ -22,18 +22,23 @@ type scene struct {
 	id    string
 	title string // must match the slide title, and viz/scenes.js
 	run   func(ctx context.Context, r *runner) error
+	chain bool // when it ends, start the next scene at once, without waiting for a key press
 }
 
 func allScenes() []scene {
 	return []scene{
-		{"join", "No tracker, just peers", sceneJoin},
-		{"buckets", "Who you know: k-buckets", sceneBuckets},
-		{"lookup", "Find anyone in a few hops", sceneLookup},
-		{"store", "Storage with no server", sceneStore},
-		{"share", "Share a file, get a magnet link", sceneShare},
-		{"swarm", "Swarming", sceneSwarm},
-		{"kill", "Kill the seeder. The file survives.", sceneKill},
-		{"outro", "Live, not faked", sceneOutro},
+		{"join", "No tracker, just peers", sceneJoin, false},
+		{"buckets", "Who you know: k-buckets", sceneBuckets, false},
+		{"lookup", "Find anyone in a few hops", sceneLookup, false},
+		{"store", "Storage with no server", sceneStore, false},
+		{"share", "Share a file, get a magnet link", sceneShare, false},
+		// Swarming chains into the kill: the moment to kill the seeder
+		// (the leechers together hold every piece, none holds all) lasts
+		// only ~15 s, too short to wait for the presenter's key press.
+		{"swarm", "Swarming", sceneSwarm, true},
+		{"kill", "Kill the seeder. The file survives.", sceneKill, false},
+		{"resume", "Giving up keeps seeding; fetching again resumes", sceneResume, false},
+		{"outro", "Live, not faked", sceneOutro, false},
 	}
 }
 
@@ -43,12 +48,16 @@ const (
 	castLookup  = 7
 	castPutter  = 4
 	castSeeder1 = 11
+	castSeeder2 = 13
+	castLeech2a = 6
+	castLeech2b = 17
 )
 
 var castLeechers1 = []int{3, 9, 15}
 
 const (
 	file1Pieces = 32 // scene 5-7: big enough that the kill moment lasts a while
+	file2Pieces = 16 // scene 8: small, so its two 15 s stalls fit the scene
 	pieceSize   = 64 * 1024
 )
 
@@ -446,7 +455,8 @@ func sceneSwarm(ctx context.Context, r *runner) error {
 
 // sceneKill SIGKILLs the seeder at the first moment the leechers together
 // hold every piece while none of them holds them all (the rule of
-// scripts/demo-seeder-death.sh). If a leecher already finished, the take
+// scripts/demo-seeder-death.sh). It starts right after scene 6, with no
+// key press (scene.chain), so the moment is never missed. If a leecher already finished, the take
 // is VOID: the seeder is still killed (the story goes on), but the page
 // and the checks say so. Then it waits for every leecher and compares
 // SHA-256 sums.
@@ -532,7 +542,111 @@ func fileSHA256(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// --- 8. Live, not faked ------------------------------------------------------
+// --- 8. Giving up keeps seeding; fetching again resumes --------------------
+
+// sceneResume is DRY-RUN part 8 on this network: the seeder of a new
+// file dies too early (some pieces existed only on it). Both leechers
+// stall for 15 s and give up, but keep serving what they have. Then a
+// fresh node (viz<n>) shares the same bytes, and both leechers run the
+// same fetch again: each resumes and fetches only what it's missing.
+//
+// It needs the core's lookup to skip dead nodes and downloads to find
+// providers with FindAllValues: before those fixes, a leecher holding a
+// provider record itself never saw the new seeder's, and the resume
+// failed with "no providers found" (docs/11-visualizer.md, DRY-RUN part 9).
+func sceneResume(ctx context.Context, r *runner) error {
+	seeder := r.nodeAt(castSeeder2)
+	f, err := r.share(ctx, seeder, "dataset.bin", file2Pieces, false)
+	if err != nil {
+		return err
+	}
+	l1, l2 := r.nodeAt(castLeech2a), r.nodeAt(castLeech2b)
+	out1 := filepath.Join(r.out, "files", l1.Name+"-"+f.name)
+	ch1 := r.startFetch(ctx, l1, f, out1)
+	if err := r.waitPieces(ctx, l1, 6, ch1); err != nil {
+		return err
+	}
+	out2 := filepath.Join(r.out, "files", l2.Name+"-"+f.name)
+	ch2 := r.startFetch(ctx, l2, f, out2)
+	if err := r.waitPieces(ctx, l2, 2, ch2); err != nil {
+		return err
+	}
+	union, of, _, each := r.rec.spread([]string{l1.Name, l2.Name})
+	seeder.kill(syscall.SIGKILL)
+	r.emit("killed", map[string]any{"node": seeder.Name, "reason": fmt.Sprintf("too early: together the leechers hold only %d of %d pieces", union, of), "union": union, "of": of, "each": each})
+
+	// Both downloads stall for 15 s and give up: /api/fetch answers 500.
+	gave := map[string]int{}
+	for _, c := range []chan fetchResult{ch1, ch2} {
+		var res fetchResult
+		select {
+		case res = <-c:
+		case <-time.After(110 * time.Second):
+			return errors.New("a leecher's fetch never ended")
+		}
+		have, _, _ := r.rec.pieceCount(res.node)
+		gave[res.node] = have
+		r.emit("fetch done", map[string]any{"node": res.node, "ok": res.err == nil, "error": errString(res.err), "have": have, "of": of})
+	}
+	// Both must have stopped short, keeping what they had. They usually
+	// end equal (DRY-RUN part 8), but not always: if the second leecher's
+	// last piece came from the seeder and its provider record is still
+	// being stored when the first one's 15 s run out, the first stops one
+	// short. That's the DHT's timing, shown as it happens.
+	r.check(gave[l1.Name] > 0 && gave[l1.Name] < of && gave[l2.Name] > 0 && gave[l2.Name] < of,
+		"give up: %s and %s both stopped short and kept their pieces: %d and %d of %d", l1.Name, l2.Name, gave[l1.Name], gave[l2.Name], of)
+
+	// A fresh node with the same bytes. It serves at the same slowed
+	// pace as everyone else, so the missing pieces arriving are visible.
+	boot := r.liveNodes()[0]
+	fresh, err := r.startNode(ctx, r.cfg.n, boot)
+	if err != nil {
+		return err
+	}
+	if _, err := r.shareExisting(ctx, fresh, f.path, false); err != nil {
+		return err
+	}
+	// Both leechers run the same fetch again, into the same file: each
+	// resumes (Library.claimForResume) and fetches only what it's missing.
+	// The second starts once the first has its first new piece.
+	r.resumeFetch(ctx, l1, f, out1)
+	if err := r.waitPieces(ctx, l1, gave[l1.Name]+1, r.fetchChan(l1.Name)); err != nil {
+		return err
+	}
+	r.resumeFetch(ctx, l2, f, out2)
+	if err := r.finishAndVerify(ctx, []string{l1.Name, l2.Name}, f); err != nil {
+		return err
+	}
+	r.check(r.rec.count("download resumed") >= 2, "resume: %s's and %s's second fetches both logged 'download resumed' (%d)", l1.Name, l2.Name, r.rec.count("download resumed"))
+	return nil
+}
+
+// resumeFetch runs the same /api/fetch again for a download that gave up.
+// Unlike startFetch it keeps the node's piece record: the pieces on disk
+// are still there.
+func (r *runner) resumeFetch(ctx context.Context, n *procNode, f sharedFile, out string) {
+	ch := make(chan fetchResult, 1)
+	r.mu.Lock()
+	r.fetches[n.Name] = ch
+	r.mu.Unlock()
+	r.emit("fetch started", map[string]any{"node": n.Name, "key": f.key, "pieces": f.pieces, "again": true})
+	go func() {
+		fctx, cancel := context.WithTimeout(ctx, 110*time.Second)
+		defer cancel()
+		var answer map[string]any
+		err := postJSON(fctx, n.API, "/api/fetch", map[string]string{"key": f.magnet, "out": out}, &answer)
+		ch <- fetchResult{node: n.Name, out: out, err: err, res: answer}
+	}()
+}
+
+// fetchChan is the channel the node's current fetch reports on.
+func (r *runner) fetchChan(name string) chan fetchResult {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.fetches[name]
+}
+
+// --- 9. Live, not faked ------------------------------------------------------
 
 func sceneOutro(ctx context.Context, r *runner) error {
 	total, dropped, _ := r.rec.totals()

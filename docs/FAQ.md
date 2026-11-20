@@ -281,7 +281,7 @@ commands too.
 
 ### Is the visualizer a simulation? How do we know it isn't faked?
 
-No. `go run ./cmd/vizrun` starts 20 real `cmd/node` processes, and the
+No. `go run ./cmd/vizrun` starts 21 real `cmd/node` processes, and the
 page draws only what they report: each node's `/api/events` stream (its
 own log records), its snapshots (`/api/table`, …), and facts from the
 runner (which node it killed, the SHA-256 of each downloaded file). The

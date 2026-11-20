@@ -148,7 +148,9 @@ window.Viz = window.Viz || {};
     // comet animates one message from node a to node b along an arc and
     // resolves when it arrives. family: "dht" (cyan) | "file" (amber) |
     // "reply" (pale cyan, travelling back along the request's arc).
-    function comet(a, b, family, duration = 0.7) {
+    // color, if given, overrides the family's colour (a piece in its
+    // sender's colour).
+    function comet(a, b, family, duration = 0.7, color) {
       const A = nodes.get(a);
       const B = nodes.get(b);
       if (!A || !B || A === B || !window.gsap) return Promise.resolve();
@@ -164,12 +166,14 @@ window.Viz = window.Viz || {};
       if (showTrail) {
         trails++;
         trail = el("path", { d, class: `comet-trail ${cls}` }, cometLayer);
+        if (color) trail.style.stroke = color;
         const len = trail.getTotalLength();
         trail.style.strokeDasharray = `${len}`;
         trail.style.strokeDashoffset = `${len}`;
         gsap.to(trail.style, { strokeDashoffset: 0, duration, ease: "power2.inOut" });
       }
       const head = el("circle", { cx: A.x, cy: A.y, r: family === "file" ? 9 : 7, class: `comet-head ${cls}`, filter: "url(#glow)" }, cometLayer);
+      if (color) head.style.fill = color;
       const t = { v: 0 };
       return new Promise((resolve) => {
         gsap.to(t, {

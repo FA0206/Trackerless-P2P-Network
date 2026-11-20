@@ -25,7 +25,7 @@
   and keep serving them, and fetching again resumes
   ([jump](#part-8--scriptsdemo-give-up-resumesh-giving-up-keeps-seeding-fetching-again-resumes)).
 - **Part 9** (branch `feature/magnet-links`) — the visualizer: `vizrun`
-  runs eight scenes on 20 live nodes, the page replays and draws them, and
+  runs nine scenes on 21 live nodes, the page replays and draws them, and
   `scripts/demo-viz.sh` checks a headless run
   ([jump](#part-9--the-visualizer-cmdvizrun--viz)).
 
@@ -1366,10 +1366,11 @@ is the same. Then node1 runs exactly the same `fetch`:
 
 # Part 9 — the visualizer (`cmd/vizrun` + `viz/`)
 
-Same branch. The concept is in [11](11-visualizer.md). These runs were
-made while the visualizer still had a ninth scene, give-up/resume (then
-scene 8), which is now removed until a core bug it hit is fixed; its
-lines are kept below as the evidence. Two kinds of run are traced here: `vizrun --auto` (headless, what `scripts/demo-viz.sh`
+Same branch. The concept is in [11](11-visualizer.md). Scene 8,
+give-up/resume, was taken out for a while after it hit a core bug, and
+came back once the core was fixed; the runs below include the failures
+that found the bug, and runs after the fix. Two kinds of run are traced
+here: `vizrun --auto` (headless, what `scripts/demo-viz.sh`
 does; ports 9740–9760 / 8740–8760) and a full step-mode run in Chrome
 (`go run ./cmd/vizrun`, ports 9700–9720 / 8700–8720). Node IDs are
 `SHA-1("viz<i>")`, so yours match: viz0 `34fbf035`, viz7 `0157e7dc`,
@@ -1503,7 +1504,7 @@ viz11, 6 from viz15; viz9 got 9 from viz3, 14 from viz11, 9 from viz15;
 viz15 got 14 from viz3, 5 from viz9, 13 from viz11. Every copy's SHA-256
 matched.
 
-## The removed give-up/resume scene (then scene 8)
+## Scene 8 — give up, keep serving, resume
 
 viz13 shares 16 pieces; it is SIGKILLed when the second leecher has 2.
 
@@ -1564,6 +1565,44 @@ the seeder, and its provider record took 4 s to store (lookups touching
 viz11, dead since scene 7, wait out the 2 s RPC timeout), so viz6's
 rediscovery never found it.
 
+## Scene 8 after the core fix
+
+With the lookup fix and `FindAllValues` (commit `b399f73`), scene 8 came
+back with its original fixed cast (viz6, viz17). Five headless runs in a
+row passed. One of them, from its `events.jsonl` (key `f35aa08f…`):
+
+```
+02:11:20.474 [viz6]  msg="store complete" failed=0 key=f35aa08f… stored_at=4 stored_locally=false
+02:11:28.529 [viz17] msg="store complete" failed=0 key=f35aa08f… stored_at=4 stored_locally=false
+02:11:29.277 [viz6]  msg="new providers found" added=1 key=f35aa08f… known=2
+02:11:30.872 [viz6]  msg="download stalled: no live provider has the missing pieces; looking for more" have=11 of=16
+02:11:38.572 [viz17] msg="download stalled: no live provider has the missing pieces; looking for more" have=11 of=16
+02:11:45.969 [viz6]  msg="download gave up, still serving its pieces" … have=11 of=16
+02:11:53.617 [viz17] msg="download gave up, still serving its pieces" … have=11 of=16
+02:11:53.694 [viz20] msg="provider announced" key=f35aa08f… replicas=4 tcp_addr=127.0.0.1:9760
+02:11:53.700 [viz6]  msg="providers found" count=3 key=f35aa08f…
+02:11:53.703 [viz6]  msg="download resumed" have=11 key=f35aa08f… of=16
+02:11:53.717 [viz6]  msg="download complete" bytes=1048576 duration=21ms failed_providers=1 … pieces=16 providers=3
+```
+
+- Every announce stores on 4 nodes and **none keeps a local copy**
+  (`stored_locally=false`): no dead node shortens the lookups any more.
+- viz6's rediscovery finds viz17's record a second after viz17 announced
+  (`new providers found added=1`), so both end at 11: in all five runs
+  the leechers gave up with the same count.
+- The resume's provider lookup asks the network (`FindAllValues`; viz6
+  logged 29 `find_value finished … ask_all=true` lookups in that run and
+  no `answered from local store`), finds 3 providers including viz20,
+  and finishes in 21 ms.
+
+That run's viz20 served without a delay, so the resume was over before
+anyone could see it, and only viz6 fetched again. The scene now gives
+viz20 the same 1 s per piece as everyone else and has **both** leechers
+fetch again, viz17 one piece after viz6. In a browser run both gave up at
+12/16, then went 12 → 16 one piece a second, with their new pieces
+painted in viz20's colour; viz6's tally read `viz13 10 · viz17 2 · viz20
+4`, and both copies' SHA-256 matched.
+
 ## The page, checked against the file
 
 After the browser run, the page's own per-message counters
@@ -1608,10 +1647,6 @@ PASS: every scene ran on live nodes, every event kind the page draws was recorde
 
 ## What part 9 doesn't show
 
-- **The give-up/resume scene,** removed when it hit the bug above. The
-  core is now fixed ([05](05-iterative-parallel-lookup.md),
-  [06](06-store-and-find-value.md#reading-a-list-findallvalues)); the
-  scene returns in its own step.
 
 - **Nodes on other laptops.** The page takes any API addresses
   (`--watch`), but the runner, the hashes and `--api-control` are

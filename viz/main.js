@@ -133,9 +133,12 @@
     const family = category(ev);
     const a = ev.attrs || {};
     if (ev.msg === "piece received") {
-      app.ring.comet(app.resolve(a.from), n.name, "file", 0.7);
+      // The comet and the grid cell both take the sender's colour, so
+      // you can see who fed whom (scenes.js colorFor).
+      const from = app.resolve(a.from);
+      app.ring.comet(from, n.name, "file", 0.7, app.colors && app.colors.get(from));
       const g = app.grids.get(n.name);
-      if (g) g.set(a.index, a.of, a.have);
+      if (g) g.set(a.index, a.of, a.have, from);
     } else if (ev.msg === "provider failed, trying the next one") {
       app.ring.pulse(n.name, "fail", true);
     } else if (ev.msg === "provider announced" || ev.msg === "download complete" || ev.msg === "download resumed") {
@@ -182,7 +185,7 @@
     const dropped = all.reduce((s, n) => s + n.dropped, 0);
     const parts = [live > 0 ? "LIVE" : "CONNECTING", `${live} nodes`];
     if (badgeMode) parts.push(badgeMode);
-    parts.push(`dropped ${dropped}`);
+    if (dropped > 0) parts.push(`dropped ${dropped}`); // only worth showing if a viewer fell behind
     $("badge-text").textContent = parts.join(" · ");
     $("badge").classList.toggle("live", live > 0);
     $("badge").classList.toggle("replay", badgeMode.startsWith("REPLAY"));
@@ -207,6 +210,9 @@
     const swap = () => {
       $("scene-title").textContent = title;
       $("scene-caption").textContent = caption || "";
+      // A long title gets a smaller font, so it stays on one line and
+      // clear of the ring's lowest labels.
+      box.classList.toggle("long", title.length > 36);
     };
     if (!window.gsap) return swap();
     gsap.to(box, {
@@ -291,10 +297,11 @@
     await app.entering;
     await app.replay.idle();
     if (app.scene && app.scene.done) await app.scene.done(app, msg);
+    if (msg.chained) return; // the runner starts the next scene by itself (scene 6 → 7)
     app.holding = true;
-    const last = msg.index + 1 >= (app.config.scenes || 8);
+    const last = msg.index + 1 >= (app.config.scenes || 9);
     if (msg.error) setHint(`scene error: ${msg.error}`);
-    else if (!last && mode === "step" && !(app.scene && app.scene.keepsHint)) setHint("→  next");
+    else if (!last && mode === "step") setHint("→  next");
     if (mode === "auto" && !last) setTimeout(next, (app.scene.autoHold ?? AUTO_HOLD_S) * 1000);
   }
 
@@ -367,7 +374,7 @@
     if (!hasRunner || app.config.watch) {
       setTitle("Watching live nodes", "No runner: this page only watches. Start cmd/vizrun to run the scenes.");
     } else if ((app.config.next_scene || 0) === 0) {
-      setTitle("Trackerless P2P, live", `${app.config.nodes.length} node running. Press → to begin.`);
+      setTitle("Trackerless P2P, live", mode === "auto" ? "Real nodes of our code, one mechanism at a time." : `${app.config.nodes.length} node running. Press → to begin.`);
       setHint(mode === "auto" ? "" : "→  begin");
       if (mode === "auto") setTimeout(next, 2000);
     }

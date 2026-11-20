@@ -119,7 +119,13 @@ func (r *runner) run(ctx context.Context) error {
 
 // runAll is --auto: every scene in order, then the checks.
 func (r *runner) runAll(ctx context.Context) error {
-	for range r.scenes {
+	for {
+		r.mu.Lock()
+		done := r.next >= len(r.scenes)
+		r.mu.Unlock()
+		if done {
+			break
+		}
 		if err := r.runNext(ctx); err != nil {
 			return err
 		}
@@ -143,9 +149,6 @@ func (r *runner) runNext(ctx context.Context) error {
 		r.mu.Unlock()
 		return errNoMoreScenes
 	}
-	sc := r.scenes[r.next]
-	index := r.next
-	r.next++
 	r.running = true
 	r.mu.Unlock()
 
@@ -155,14 +158,30 @@ func (r *runner) runNext(ctx context.Context) error {
 		r.mu.Unlock()
 	}()
 
-	fmt.Printf("vizrun: scene %d: %s\n", index+1, sc.title)
-	r.emit("scene started", map[string]any{"scene": sc.id, "index": index, "title": sc.title})
-	err := sc.run(ctx, r)
-	if err != nil {
-		r.check(false, "scene %s: %v", sc.id, err)
+	for {
+		r.mu.Lock()
+		if r.next >= len(r.scenes) {
+			r.mu.Unlock()
+			return nil
+		}
+		sc := r.scenes[r.next]
+		index := r.next
+		r.next++
+		r.mu.Unlock()
+
+		fmt.Printf("vizrun: scene %d: %s\n", index+1, sc.title)
+		r.emit("scene started", map[string]any{"scene": sc.id, "index": index, "title": sc.title})
+		err := sc.run(ctx, r)
+		if err != nil {
+			r.check(false, "scene %s: %v", sc.id, err)
+		}
+		// chained: the next scene starts at once, without a key press
+		// (scene 6 → 7: the kill moment won't wait for the presenter).
+		r.emit("scene done", map[string]any{"scene": sc.id, "index": index, "error": errString(err), "chained": sc.chain && err == nil})
+		if !sc.chain || err != nil {
+			return nil
+		}
 	}
-	r.emit("scene done", map[string]any{"scene": sc.id, "index": index, "error": errString(err)})
-	return nil
 }
 
 var (
