@@ -39,7 +39,7 @@ evaluation includes performance graphs:
 | Runs across multiple devices / Wi-Fi | ⬜ Not started — `--advertise-ip` exists; untested off localhost | — |
 | Sending messages (as opposed to files) | ⬜ Not started — `put`/`get` store short text, but there's no messaging feature | — |
 | Per-node HTTP API (for the visual demo) | ✅ Done: `--api` serves node info, routing table, stored values, files (with download progress) as JSON, plus a live event stream (SSE) of every RPC, stored value and piece; `--api-control` adds POST lookup/ping/put/get/share/fetch | `internal/nodeapi`, [docs/NODE-API.md](docs/NODE-API.md) |
-| Visual demo | ⬜ Not started | — |
+| Visual demo | ✅ Done: `go run ./cmd/vizrun` runs 9 step-mode scenes on 21 live nodes (join, k-buckets, lookup, put/get, share + magnet link, swarming, killing the seeder, give-up/resume, finale), driven only through the per-node HTTP API, with a continuous mode and a recorded video; `scripts/demo-viz.sh` checks it headless | `cmd/vizrun`, `viz/`, [docs/11-visualizer.md](docs/11-visualizer.md) |
 | Performance graphs (the four above) | ⬜ Not started | — |
 | Merkle trees | ⬜ Not started — optional; see [FAQ](docs/FAQ.md#do-merkle-trees-make-sense-here) | — |
 
@@ -63,6 +63,9 @@ needed, and which function implements it.
 6. [06 — STORE and FIND_VALUE](docs/06-store-and-find-value.md)
 7. [07 — File transfer over TCP](docs/07-file-transfer-over-tcp.md)
 8. [08 — Swarming: parallel downloads and partial seeding](docs/08-swarming.md)
+9. [09 — Several machines](docs/09-multi-device.md)
+10. [10 — Magnet links](docs/10-magnet-links.md)
+11. [11 — The visualizer: watching live nodes](docs/11-visualizer.md)
 
 **Reference:**
 
@@ -326,6 +329,39 @@ Catalogue, predictions, explanations, and the cases ranked by fix
 priority (lookup failure handling first, then republish, then bucket
 refresh): [docs/EDGE-CASES.md](docs/EDGE-CASES.md#fix-priority).
 
+### The visualizer (the live demo, with slides)
+
+```sh
+go run ./cmd/vizrun            # builds the node, starts viz0, serves the page
+```
+
+Open http://127.0.0.1:8790/ in Chrome, full screen (F11). Each press of
+→ (or Space, or a presentation clicker's PageDown) runs the next scene,
+and the page then holds on that scene's last frame, so the slides and the
+visualizer move together. Scene 6 runs on into scene 7 by itself, so the
+seeder is killed at exactly the right moment. Ctrl-C in the terminal
+stops every node.
+
+- **Every run is fresh** (a node fetches a file only once, and killed
+  nodes stay dead): to show it again, Ctrl-C, start `vizrun` again, and
+  reload the page.
+- **Keep the tab in front** and the laptop awake: a hidden tab gets no
+  animation frames, so its replays pause.
+- **Continuous mode**: http://127.0.0.1:8790/?mode=auto plays every
+  scene by itself (that's how the video was recorded).
+- **Headless check**: `bash scripts/demo-viz.sh` runs every scene with no
+  browser and prints PASS (~90 s).
+- **Busy port?** Another `vizrun` is probably still running: Ctrl-C it,
+  or start this one elsewhere, e.g. `--base-port 9800 --api-base 8800
+  --http 127.0.0.1:8792`.
+
+Everything on screen comes from the nodes' own log events and API
+answers. DHT scenes are replayed right after they happen, in their real
+order with their real duration on the badge; pieces are slowed to one a
+second (`--debug-serve-delay`), disclosed on screen. Presenter notes,
+how it works, and how to add a scene:
+[docs/11-visualizer.md](docs/11-visualizer.md).
+
 ### One node at a time (e.g. in split VSCode terminals)
 
 ```sh
@@ -432,15 +468,25 @@ internal/nodeapi/    the optional per-node HTTP API (docs/NODE-API.md)
   api.go             JSON snapshot endpoints, the SSE endpoint
   events.go          log tap (TeeHandler) + non-blocking event fan-out to viewers
   control.go         POST endpoints mirroring the console (only with --api-control)
+cmd/vizrun/          the visualizer's runner (docs/11-visualizer.md): starts nodes, serves viz/,
+                     runs one scene per key press; talks to nodes only over HTTP and signals
+  runner.go          the run, scene sequencing, checks;  nodes.go   start/kill node processes
+  recorder.go        every node's event stream → events.jsonl;  server.go  page + /viz/* endpoints
+  scenes.go          what each scene makes the nodes do
+viz/                 the visualizer page (plain JS + GSAP, no build step)
+  main.js            streams, status, keys;  ring.js  nodes on the ID ring, comets, mesh
+  rpc.js, replay.js  pairing events by rpc_id; the in-order replay
+  scenes.js          what each scene draws
 scripts/demo.sh            5 processes: joining and lookup
 scripts/demo-transfer.sh   5 processes: put/get, share, downloads, killed seeder
 scripts/demo-seeder-death.sh  seeder killed mid-download: leechers finish from each other
 scripts/demo-big-network.sh   20 nodes, random joins, lookups checked by brute force, transfer
 scripts/demo-parallel.sh   one download from 3 providers at once, with a timeline
+scripts/demo-viz.sh        the visualizer's scenes, headless: event kinds, dropped=0, SHA-256
 scripts/lib/nodes.sh       shared helper: start N nodes with console FIFOs (bash 3.2)
 scripts/lib/edge.sh        helpers for the edge cases: brute-force closest nodes, wait for the Nth log line
 scripts/edge/              edge-case scripts, one per case, and run-all.sh (docs/EDGE-CASES.md)
-docs/                concept docs 01-07 + reference docs
+docs/                concept docs 01-11 + reference docs
 .vscode/launch.json  debug configurations
 ```
 
@@ -469,6 +515,8 @@ Here is whether each one blocks the end goal:
 | Rarest-first uses only the downloader's own (possibly stale) view ([08](docs/08-swarming.md)) | No. | Keep. |
 | No choking, upload limits, or fairness ([08](docs/08-swarming.md)) | Not in the goal list. | Later, if ever. |
 | No security (ID spoofing, Sybil, rate limits) | Not in the goal list. | Later, if at all. |
+| Visualizer replays DHT scenes in their real order, not their real timing (a lookup's 4 ms become a few seconds; the real duration is on the badge) ([11](docs/11-visualizer.md)) | No. | Never, for a localhost demo. |
+| The visualizer's runner checks downloaded files' SHA-256 by reading them from this machine's disk ([11](docs/11-visualizer.md)) | **Yes, for watching other laptops.** Their copies aren't on this disk. | When the visualizer watches nodes on other laptops: each laptop hashes its own copy. |
 
 
 **Found by the edge cases and partly fixed:** a lookup used to keep a

@@ -249,15 +249,16 @@ logged it, and `/api/node` maps stream → ID.
 |---|---|---|---|
 | request comet (cyan) | `rpc sent` (`type`, `to`, `rpc_id`) | `rpc received` (`type`, `from`, `rpc_id`) | `rpc_id` |
 | reply comet, back along the same arc (pale, dashed) | `rpc received` `*_RESP` / `PONG` (`rpc_id`) | not logged by the replier | `rpc_id` |
-| piece comet (amber) | receiver: `piece received` (`index`, `from` = provider's TCP address) | (provider: `tcp request served`) | the provider's address |
+| piece comet, in the sender's colour | receiver: `piece received` (`index`, `from` = provider's TCP address) | (provider: `tcp request served`) | the provider's TCP address (`/api/node`'s `tcp_port`) |
 
 A request seen only on the receiver's side (a newcomer whose stream isn't
 open yet) still becomes a comet; its reply, logged only by the newcomer,
 isn't seen and isn't drawn. A bootstrapping node's PING goes to an
-all-zero ID, so names are resolved by ID first, then by `ip:port`.
-**SIMPLIFICATION:** a piece's `from` is a TCP address, matched to the
-node with the same `ip:port` as its UDP address. That holds because
-`--tcp-port` defaults to the UDP port number.
+all-zero ID, so names are resolved by ID first, then by `ip:port`. RPC
+events name a node's UDP address, while a piece's `from` is the
+provider's TCP address (its file server); `/api/node` gives both
+(`udp_port`, `tcp_port`), so either matches, even for a node started with
+its own `--tcp-port`.
 
 ## The scenes, as built
 

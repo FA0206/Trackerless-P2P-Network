@@ -38,16 +38,15 @@
 
   // resolve maps "id@ip:port" or "ip:port" to a node name. Events carry
   // no node IDs of their own, so this is how an arrow finds its two ends.
-  // SIMPLIFICATION: a piece event's `from` is a TCP address, matched to
-  // the node whose UDP address has the same ip:port. True because
-  // --tcp-port defaults to the UDP port number (docs/11-visualizer.md).
+  // RPC events name UDP addresses; a piece event's `from` is the
+  // provider's TCP address (its file server), so both are matched.
   app.resolve = function (text) {
     const c = contact(text);
     for (const n of app.nodes.values()) {
       if (c.id && n.id === c.id) return n.name;
     }
     for (const n of app.nodes.values()) {
-      if (c.addr && n.addr === c.addr) return n.name;
+      if (c.addr && (n.addr === c.addr || n.tcpAddr === c.addr)) return n.name;
     }
     return "";
   };
@@ -61,7 +60,8 @@
     try {
       const info = await Viz.getJSON(n.api, "/api/node");
       n.id = info.id;
-      n.addr = `${info.ip}:${info.udp_port}`;
+      n.addr = `${info.ip}:${info.udp_port}`; // where its DHT messages come from
+      n.tcpAddr = `${info.ip}:${info.tcp_port}`; // where its pieces come from
       n.info = info;
     } catch (err) {
       n.dead = true;
