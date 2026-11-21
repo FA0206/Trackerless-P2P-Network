@@ -90,7 +90,7 @@ Each node reads **console commands** from its terminal
 | `get <name>` | FIND_VALUE for SHA-1(name); says whether it was answered locally or via the network |
 | `share <path>` | publish a file; prints its content key |
 | `fetch <hex-key> <out-path>` | download a file; prints pieces per provider and any failed providers |
-| `files` | files this node can serve |
+| `files` | files this node can serve, with how many pieces it has (`has 7/16` while downloading) |
 
 Log lines and console output share the terminal. Use `--quiet` on the
 pane you're typing into. If you start a node in the background with `&`
@@ -162,7 +162,50 @@ connection, and piece arrive.
 
 **e) Bootstrap mistakes.** `--bootstrap 127.0.0.1:9999` (nobody there)
 fails with "did not answer PING" after `--rpc-timeout`. Bootstrapping a
-node against its own port fails immediately.
+node against its own port fails immediately, and so does bootstrapping
+through a node started with the same `--id-seed` ("has the same ID as this
+node"). `--bootstrap 10.10.0.1` (no port) or an IPv6 address stops the node
+at startup with `parsing -bootstrap`. Every join scenario, with its test:
+[04](04-bootstrap-and-join.md#join-scenarios-what-if).
+
+### Reading a node's state over HTTP: `--api`
+
+The console's `table` and `files` show one node at a time, in its own
+terminal. Start nodes with `--api` and you can read any of them from
+anywhere, as JSON ([NODE-API.md](NODE-API.md)):
+
+```sh
+go run ./cmd/node --port 9000 --id-seed demo0 --api 127.0.0.1:8000
+go run ./cmd/node --port 9001 --id-seed demo1 --bootstrap 127.0.0.1:9000 --api 127.0.0.1:8001
+
+curl -s 127.0.0.1:8000/api/table        # node0's buckets, with XOR distances
+curl -s 127.0.0.1:8001/api/store        # values node1 holds for the network
+```
+
+Handy for checking exercise (d) above: `/api/store` shows exactly which
+nodes hold a file's provider record.
+
+To watch one node live, without its terminal, follow its event stream.
+`-N` stops curl from buffering. `?level=debug` shows bucket updates and
+timeouts even if the node runs without `--verbose`:
+
+```sh
+curl -sN 127.0.0.1:8000/api/events               # every RPC in/out, value stored, piece received
+curl -sN '127.0.0.1:8000/api/events?level=debug' | grep -E 'timed out|evicted'
+```
+
+With `--api-control` too, any node takes console commands over HTTP, so
+one terminal can drive the whole network:
+
+```sh
+curl -s -X POST -H 'Content-Type: application/json' -d '{"target":"self"}' 127.0.0.1:8001/api/lookup
+curl -s -X POST -H 'Content-Type: application/json' -d '{"name":"greeting","text":"hi"}' 127.0.0.1:8000/api/put
+```
+
+Don't forget `-H 'Content-Type: application/json'`: without it the
+answer is `415` (on purpose; NODE-API.md, "Safety"). Pick API ports away from the node
+ports (8000s for APIs, 9000s for nodes): a node's UDP and TCP ports
+already use its own number.
 
 ### Slowing transfers down on purpose: `--debug-serve-delay`
 
@@ -178,11 +221,43 @@ can't forget it's on:
 WARN msg="DEBUG: delaying every piece this node serves" delay=150ms
 ```
 
-Example: repeat exercise (d) with `--debug-serve-delay 300ms` on the
-seeder's pane. Now you have ~5 seconds to `Ctrl+C` it while pane 3's
-download is still running, and you'll see that download fail (the
-"before" behavior; see DRY-RUN part 3). Don't use it for timing
-measurements: it's an artificial delay.
+Example: repeat exercise (d) with a 16-piece file
+(`head -c 1048576 /dev/urandom > /tmp/big.bin`, then `share /tmp/big.bin`)
+and `--debug-serve-delay 300ms` on every pane. Now a download takes a few
+seconds, long enough to `Ctrl+C` the seeder in the middle:
+
+- **One downloader:** nobody else has the missing pieces. You'll see
+  `download stalled …` warnings, and after 15 s
+  `fetch failed: … stalled`.
+- **Two downloaders** (start the second `fetch` before the kill): type
+  `files` in each pane to see `has N/16`. If together they already hold
+  all 16, they finish from each other after the kill. If not, the pieces
+  nobody had are gone and both stall.
+
+Don't use the flag for timing measurements: it's an artificial delay.
+
+`--max-inflight <n>` (default 4) caps how many pieces one download
+requests at once. Set it to 1 to watch rarest-first one piece at a time
+in the logs (`piece requested` / `piece received`).
+
+### Giving a node a real uplink: `--debug-upload-rate`
+
+Loopback has no bandwidth limit: a localhost "server" can feed any
+number of downloaders at once, which hides the bottleneck P2P exists to
+remove. `--debug-upload-rate <bytes/s>` is a **DEBUG ONLY** flag, **off
+(0) by default**. It caps this node's total file upload, across all its
+connections, at that rate: every response reserves its share of one
+shared timeline before it's written (`uplink` in
+`internal/transfer/server.go`; set through `Peer.SetDebugUploadRate`).
+The node logs a `WARN` at startup:
+
+```
+WARN msg="DEBUG: capping this node's upload" bytes_per_sec=10000000
+```
+
+Unlike `--debug-serve-delay`, it is meant for measurements: graph 2 of
+[10-performance-graphs.md](10-performance-graphs.md) gives every node and
+the centralized baseline the same cap. Downloads stay uncapped.
 
 ### Scripts with many nodes: `scripts/lib/nodes.sh`
 
@@ -214,6 +289,45 @@ For `scripts/demo-big-network.sh` specifically:
   For a mismatch, look in the querying node's log for the lookup's
   `FIND_NODE` sends and replies (DRY-RUN part 4 shows how one reads).
   Then use the console's `table` on the nodes you expected to be found.
+
+For the edge-case scripts (`scripts/edge/`, [EDGE-CASES.md](EDGE-CASES.md)):
+
+- **Ports.** Each case has its own block from 9425 up (A2: 9425…9444,
+  A3: 9450…9471, A4: 9475…9494, B1: 9500…9515, B2: 9525…9532,
+  B3: 9550…9561);
+  the list is in EDGE-CASES.md. Check leftovers with
+  `lsof -nP -i :9400-9699`.
+- **Extra helpers** live in `scripts/lib/edge.sh`, sourced after
+  `nodes.sh`. `node_ids_init N` computes every node's ID once (into
+  `ID0`, `ID1`, …). `closest_nodes <key> <k> <indexes…>` is the
+  brute-force answer. `wait_for_count <file> <regex> <n> <s>` waits for
+  the *n*-th match, for when one node runs the same command twice (plain
+  `wait_for_log` would see the first, old line). `holders_of <key> <n>`
+  lists the nodes that logged `value stored` for a key. `lookup_answer
+  <i> <target> <n>` reads the IDs from node i's *n*-th `lookup` of a
+  target. `now_ms` is a monotonic clock for timing. Don't time with the
+  wall clock: under WSL it gets re-synced mid-run, and a 2 s lookup once
+  measured 1.34 s.
+- **A node with a hand-picked ID.** `start_node i port boot --id-seed
+  <seed>` overrides the default `<SEED_PREFIX><i>`, because Go's `flag`
+  package keeps the last value of a repeated flag. Set `ID<i>` to match
+  yourself. B3 uses this for nodes chosen by brute force to be close to
+  a key. A4 uses it to give three networks the same IDs.
+- **Starting many nodes at the same moment.** `start_node_nowait` (in
+  `edge.sh`) is `start_node` without the waits. Afterwards, wait for
+  each node's `bootstrap complete` yourself (A2 does).
+- **Race detector on real processes.** `export GOFLAGS=-race` before
+  `nodes_init`, and the node binary is built with `-race`. A race prints
+  `WARNING: DATA RACE` and a stack trace into that node's log. A2 does
+  this by default (`RACE=0` to skip). It needs a C compiler (cgo), and
+  each process uses more memory.
+- **`set -o pipefail` gotcha.** `grep` exits 1 when nothing matches, and
+  with `pipefail` that kills the script inside `$(…)`. Write
+  `{ grep … || true; }` wherever "no match" is a normal answer. Two edge
+  scripts died on exactly this while being written.
+- **A FAIL is information, not necessarily a bug in the script.** It
+  means the code didn't behave as predicted. Read the node logs in the
+  printed work directory, as for the demos.
 
 ---
 
@@ -273,7 +387,10 @@ surprises.
 | a value arriving / being served | `Node.replyStore`, `Node.replyFindValue` (`node.go`) |
 | FIND_VALUE stopping early | the `if len(result.Values) > 0` check in `iterativeFind` (`lookup.go`) |
 | a provider answering a TCP request | `server.handleConn` / `server.answer` (`internal/transfer/server.go`) |
-| the downloader choosing a provider | `downloader.candidates`, `downloader.fetch` (`peer.go`) |
+| the downloader choosing the next piece and provider | `pickPiece` (`picker.go`), called from `swarmDownload.schedule` (`download.go`) |
+| a result coming back from a worker | `swarmDownload.handle` (`download.go`); inspect `ev`, `d.inflight`, `d.providers` |
+| why a download is (not) considered stalled | `swarmDownload.canProgress` (`download.go`) |
+| a peer refusing a piece it doesn't have yet | `Library.readPiece` (`library.go`) |
 | a piece failing verification | `Manifest.VerifyPiece` (`manifest.go`) |
 
 Useful VSCode features:
@@ -368,6 +485,9 @@ what "connection refused" is.
 | `fetch failed: … file exists` | Downloads never overwrite; pick a new output path. |
 | `no providers found` | Wrong key, or every node holding the provider records is gone (values aren't republished yet). |
 | A download pauses ~2 s before starting | Its `FIND_VALUE` round included a dead node (synchronous rounds; see DRY-RUN part 2). |
+| `download stalled: no live provider has the missing pieces` | Every node that had the missing pieces is gone. It keeps rediscovering for 15 s, then fails and deletes the partial file. |
+| `fetch failed: … is already in the library` | This node already shares or is downloading that key. |
+| After a long pause at a breakpoint in the download loop, providers get marked dead | While the loop is paused no new requests go out. Providers close connections idle for their IO timeout (10 s), and the next request on such a connection fails. Use logpoints, or pause only briefly. |
 | `bootstrap node … did not answer PING` | Seed not started yet, wrong port, or seed paused in the debugger with a short `--rpc-timeout`. |
 | Lookup shows `rpcs_failed` while debugging | Some node was paused at a breakpoint longer than `--rpc-timeout`. Raise it. |
 | A node "disappears" from another's table | It was evicted after failing a ping. Check the `--verbose` log of the node that dropped it. |

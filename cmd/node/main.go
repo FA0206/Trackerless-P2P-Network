@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"kademlia-demo/internal/kademlia"
+	"kademlia-demo/internal/nodeapi"
 	"kademlia-demo/internal/transfer"
 )
 
@@ -30,7 +31,7 @@ func main() {
 func run() error {
 	port := flag.Int("port", 9000, "UDP port to listen on")
 	tcpPort := flag.Int("tcp-port", 0, "TCP port for serving files; 0 means the same number as -port (TCP and UDP port numbers don't clash)")
-	advertiseIP := flag.String("advertise-ip", "127.0.0.1", "IP other nodes should use to reach this one (set to your LAN IP for multi-device use)")
+	advertiseIP := flag.String("advertise-ip", "127.0.0.1", "IPv4 address other nodes use to download files from this one (it goes into provider records). If not given, it's detected from the route to the -bootstrap node, which can be any node of the network on another machine; without one, it stays 127.0.0.1. So a node started without -bootstrap, like the first one, must be given its IP (docs/09-multi-device.md)")
 	idSeed := flag.String("id-seed", "", "deterministic node ID = SHA-1(id-seed); if empty, a random ID is used")
 	bootstrap := flag.String("bootstrap", "", "host:port of an existing node to join through (optional)")
 	lookupTarget := flag.String("lookup", "", "after joining, perform one extra lookup for this ID (40-char hex), log the result, and keep running")
@@ -41,8 +42,15 @@ func run() error {
 	k := flag.Int("k", kademlia.DefaultK, "bucket size / replication parameter k")
 	alpha := flag.Int("alpha", kademlia.DefaultAlpha, "lookup concurrency parameter alpha")
 	rpcTimeout := flag.Duration("rpc-timeout", kademlia.DefaultRPCTimeout, "per-RPC timeout (raise this, e.g. to 5m, when pausing at breakpoints)")
+	maxInFlight := flag.Int("max-inflight", transfer.DefaultMaxInFlight, "most piece requests a download keeps in flight at once (always at most 1 per provider)")
 	debugServeDelay := flag.Duration("debug-serve-delay", 0, "DEBUG ONLY: wait this long before answering each piece request, so a demo can kill this node mid-transfer (0 = off)")
+	debugUploadRate := flag.Int64("debug-upload-rate", 0, "DEBUG ONLY: cap this node's total file upload at this many bytes per second, across all connections, to model a real uplink on localhost (0 = off; docs/10-performance-graphs.md)")
+	apiAddr := flag.String("api", "", "serve this node's state as JSON over HTTP on host:port, e.g. 127.0.0.1:8000 (off if empty; see docs/NODE-API.md)")
+	apiControl := flag.Bool("api-control", false, "with -api: also accept POST lookup/ping/put/get/share/fetch, so a page can make this node act (any website open in your browser could too; demo use only)")
 	flag.Parse()
+	if *apiControl && *apiAddr == "" {
+		return fmt.Errorf("-api-control needs -api")
+	}
 
 	id, err := resolveID(*idSeed)
 	if err != nil {
@@ -57,16 +65,40 @@ func run() error {
 		level = slog.LevelWarn
 	}
 	logger := kademlia.NewLogger(id, level)
+	// With --api, every log record is also an event for GET /api/events.
+	// The tee passes the printed handler exactly the records it would get
+	// anyway, so stdout is unchanged (docs/NODE-API.md).
+	var events *nodeapi.Events
+	if *apiAddr != "" {
+		events = nodeapi.NewEvents()
+		logger = slog.New(nodeapi.TeeHandler(logger.Handler(), events))
+	}
 
 	// A whole lookup is several sequential RPC rounds, so its deadline must
 	// scale with the per-RPC timeout -- otherwise raising -rpc-timeout for a
 	// debugging session would still leave bootstrap dying after a fixed 10s.
 	opTimeout := max(10*time.Second, 5**rpcTimeout)
 
+	// Parsed before the node exists: the advertise IP may be detected from
+	// the route to the bootstrap node, and it's fixed when the node is built.
+	var seedAddr *net.UDPAddr // nil without -bootstrap: this is the first node of a new network
+	if *bootstrap != "" {
+		if seedAddr, err = parseBootstrap(*bootstrap); err != nil {
+			return err
+		}
+	}
+	advertise, detected, err := chooseAdvertiseIP(*advertiseIP, flagWasSet("advertise-ip"), seedAddr, routeSourceIP)
+	if err != nil {
+		return err
+	}
+	if detected {
+		logger.Info("advertise ip auto-detected", "ip", advertise, "via", seedAddr.String())
+	}
+
 	n, err := kademlia.NewNode(kademlia.Config{
 		ID:          id,
 		Port:        *port,
-		AdvertiseIP: *advertiseIP,
+		AdvertiseIP: advertise,
 		K:           *k,
 		Alpha:       *alpha,
 		RPCTimeout:  *rpcTimeout,
@@ -81,7 +113,7 @@ func run() error {
 	if *tcpPort == 0 {
 		*tcpPort = n.Addr().Port
 	}
-	peer, err := transfer.NewPeer(n, *tcpPort, transfer.DefaultIOTimeout)
+	peer, err := transfer.NewPeer(n, transfer.Config{TCPPort: *tcpPort, MaxInFlight: *maxInFlight})
 	if err != nil {
 		return err
 	}
@@ -90,17 +122,27 @@ func run() error {
 		peer.SetDebugServeDelay(*debugServeDelay)
 		logger.Warn("DEBUG: delaying every piece this node serves", "delay", debugServeDelay.String())
 	}
+	if *debugUploadRate > 0 {
+		peer.SetDebugUploadRate(*debugUploadRate)
+		logger.Warn("DEBUG: capping this node's upload", "bytes_per_sec", *debugUploadRate)
+	}
 
 	logger.Info("node started", "id", id.String(), "addr", n.Addr().String(), "tcp_port", peer.TCPPort())
+
+	// Started before bootstrapping, so a viewer can watch the join itself.
+	if *apiAddr != "" {
+		stopAPI, err := startAPI(*apiAddr, nodeapi.Config{Node: n, Peer: peer, K: *k, Alpha: *alpha, RPCTimeout: *rpcTimeout, Events: events,
+			Control: *apiControl, OpTimeout: opTimeout, TransferTimeout: 10 * opTimeout}, logger)
+		if err != nil {
+			return fmt.Errorf("starting -api: %w", err)
+		}
+		defer stopAPI()
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if *bootstrap != "" {
-		seedAddr, err := net.ResolveUDPAddr("udp4", *bootstrap)
-		if err != nil {
-			return fmt.Errorf("parsing -bootstrap: %w", err)
-		}
+	if seedAddr != nil {
 		logger.Info("bootstrapping", "via", seedAddr.String())
 		bctx, cancel := context.WithTimeout(ctx, opTimeout)
 		result, err := n.Bootstrap(bctx, seedAddr)
@@ -161,6 +203,96 @@ func resolveID(seed string) (kademlia.ID, error) {
 		return kademlia.RandomID(), nil
 	}
 	return kademlia.HashID([]byte(seed)), nil
+}
+
+// parseBootstrap turns -bootstrap into the address to join through. A port
+// is required. A host name is fine (unlike -advertise-ip): it's resolved
+// once, here, e.g. from /etc/hosts or mDNS. IPv6 isn't, since nodes speak
+// udp4/tcp4 only. Without a host (":9000") it means this machine.
+func parseBootstrap(s string) (*net.UDPAddr, error) {
+	addr, err := net.ResolveUDPAddr("udp4", s)
+	if err != nil {
+		return nil, fmt.Errorf("parsing -bootstrap %q: %w (want ip:port, e.g. 192.168.0.101:9000)", s, err)
+	}
+	return addr, nil
+}
+
+// chooseAdvertiseIP decides which IP this node puts in its provider records,
+// the one place a node tells others where it lives (the DHT itself records
+// peers under the address their packets come from). value is -advertise-ip
+// and set says whether the user typed it; seed is the parsed -bootstrap
+// address, nil without one. routeSource is routeSourceIP, passed in so
+// tests need no network.
+//
+//   - Given explicitly: validated and used as is, even 127.0.0.1.
+//   - Not given, joining through another machine: the IP this machine uses
+//     to reach that machine, and detected is true. Any node of the network
+//     will do as the bootstrap node; on one subnet the answer is the same.
+//   - Otherwise (no -bootstrap, or it is this machine): the default,
+//     127.0.0.1. So a node started without -bootstrap, like the first node
+//     of a multi-device network, must be given its IP. Whoever starts the
+//     first node knows it anyway: the second node can only join through it.
+//
+// SIMPLIFICATION: the detected IP is the source of one route, the one to
+// the bootstrap node. Right when every node is on one subnet; wrong behind
+// NAT, or when other peers reach us over a different interface. Nothing
+// discovers how other nodes actually see us (docs/09-multi-device.md).
+func chooseAdvertiseIP(value string, set bool, seed *net.UDPAddr,
+	routeSource func(*net.UDPAddr) (net.IP, error)) (ip string, detected bool, err error) {
+	if set {
+		ip, err = parseAdvertiseIP(value)
+		return ip, false, err
+	}
+	// ":9000" and "0.0.0.0:9000" also mean "this machine"; a route to them
+	// would "detect" 127.0.0.1.
+	if seed == nil || seed.IP == nil || seed.IP.IsUnspecified() || seed.IP.IsLoopback() {
+		return value, false, nil
+	}
+	src, err := routeSource(seed)
+	if err != nil || src.To4() == nil || src.IsLoopback() {
+		// No usable route: keep the default. Bootstrap then fails loudly
+		// if the node really is unreachable.
+		return value, false, nil
+	}
+	return src.To4().String(), true, nil
+}
+
+// parseAdvertiseIP accepts only an IPv4 address that another machine can
+// dial, and returns it in canonical form. Each rejected kind fails late and
+// quietly otherwise: downloaders drop a provider record whose IP doesn't
+// parse (a hostname), dial providers over tcp4 only (IPv6), and on Linux
+// reach their own machine at 0.0.0.0. 127.0.0.1 is allowed: it's correct
+// when every node runs on this machine.
+func parseAdvertiseIP(s string) (string, error) {
+	ip := net.ParseIP(s)
+	if ip == nil || ip.To4() == nil || ip.IsUnspecified() {
+		return "", fmt.Errorf("-advertise-ip %q: must be an IPv4 address other nodes can reach, e.g. 192.168.0.101 (not a hostname, IPv6, or 0.0.0.0)", s)
+	}
+	return ip.To4().String(), nil
+}
+
+// routeSourceIP asks the OS which local IP it would send from to reach
+// remote: the same question as `ip route get <ip>` (its "src" field).
+// Dialing UDP sends no packet; it only picks a route and a source address.
+func routeSourceIP(remote *net.UDPAddr) (net.IP, error) {
+	conn, err := net.DialUDP("udp4", nil, remote)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	return conn.LocalAddr().(*net.UDPAddr).IP, nil
+}
+
+// flagWasSet reports whether the user gave flag name on the command line
+// (as opposed to it holding its default value).
+func flagWasSet(name string) bool {
+	set := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
 }
 
 // parseContact turns "host:port" into a Contact with an all-zero ID, for

@@ -2,6 +2,14 @@
 
 Prerequisite: [06-store-and-find-value.md](06-store-and-find-value.md).
 
+> **On this branch (`feature/parallel-partial-seeding`)** a download
+> fetches pieces rarest-first and in parallel, and peers serve pieces
+> before they have the whole file. This doc covers what didn't change:
+> manifests, keys, provider records, the TCP protocol, and verification.
+> Piece selection, concurrency, and partial seeding are in
+> [08-swarming.md](08-swarming.md). The "Seen in the demo" numbers below
+> were recorded on `main`, before that change.
+
 ## What it is
 
 The DHT can now answer "what's stored under key X?". File sharing uses
@@ -45,7 +53,8 @@ Code: package [`internal/transfer`](../internal/transfer). It uses
 4. **Announce**: `node.Store(key, providerRecord)`. That's a lookup for
    the key, then `STORE` to the k closest nodes ([06](06-store-and-find-value.md)).
    The record contains this node's ID, its advertise IP
-   (`--advertise-ip`), and its TCP port.
+   (`--advertise-ip`, or detected when the node joins through another
+   machine; [09](09-multi-device.md)), and its TCP port.
 
 No file data has moved yet. Sharing only puts a ~90-byte pointer into
 the DHT.
@@ -90,22 +99,24 @@ Send `GET_MANIFEST`. Check `ContentKey(received bytes) == key`
 a stranger: a peer can't send a different manifest without changing its
 hash, and the hash is the key you asked for.
 
-### 4. Fetch every piece, spread across providers
+### 4. Fetch every piece, from several providers at once
 
-For piece `i`, try the live providers starting at index `i mod
-(number of providers)` (`downloader.candidates`). Consecutive pieces
-therefore go to different providers (round robin). Each piece is checked
-against the manifest's SHA-256 (`Manifest.VerifyPiece`) and written at
-its offset in the output file.
+Each piece is checked against the manifest's SHA-256
+(`Manifest.VerifyPiece`) and written at its offset in the output file.
+*Which* piece is fetched next, from whom, and how many at once is
+[08](08-swarming.md)'s subject: rarest-first, one request per provider,
+up to `--max-inflight` in total. (On `main`, pieces went `0, 1, 2, …`
+one at a time, round-robin over providers.)
 
 If a provider fails — can't connect, times out, refuses, or sends a piece
 whose hash doesn't match — it's marked dead for the rest of this download
-(`markDead`), and the same piece is retried on the next provider.
+(`markDead`), and that piece is requested again from another holder.
 
 ### 5. Become a provider
 
-Add the finished file to the library and announce a provider record for
-ourselves. The next downloader will see one more provider.
+After its first verified piece, the downloader announces a provider
+record and serves the pieces it has ([08](08-swarming.md)). When the
+download finishes, the file is complete in the library.
 
 ## The TCP wire protocol
 
@@ -162,22 +173,24 @@ manifest, do. The exact path through the code:
    `Manifest.PieceOffset(i)` = `i × PieceSize`, and
    `Manifest.PieceLength(i)` is `PieceSize` except for a shorter last
    piece (`manifest.go`, ~86–94).
-3. **The downloader asks for a piece by index.**
-   `downloader.fetchPiecesInto` (`peer.go`, ~266) loops `i` from `0` to
-   `NumPieces()-1`. It calls `downloader.fetch(i, opGetPiece, key, i, …)`,
-   which sends `{"op":"GET_PIECE","key":…,"index":i}` from
-   `providerConn.fetch` (`client.go`, ~41).
-4. **The provider reads exactly that range.** `server.answer`
-   (`server.go`, ~104) → `Library.readPiece(key, i)` (`library.go`, ~57)
-   → `ReadAt(buf, PieceOffset(i))` with `len(buf) = PieceLength(i)`.
+3. **The downloader asks for a piece by index.** The picker
+   (`pickPiece`, `picker.go`) chooses index `i`, and
+   `swarmDownload.startPiece` (`download.go`) hands it to a worker. The
+   worker sends `{"op":"GET_PIECE","key":…,"index":i}` from
+   `providerConn.fetch` (`client.go`).
+4. **The provider reads exactly that range, if it has it.**
+   `server.answer` (`server.go`) → `Library.readPiece(key, i)`
+   (`library.go`). It refuses unless piece `i`'s bit is set, then calls
+   `ReadAt(buf, PieceOffset(i))` with `len(buf) = PieceLength(i)`.
 5. **The downloader checks the bytes really are piece `i`.**
    `Manifest.VerifyPiece(i, data)` compares the length with
    `PieceLength(i)` and the SHA-256 with `PieceHashes[i]`. A provider that
    sends piece 3's bytes when asked for piece 7 fails this check.
-6. **…then writes them at piece `i`'s offset.**
-   `f.WriteAt(data, m.PieceOffset(i))` (`peer.go`, ~284). The file was
+6. **…then writes them at piece `i`'s offset.** In
+   `swarmDownload.handle` (`download.go`): `file.WriteAt(data,
+   PieceOffset(i))`, then `Library.markHave(key, i)`. The file was
    created empty (`O_EXCL`). Writing at an offset past the current end
-   simply extends the file, so pieces could be written in any order.
+   simply extends the file, so pieces can be written in any order.
 
 The reply frame doesn't repeat the index. The downloader knows which
 piece it is because a connection carries **one request at a time**, so
@@ -190,29 +203,27 @@ the next data frame on that connection must answer the request just sent
 A provider answers any index at any time, verification is per index, and
 `WriteAt` places each piece independently.
 
-**The downloader on `main`: it never asks out of order.** It requests
-`0, 1, 2, …` strictly one after another, each from a provider chosen
-round-robin. So pieces always arrive in index order, one at a time.
+**The downloader on this branch: yes, routinely.** It picks pieces
+rarest-first with random tie-breaks and has several requests in flight
+on different connections. So pieces arrive in whatever order the
+providers answer (DRY-RUN part 5: `2, 11, 6, 15, 10, 8, …`). On `main`
+it requested `0, 1, 2, …` strictly one after another.
 
-Two constraints would matter if that changed:
+Two constraints still hold:
 
 - **One outstanding request per connection.** Replies carry no index, so
-  sending a second request on the same connection before the first
-  answer arrives (pipelining) would need the index in the reply, or
-  strict first-in-first-out matching. Parallelism therefore has to come
-  from several connections.
-- **Partial files are deleted on failure.** Pieces that arrived — in any
-  order — are thrown away if the download fails (see DRY-RUN part 3).
-
-Branch `feature/parallel-partial-seeding` changes this. It fetches
-pieces out of order (rarest-first), concurrently over several
-connections, and lets partial downloaders serve the pieces they have
-(see that branch's `docs/08`).
+  pipelining on one connection would need the index in the reply, or
+  strict first-in-first-out matching. Parallelism comes from several
+  connections, one per provider.
+- **Partial files are deleted on failure.** Pieces that arrived are
+  thrown away if the download can't finish (no resume).
 
 ## Seen in the demo
 
-`scripts/demo-transfer.sh`, `k = 3`, 1 MiB file = 16 pieces (full trace:
-[DRY-RUN.md](DRY-RUN.md), part 2):
+`scripts/demo-transfer.sh` **on `main`** (one request at a time,
+round-robin), `k = 3`, 1 MiB file = 16 pieces (full trace:
+[DRY-RUN.md](DRY-RUN.md), part 2). On this branch the same script passes
+with pieces arriving rarest-first and in parallel.
 
 - **node3 downloads** while only node1 has the file: 1 provider, all 16
   pieces from `127.0.0.1:9001`, 19 ms. node3 then announces itself.
@@ -240,12 +251,11 @@ connections, and lets partial downloaders serve the pieces they have
 
 | Simplification | Blocks the end goal? |
 |---|---|
-| **Providers must have the whole file**; a peer announces only after finishing (`library.go`) | **Yes**: "pieces spread so no single node has the file" needs per-piece availability (which pieces each peer has) and partial seeding. That's the next step toward the end goal. |
-| Pieces fetched one at a time, though spread over providers (`peer.go`) | Not for correctness. Matters for the download-time-vs-leechers graph. |
+| *(Removed on this branch: "providers must have the whole file" and "pieces fetched one at a time". New simplifications of the swarm are listed in [08](08-swarming.md#new-simplifications).)* | |
 | One failure drops a provider for the rest of the download; no retries | Fine for now. Revisit with packet loss / Wi-Fi. |
 | Failed download deletes the partial file; no resume | No. |
 | Provider records never expire ([06](06-store-and-find-value.md)) | Costs one failed connection per dead provider; matters for recovery-time measurements. |
-| The advertise IP is set by hand (`--advertise-ip`, default `127.0.0.1`) | **Yes for multi-device**: each node must be started with its LAN IP. No NAT traversal. |
+| The advertise IP comes from `--advertise-ip` (default `127.0.0.1`), or from the route to the bootstrap node when a node joins through another machine | No, on one subnet: the first node is started with its IP, the others detect theirs, and bad values are refused at startup. No NAT traversal ([09](09-multi-device.md)). |
 | No upload limits, no tit-for-tat | Not in the goal list. |
 
 ## Where this lives in the code
@@ -255,10 +265,11 @@ connections, and lets partial downloaders serve the pieces they have
 | Pieces, hashes, content key | `BuildManifest`, `VerifyPiece`, `ContentKey`, `DecodeManifest` | `manifest.go` |
 | DHT value format | `ProviderRecord`, `decodeProviderRecord` | `provider.go` |
 | TCP message shapes | `request`, `responseHeader`, op names, size limits | `protocol.go` |
-| Files this peer can serve | `Library`, `readPiece` | `library.go` |
+| Files this peer can serve (complete or partial) | `Library`, `readPiece`, `markHave` | `library.go` |
 | Accepting connections, answering requests | `server.serve`, `handleConn`, `answer` | `server.go` |
 | Dialing a provider, one request/response | `dialProvider`, `providerConn.fetch` | `client.go` |
-| Share / download orchestration, failover | `Peer.Share`, `Peer.announce`, `Peer.Download`, `downloader` | `peer.go` |
+| Share, announce | `Peer.Share`, `Peer.announce` | `peer.go` |
+| Download (event loop, workers, failover) | `Peer.Download`, `swarmDownload` | `download.go` (see [08](08-swarming.md)) |
 | Frames on a stream | `framing.Write`, `framing.Read` | `internal/framing/framing.go` |
 | Console `share` / `fetch` / `files` | `consoleEnv.share`, `.fetch`, `.files` | `cmd/node/console.go` |
 
@@ -271,10 +282,6 @@ pieces, and an unknown key.
 
 ## What's next
 
-Toward the end goal, the next step is **partial availability**: peers
-announce and serve individual pieces as soon as they have them, and a
-downloader asks each provider which pieces it has. Then a file can live
-spread across peers with no single complete copy. Before measuring
-anything, fix the three items marked in the README's simplifications
-table: synchronous lookup rounds, bucket refresh, value expiry and
-republish.
+[08-swarming.md](08-swarming.md): parallel downloads, rarest-first
+piece selection, and partial seeding, which together let a file survive
+its seeder.

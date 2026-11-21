@@ -105,3 +105,10 @@ func (n *Node) FindValue(ctx context.Context, key ID) (*LookupResult, error) {
 func (n *Node) StoredKeyCount() int {
 	return n.store.keyCount()
 }
+
+// StoredValues returns a copy of every (key, values) pair this node holds
+// on behalf of the network, values oldest first. It's for inspection only
+// (the per-node HTTP API, internal/nodeapi); the DHT itself never needs it.
+func (n *Node) StoredValues() map[ID][][]byte {
+	return n.store.snapshot()
+}

@@ -1,12 +1,14 @@
 package transfer
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -14,12 +16,16 @@ import (
 )
 
 // server accepts TCP connections from downloaders and answers
-// GET_MANIFEST / GET_PIECE requests from the library (protocol.go).
+// GET_MANIFEST / GET_BITFIELD / GET_PIECE requests from the library
+// (protocol.go).
 type server struct {
 	ln        net.Listener
 	lib       *Library
 	logger    *slog.Logger
 	ioTimeout time.Duration
+
+	connsMu sync.Mutex
+	conns   map[net.Conn]struct{} // open connections, so close() can end them
 
 	// DEBUG ONLY (--debug-serve-delay): sleep this many nanoseconds before
 	// answering each GET_PIECE. Localhost transfers finish in milliseconds,
@@ -27,6 +33,46 @@ type server struct {
 	// (the default) means no delay. Atomic because it can be set while
 	// connections are being served.
 	debugServeDelay atomic.Int64
+
+	// DEBUG ONLY (--debug-upload-rate): caps this node's total upload, over
+	// all its connections, at a fixed number of bytes per second. Loopback
+	// has no bandwidth limit, so without it a localhost swarm can't show
+	// what P2P is for: a central server's one uplink is shared by every
+	// client, while each peer adds its own (docs/10-performance-graphs.md,
+	// graph 2). 0 (the default) means no cap.
+	uplink uplink
+}
+
+// uplink paces writes so that, across every connection, no more than rate
+// bytes per second leave this node. Each write reserves len/rate seconds
+// on one shared timeline and sleeps until its slot ends, like bytes
+// queueing for a link. No burst allowance: a link has none either.
+type uplink struct {
+	mu   sync.Mutex
+	rate int64 // bytes per second; 0 = unlimited
+	next time.Time
+}
+
+func (u *uplink) setRate(bytesPerSec int64) {
+	u.mu.Lock()
+	u.rate = bytesPerSec
+	u.mu.Unlock()
+}
+
+func (u *uplink) wait(n int) {
+	u.mu.Lock()
+	if u.rate <= 0 {
+		u.mu.Unlock()
+		return
+	}
+	now := time.Now()
+	if u.next.Before(now) {
+		u.next = now
+	}
+	u.next = u.next.Add(time.Duration(int64(n) * int64(time.Second) / u.rate))
+	d := u.next.Sub(now)
+	u.mu.Unlock()
+	time.Sleep(d)
 }
 
 // listen opens the TCP listening socket. port 0 lets the OS pick.
@@ -35,7 +81,7 @@ func listen(port int, lib *Library, logger *slog.Logger, ioTimeout time.Duration
 	if err != nil {
 		return nil, fmt.Errorf("transfer: listen tcp :%d: %w", port, err)
 	}
-	return &server{ln: ln, lib: lib, logger: logger, ioTimeout: ioTimeout}, nil
+	return &server{ln: ln, lib: lib, logger: logger, ioTimeout: ioTimeout, conns: map[net.Conn]struct{}{}}, nil
 }
 
 func (s *server) port() int {
@@ -58,15 +104,33 @@ func (s *server) serve() {
 	}
 }
 
-// close stops accepting. Connections already open end on their own when
-// the client hangs up or ioTimeout passes with no request.
+// close stops accepting and closes every open connection, so a peer that
+// is closed stops serving at once -- like a process that died.
 func (s *server) close() error {
-	return s.ln.Close()
+	err := s.ln.Close()
+	s.connsMu.Lock()
+	for c := range s.conns {
+		c.Close()
+	}
+	s.connsMu.Unlock()
+	return err
+}
+
+func (s *server) track(conn net.Conn, open bool) {
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	if open {
+		s.conns[conn] = struct{}{}
+	} else {
+		delete(s.conns, conn)
+	}
 }
 
 // handleConn answers requests on one connection, in order, until the
 // client closes it or stays idle for ioTimeout.
 func (s *server) handleConn(conn net.Conn) {
+	s.track(conn, true)
+	defer s.track(conn, false)
 	defer conn.Close()
 	remote := conn.RemoteAddr().String()
 	s.logger.Info("tcp connection accepted", "from", remote)
@@ -96,18 +160,28 @@ func (s *server) handleConn(conn net.Conn) {
 			s.logger.Debug("tcp write failed", "from", remote, "error", err)
 			return
 		}
-		s.logger.Info("tcp request served", "to", remote, "op", req.Op, "index", req.Index, "bytes", len(data))
+		level := slog.LevelInfo
+		if req.Op == opGetBitfield {
+			level = slog.LevelDebug // polled every ~500 ms per downloader: too chatty for Info
+		}
+		s.logger.Log(context.Background(), level, "tcp request served", "to", remote, "op", req.Op, "index", req.Index, "bytes", len(data))
 	}
 }
 
 func (s *server) answer(req request) ([]byte, error) {
 	switch req.Op {
 	case opGetManifest:
-		e, ok := s.lib.lookup(req.Key)
+		_, manifestBytes, ok := s.lib.manifestFor(req.Key)
 		if !ok {
 			return nil, fmt.Errorf("unknown content key %s", req.Key)
 		}
-		return e.manifestBytes, nil
+		return manifestBytes, nil
+	case opGetBitfield:
+		have, ok := s.lib.bitfield(req.Key)
+		if !ok {
+			return nil, fmt.Errorf("unknown content key %s", req.Key)
+		}
+		return have, nil
 	case opGetPiece:
 		if d := time.Duration(s.debugServeDelay.Load()); d > 0 {
 			time.Sleep(d)
@@ -119,6 +193,7 @@ func (s *server) answer(req request) ([]byte, error) {
 }
 
 func (s *server) writeData(conn net.Conn, data []byte) error {
+	s.uplink.wait(len(data))
 	header, _ := json.Marshal(responseHeader{OK: true})
 	if err := framing.Write(conn, header); err != nil {
 		return err

@@ -1,0 +1,8 @@
+# Git for Windows' core.autocrlf=true would otherwise check files out with
+# CRLF line endings. That breaks shell scripts under bash (macOS, Linux,
+# WSL), and makes `gofmt -l .` list every Go file (CLAUDE.md requires it to
+# print nothing). The repository itself stores LF.
+*.sh text eol=lf
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf

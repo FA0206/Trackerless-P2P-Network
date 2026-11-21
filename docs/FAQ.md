@@ -38,6 +38,16 @@ LAN discovery by broadcast is another option, not implemented here.
 No. After the self-lookup, your routing table has contacts of its own.
 The bootstrap node is just one of them.
 
+The exception is a node that is the *only* link between two groups.
+Knowledge spreads only through messages: a node learns of you when you
+send it something. If two groups were built separately and only one node
+talks to both, its death splits the network for good, because nothing
+here re-bootstraps or refreshes buckets. But if anyone has done even one
+lookup across that node, the lookup contacted the far side directly, and
+those nodes recorded the querier. Then the link node can die harmlessly.
+[EDGE-CASES.md, case A3](EDGE-CASES.md#a3--two-islands-and-one-bridge)
+shows both.
+
 ### Do existing nodes have to "accept" a new node?
 
 No. They don't even know a join is happening. They answer `PING` and
@@ -48,7 +58,18 @@ receive updates their routing table.
 
 With random 160-bit IDs the chance is negligible (≈ 2⁻¹⁶⁰ per pair). With
 `--id-seed`, using the same seed twice *will* collide. The protocol
-doesn't detect this, so don't do it.
+doesn't detect this, so don't do it. What happens if you do:
+
+- Joining *through* your twin fails, because its PONG carries your own ID
+  and a node can't tell itself from a twin (`the node at … has the same
+  ID as this node`).
+- Joining through anyone else works for both twins. That node keeps one
+  contact per ID, the twin that spoke last, so everything addressed to
+  that ID reaches only one of them.
+
+Both are tested (`TestBootstrapThroughNodeWithOurOwnID`,
+`TestDuplicateIDNewestSenderWins`); every other join scenario is in
+[04](04-bootstrap-and-join.md#join-scenarios-what-if).
 
 ## IDs, distance, buckets
 
@@ -124,8 +145,10 @@ libtorrent's own docs.
 
 **In this codebase:** no RTT is recorded. Buckets keep the oldest live
 contacts (`bucket.go`), and `iterativeFind` (`lookup.go`) picks the α
-closest by XOR, whatever their latency. That matters for the planned
-"lookup latency vs. network size" graph.
+closest by XOR, whatever their latency. That matters for the "lookup
+latency vs. network size" graph ([10](10-performance-graphs.md), graph
+1): on localhost every peer is equally near, so it measures rounds and
+RPCs, not network distance.
 
 ### What's the non-simplified way to find the k closest nodes in the routing table?
 
@@ -170,6 +193,28 @@ No. `k` (20) is **how many** closest nodes a lookup finds, and how many
 contacts a bucket holds. `alpha` (3) is **how many** RPCs a lookup has
 in flight at once. You can change either independently.
 
+### Can I use a very small `k`, like 1 or 2?
+
+You can, but lookups become unreliable even with nobody dead. With
+k = 1, every reply carries one contact, so a joining node reaches only a
+few others, and most of its buckets stay empty. A lookup that reaches a
+node with an empty bucket in the target's direction stops there, at the
+wrong node.
+[EDGE-CASES.md, case A4](EDGE-CASES.md#a4--tiny-buckets) builds the same
+20-node network three times: k = 1 got 9–14 of 20 lookups right, and
+k = 4 got all 20. The paper's post-join bucket refresh, skipped here,
+is what fixes it. The demos use k = 3 or more; A4 didn't test k = 3.
+
+### Is it safe for many nodes to join at once?
+
+Yes.
+[EDGE-CASES.md, case A2](EDGE-CASES.md#a2--a-thundering-herd-of-joins)
+starts 19 nodes joining through one node at the same instant, each
+process built with the race detector. All joined, lookups were correct,
+and no data race was reported. A node joining in that crowd may finish
+knowing only 1–2 contacts, but the traffic that follows fills its table
+in.
+
 ### What's an RPC ID vs. a node ID?
 
 Both are 160-bit, but unrelated. The node ID identifies a node. The RPC
@@ -205,6 +250,31 @@ as any reply arrives, so a dead node doesn't hold up the others. That's a
 known simplification here (see [05](05-iterative-parallel-lookup.md)).
 It's worth fixing before measuring latency or recovery time.
 
+It also doesn't get better with time. A timeout doesn't remove the dead
+contact from the routing table, so the next lookup asks it again and
+waits again. And the dead node keeps its place among the lookup's k
+closest candidates, so the answer comes back with fewer than k nodes.
+[EDGE-CASES.md, case B1](EDGE-CASES.md#b1--half-the-network-dies-at-once)
+kills half of a 16-node network. The same lookups go from ~130 ms to
+~10 s, stay there on a repeat, and every answer is short.
+
+### How can a program (or the visual demo) see what a node knows?
+
+Start the node with `--api 127.0.0.1:<port>`, and it serves its ID,
+routing table, stored values and files as JSON over HTTP
+([NODE-API.md](NODE-API.md)), plus `/api/events`, a live stream of
+every RPC, stored value and received piece. It's off by default. With it
+off, the node behaves exactly as before. With it on, the API only reads
+copies through the node's public methods. The event stream is a tap on
+the node's logger that never waits for a viewer, so it can't change or
+slow the DHT.
+
+Add `--api-control` and a program can also make the node act: POST
+`lookup`, `ping`, `put`, `get`, `share` or `fetch`, the console's
+commands. That's how the visual demo will let you click a node to make
+it look something up. Leave it off when you don't need it: any web page
+open in your browser could send those commands too.
+
 ## Wire protocol
 
 ### Doesn't UDP lack message boundaries? Isn't that why we length-prefix?
@@ -228,14 +298,49 @@ Readability while learning and debugging: you can read a packet in
 bytes vs. payload bytes". Swapping the encoding later only touches
 `transport.go` and `messages.go`.
 
-### Can nodes run on different machines yet?
+## Several machines
 
-Untested. Nodes record each other's addresses from real packet sources,
-so the DHT part may already work on a LAN *if every node bootstraps via
-a LAN address*. Bootstrapping via `127.0.0.1` would hand loopback
-addresses to remote machines, which can't use them. File sharing also
-needs each node started with `--advertise-ip <its LAN IP>`, since that
-IP goes into its provider records. Multi-device is a planned later step.
+### Can nodes run on different machines?
+
+Yes, on one subnet (one router, hotspot or switch), with **one node per
+device**. The DHT needed no change, because nodes record each other's
+addresses from real packet sources. Only provider records carry an
+address a node states about itself (`--advertise-ip`). The first node
+must be given it, and nodes that join through another machine detect
+it. The rules, the failure modes with real logs, and a lab that
+simulates several machines on one laptop:
+[09-multi-device.md](09-multi-device.md).
+
+### My download fails with "connection refused" or "unknown content key" at 127.0.0.1. Why?
+
+The provider's record says `127.0.0.1`, so your node dialed *its own*
+machine: nothing listening means "connection refused", and your own file
+server answering means "unknown content key". The provider was started
+without `--advertise-ip`, usually because it was the first node, which has
+nothing to detect its address from. It logs
+`advertise ip is loopback but a remote peer contacted us` when the first
+remote peer joins. Restart it with `--advertise-ip <its IPv4 address>`,
+and restart every other node too: the old record never expires, and it
+wins over the new one ([09](09-multi-device.md), F1 and F3).
+
+### How do I test several machines on one laptop?
+
+With Linux network namespaces: `sudo bash scripts/netns/up.sh 5` makes
+five "machines", `10.10.0.1`–`10.10.0.5`, each with its own IP, its own
+`127.0.0.1` and its own ports. That's enough to reproduce every
+multi-device problem, including IP fragmentation, which localhost hides.
+`tc netem` adds Wi-Fi-like delay and loss. On macOS, Docker Compose does
+the same job. Real devices come last.
+[09](09-multi-device.md#the-lab-several-machines-on-one-laptop).
+
+### Can this run over the internet?
+
+Not directly. Home routers use NAT: a device behind one has no address
+that others can reach, so nobody can bootstrap through it or download
+from it. An overlay VPN such as Tailscale or ZeroTier gives every device
+a reachable address, and then it works like one subnet, with no code
+change. Real NAT traversal (hole punching, relays) is a project of its
+own.
 
 ## STORE / FIND_VALUE
 
@@ -258,6 +363,28 @@ copy. `FindValue` checks locally before asking anyone. With `k = 20` and
 Yes, up to 16 distinct values of at most 256 bytes each. That's how
 "every peer that has file X" fits under file X's key. The limits keep a
 full `FIND_VALUE` reply inside one UDP datagram.
+
+### What if the k nodes holding a value all die? Can I just store it again?
+
+The value is gone: nothing republishes it. And on the current code,
+storing it again from a node that had stored it before **doesn't work
+either**. That node's routing table still lists the dead holders as its
+closest contacts to the key. A lookup starts from only those k contacts,
+they all time out, and the lookup ends with nothing. `Store` then keeps
+the value only locally, where nobody else's lookup will look.
+[EDGE-CASES.md, case B2](EDGE-CASES.md#b2--the-provider-record-holders-all-die)
+shows this with real output and lists the fixes.
+
+### A node joins with an ID closer to a key than the nodes holding it. Does it get the value?
+
+No. A value stays on the nodes chosen when it was stored. Nothing copies
+it to newcomers, because there's no republish and no hand-over on join
+(the paper has both, Sec. 2.5). Worse, the newcomers can't *find* it.
+Their lookups start from their closest contacts, which are other
+newcomers, and with a small k they may never get past them to a holder.
+[EDGE-CASES.md, case B3](EDGE-CASES.md#b3--late-joiners-closer-to-a-key)
+shows 13 of 16 such lookups failing while the holders were alive, and a
+re-`put` fixing it.
 
 ## File transfer (TCP)
 
@@ -425,51 +552,38 @@ breaking a hash.
 
 ### How does a leecher know what order the pieces go in when it rebuilds the file?
 
-From the **piece index**, never from arrival order. `PieceHashes[i]` in
-the manifest is the hash of the file's `i`-th chunk (`BuildManifest`).
-The downloader asks for piece `i` by index (`GET_PIECE`, sent from
-`providerConn.fetch` in `client.go`). The provider reads bytes
-`[i·PieceSize, …)` (`Library.readPiece`). The downloader checks them
-against `PieceHashes[i]` (`Manifest.VerifyPiece`) and writes them at
-`PieceOffset(i)` (`f.WriteAt` in `downloader.fetchPiecesInto`,
-`peer.go`). The step-by-step path, with file and line references, is in
+From the **piece index**, never from arrival order. That matters on this
+branch, where pieces routinely arrive out of order. The path:
+
+- `PieceHashes[i]` in the manifest is the hash of the file's `i`-th chunk
+  (`BuildManifest`).
+- The picker chooses an index (`pickPiece`, `picker.go`), and
+  `swarmDownload.startPiece` (`download.go`) asks a provider for that
+  index (`GET_PIECE`, via `providerConn.fetch` in `client.go`).
+- The provider reads bytes `[i·PieceSize, …)` (`Library.readPiece`), but
+  only if piece `i`'s bit is set.
+- The worker checks the bytes against `PieceHashes[i]`
+  (`Manifest.VerifyPiece`). `swarmDownload.handle` writes them at
+  `PieceOffset(i)` (`file.WriteAt`), then publishes the piece
+  (`Library.markHave`).
+
+The step-by-step path is in
 [07, "How the downloader knows where each piece goes"](07-file-transfer-over-tcp.md#how-the-downloader-knows-where-each-piece-goes).
-
-### Why can't leechers finish when pieces were already sent?
-
-Because on `main`, pieces a leecher holds are invisible and, if the
-download fails, deleted. `scripts/demo-seeder-death.sh` shows it: three
-leechers hold 13, 8, and 6 pieces when the seeder dies, and all three
-fail. The reasons, all in `internal/transfer/peer.go`:
-
-1. **Only complete files are announced or served.** `Peer.announce` and
-   `Library.add` run at the end of `Peer.Download`. Until then, no other
-   leecher can learn that this one has anything, or fetch from it.
-2. **Pieces are fetched in order (`0, 1, 2, …`).** Every leecher holds a
-   prefix, and the prefixes overlap. In the demo, 27 pieces held between
-   three leechers cover only pieces 0–12. Pieces 13–15 lived only on the
-   seeder.
-3. **A failed download deletes its output** (`fetchPiecesInto`'s cleanup),
-   since there's no resume.
-
-So after the seeder dies, the only provider record anyone has points at
-a dead node: "every provider failed". Full trace:
-[DRY-RUN part 3](DRY-RUN.md#part-3--scriptsdemo-seeder-deathsh-the-file-is-lost).
-Branch `feature/parallel-partial-seeding` fixes 1 and 2.
 
 ### Can this network handle pieces arriving out of order?
 
-On `main`: **the format can, the downloader never tries.**
-Positioning, verification, and `WriteAt` are all per-index, and a
-provider answers any index in any order. But `fetchPiecesInto` requests
-pieces strictly `0, 1, 2, …`, one at a time. And because replies don't
-carry the index, each connection must keep one request outstanding at a
-time. Details:
-[07, "Can pieces arrive out of order?"](07-file-transfer-over-tcp.md#can-pieces-arrive-out-of-order).
+**Yes, and on this branch it does so routinely.** The downloader picks
+pieces rarest-first with random tie-breaks and keeps up to
+`--max-inflight` (default 4) requests in flight on different
+connections. Pieces arrive in whatever order providers answer, e.g.
+`2, 11, 6, 15, 10, 8, …` in DRY-RUN part 5's parallel demo. Placement,
+verification, and serving are all per index, so order doesn't matter.
 
-Branch `feature/parallel-partial-seeding` changes this. It fetches out of
-order (rarest-first), concurrently over several connections, and lets
-peers serve pieces before they have the whole file.
+What still constrains it: **one outstanding request per connection**,
+because replies don't repeat the index, so there's no pipelining. On
+`main` the downloader requested `0, 1, 2, …` strictly one at a time,
+although the format already allowed any order. Details:
+[07, "Can pieces arrive out of order?"](07-file-transfer-over-tcp.md#can-pieces-arrive-out-of-order).
 
 ### Why SHA-1 for node IDs but SHA-256 for files?
 
