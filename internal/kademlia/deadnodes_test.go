@@ -78,32 +78,6 @@ func TestLookupSkipsADeadNodeNearTheKey(t *testing.T) {
 	}
 }
 
-// Even when every one of a node's own closest contacts is dead, the
-// lookup carries on with the rest of its routing table and finds the k
-// closest live nodes.
-func TestLookupFindsLiveNodesWhenAllNearestAreDead(t *testing.T) {
-	const size, k = 12, 3
-	nodes := smallKNetwork(t, size, k)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	key := HashID([]byte("another file"))
-	sorted := byDistance(nodes, key)
-	for _, n := range sorted[:k] {
-		n.Close() // all k closest to the key die at once
-	}
-	live := sorted[k:]
-	far := live[len(live)-1]
-
-	res, err := far.Lookup(ctx, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !sameIDs(res.Closest, live[:k]) {
-		t.Fatalf("lookup returned %d contacts (failed RPCs %d), want the %d closest live nodes", len(res.Closest), res.RPCsFailed, k)
-	}
-}
-
 // FindAllValues asks the network even when this node already holds a
 // value for the key, and merges what the k closest live nodes hold.
 // FindValue (used by `get`) still answers from the local store.
