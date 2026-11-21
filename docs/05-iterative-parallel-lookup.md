@@ -68,7 +68,13 @@ candidate kept its place, and the live node that should have replaced it
 had already been trimmed away. After half the network died, every lookup
 came back short, some with nobody at all. Edge case B1 found it
 ([EDGE-CASES.md](EDGE-CASES.md#b1--half-the-network-dies-at-once)), and
-`TestLookupAfterHalfTheNetworkDies` (`lookup_test.go`) guards the fix.
+`TestLookupAfterHalfTheNetworkDies` (`lookup_test.go`) guards the fix,
+as do `TestLookupSkipsADeadNodeNearTheKey` and
+`TestLookupFindsLiveNodesWhenAllNearestAreDead` (`deadnodes_test.go`):
+the old code returned 2 and 0 contacts there. That version also misled
+`Store`: with fewer than `k` found, `selfAmongClosest` believed this node
+was among the closest and kept a copy even when it was far from the key
+([06](06-store-and-find-value.md)).
 
 **Stale nodes are skipped.** A node that failed `--stale-after` RPCs in
 a row (default 5) and hasn't spoken since is *stale*
@@ -193,6 +199,7 @@ inside `RoutingTable`/`Bucket` for the routing-table side of things.
 | Concept | Function | File |
 |---|---|---|
 | The lookup algorithm itself | `Node.Lookup`, `Node.iterativeFind` (with its `workingSet`) | `lookup.go` |
+| FIND_NODE, FIND_VALUE, or FIND_VALUE asking all `k` closest | `lookupMode` (`modeFindNode`, `modeFindValue`, `modeFindAllValues`) | `lookup.go` |
 | Per-RPC send/receive this builds on | `Node.FindNode`, `Node.sendAndWait` | `node.go` |
 | Result type / what the demo reports | `LookupResult` | `lookup.go` |
 

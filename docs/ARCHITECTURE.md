@@ -37,6 +37,13 @@ Dependencies only point downward:
 - `internal/nodeapi` uses `kademlia.Node` and `transfer.Peer` through
   their public methods only, the same ones the console uses. Neither of
   them knows it exists.
+- The visualizer ([13](13-visualizer.md)) sits outside the diagram,
+  next to `curl`: `cmd/vizrun` (Go) imports nothing from `internal/`; it
+  runs `cmd/node` processes and talks to them only over the HTTP API
+  (`--api`, `--api-control`) and with signals. `viz/` (the page, plain
+  JS) only reads nodes' snapshots and `/api/events`, and asks `vizrun`
+  for each scene. So a node never knows it's being watched, and nothing
+  in the core changed for it.
 
 Go's `internal/` rule means only code in this module can import these.
 
@@ -73,7 +80,7 @@ Each file depends only on files in lower layers:
 | `logging.go` | slog logger tagged with the node ID | `id.go` |
 | `node.go` | `Node`, `Config`; matching replies to requests (`pending`); `handleMessage` dispatch; `replyFindNode/Store/FindValue`; eviction; `Bootstrap` | all of the above |
 | `lookup.go` | `iterativeFind` (alpha-parallel, synchronous rounds; working set = k closest non-failed; skips stale nodes), `Lookup`, `LookupResult` | `node.go` |
-| `values.go` | `Store` (remember the publication, lookup + `storeOnClosest`), `FindValue` (local, then lookup) | `lookup.go`, `node.go` |
+| `values.go` | `Store` (remember the publication, lookup + `storeOnClosest`), `FindValue` (local, then lookup), `FindAllValues` (lookup to the end, merged with local) | `lookup.go`, `node.go` |
 | `refresh.go` | `RandomIDInBucket`; `bucketLookups` (when a lookup last targeted each bucket); `refreshBuckets` (at join, from `Bootstrap`) and `refreshLoop` (every `RefreshInterval`) (paper Sec. 2.3) | `lookup.go`, `routingtable.go` |
 | `republish.go` | `publications` (what this node published); `republishLoop`: every `RepublishInterval`, the publisher pass and the holder pass (paper Sec. 2.5) | `values.go`, `lookup.go`, `store.go` |
 
@@ -86,6 +93,7 @@ Each file depends only on files in lower layers:
    ├── picker.go     pickPiece: rarest-first, random ties                (pure)
    ├── bitfield.go   Bitfield: which pieces a peer has (BEP 3 layout)    (pure)
    ├── manifest.go   Manifest, pieces, SHA-256 checks, ContentKey      (pure, no I/O except reading the source file)
+   ├── magnet.go     magnet links: content key <-> magnet:?xt=urn:tp2p:… (pure)
    ├── provider.go   ProviderRecord: the DHT value format
    ├── library.go    files this peer can serve, complete or partial; reads pieces from disk
    ├── server.go     TCP listener + per-connection handler     ─┐ both speak protocol.go
@@ -96,16 +104,17 @@ Each file depends only on files in lower layers:
 | File | Responsibility | Depends on |
 |---|---|---|
 | `manifest.go` | build/encode/decode/validate a manifest, verify a piece, content key | `kademlia.ID` only |
+| `magnet.go` | `MagnetLink`, `ParseMagnet`, `ParseKeyOrMagnet`, `SharedFile.Magnet`: the content key as a link people pass around ([12](12-magnet-links.md)). **No I/O.** | `kademlia.ID`, `net/url` |
 | `provider.go` | encode/decode/validate provider records | `kademlia.ID` |
 | `protocol.go` | TCP request/response shapes, op names, frame size limits | `kademlia.ID` |
 | `bitfield.go` | `Bitfield` (`Has`, `Set`, `Count`), `decodeBitfield` validation. **No I/O.** | — |
 | `picker.go` | `pickPiece`: rarest needed piece with an idle holder, random ties. **No I/O.** | `bitfield.go` |
 | `merkle.go` | `MerkleTree` over piece hashes: `LeafHash`, `Root`, `Proof`, `VerifyMerkleProof` (RFC 6962 / 9162). The manifest carries the root; every piece travels with its proof. Read-only once built. **No I/O.** | — |
-| `library.go` | key → (manifest, file path, `have` bitfield); `addComplete`/`addPartial`/`markHave`/`remove`; `readPiece` serves only pieces it has | `manifest.go`, `bitfield.go` |
+| `library.go` | key → (manifest, file path, `have` bitfield, Merkle tree or received proofs, `downloading`); `addComplete`/`addPartial`/`markHave`/`remove`; `claimForResume` (start, resume, or refuse a download, in one locked step) and `stopDownloading`; `readPiece` serves only pieces it has, each with its proof | `manifest.go`, `bitfield.go`, `merkle.go` |
 | `server.go` | accept loop; `handleConn` request loop; `answer` (`GET_MANIFEST`, `GET_BITFIELD`, `GET_PIECE`); tracks open connections so `close` ends them; the DEBUG ONLY `debugServeDelay` (`--debug-serve-delay`) and `uplink` (`--debug-upload-rate`: one shared pacing timeline for all connections) | `library.go`, `protocol.go`, framing |
 | `client.go` | `dialProvider`; `providerConn.fetch` | `protocol.go`, framing |
 | `peer.go` | `Config`, `NewPeer`, `Share`, `announce`, `decodeProviders` | `library.go`, `server.go`, `kademlia.Node` |
-| `download.go` | `Peer.Download`; `swarmDownload` (event loop `run`/`schedule`/`handle`/`canProgress`, workers `startPiece`/`startBitfield`/`startDiscovery`/`startAnnounce`) | all of the above + `kademlia.Node` |
+| `download.go` | `Peer.Download`; `swarmDownload` (event loop `run`/`schedule`/`handle`/`canProgress`, workers `startPiece`/`startBitfield`/`startDiscovery`/`startAnnounce`; `stopButKeepServing` when it gives up, `reopenFile` to resume) | all of the above + `kademlia.Node` |
 
 ## Public APIs
 
@@ -116,7 +125,8 @@ kademlia.NewNode(kademlia.Config{ID, Port, AdvertiseIP, K, Alpha, RPCTimeout, Lo
 (*Node).Bootstrap(ctx, *net.UDPAddr) (*LookupResult, error)
 (*Node).Lookup(ctx, target ID) (*LookupResult, error)
 (*Node).Store(ctx, key ID, value []byte) (*StoreResult, error)
-(*Node).FindValue(ctx, key ID) (*LookupResult, error)        // result.Values
+(*Node).FindValue(ctx, key ID) (*LookupResult, error)        // result.Values; local store first, stops at the first holder (get)
+(*Node).FindAllValues(ctx, key ID) (*LookupResult, error)    // every value the k closest live nodes and this node hold (providers)
 (*Node).Ping(ctx, Contact) bool; FindNode(ctx, Contact, ID)   // single RPCs
 (*Node).Addr(), Self(), Logger(), RoutingTableSize(), RoutingTableSnapshot(), StoredKeyCount()
 (*Node).StoredValues() map[ID][][]byte                       // copies; for the HTTP API only
@@ -126,6 +136,8 @@ transfer.NewPeer(node, transfer.Config{TCPPort, IOTimeout, MaxInFlight}) (*Peer,
 (*Peer).Share(ctx, path) (contentKey kademlia.ID, error)
 (*Peer).Download(ctx, contentKey, outPath) (*DownloadResult, error)
 (*Peer).TCPPort(), Library().List(), Close()          // Close also ends open connections
+transfer.MagnetLink(key, name) string; SharedFile.Magnet()   // magnet:?xt=urn:tp2p:<key>&dn=<name>
+transfer.ParseMagnet(link) (key, name, error); ParseKeyOrMagnet(s) (key, error)  // fetch accepts either
 (*Peer).SetDebugServeDelay(d)                          // DEBUG ONLY (--debug-serve-delay)
 (*Peer).SetDebugUploadRate(bytesPerSec)                // DEBUG ONLY (--debug-upload-rate)
 // DownloadResult: Pieces, PiecesFrom, FailedProviders, MaxInFlight, Duration, ...
@@ -163,21 +175,27 @@ framing.Write / Read        // frames on a stream
 ```
  console.go fetch
    ▼
- download.go Peer.Download ── kademlia FindValue(key) ──► provider records
-             swarmDownload.fetchManifest (one provider at a time) → DecodeManifest
-             openFile: O_EXCL + Library.addPartial        ← from here on, we serve what we have
+ download.go Peer.Download ── Library.claimForResume(key, path): fresh | resume | refuse
+             kademlia FindAllValues(key) ──► provider records
+             fresh:  swarmDownload.fetchManifest (one provider at a time) → DecodeManifest
+                     openFile: O_EXCL + Library.addPartial   ← from here on, we serve what we have
+             resume: reopenFile: re-verify the pieces on disk (stored proofs), have = library's bitfield (no manifest fetch)
    ▼
  download.go run (event loop, ONE goroutine owns all state)
     schedule ─┬─ pickPiece (picker.go) → startPiece ──► worker: dial/fetchPiece GET_PIECE (+ proof) → VerifyPiece ─┐
               ├─ stale bitfield       → startBitfield ─► worker: fetch GET_BITFIELD → decodeBitfield ─┤
-              ├─ every 1 s            → startDiscovery ► worker: kademlia FindValue → records ───────┤ events
-              └─ after 1st piece      → startAnnounce ─► worker: Peer.announce (kademlia Store) ─────┤ channel
+              ├─ every 1 s            → startDiscovery ► worker: kademlia FindAllValues → records ───┤ events
+              └─ after 1st piece*     → startAnnounce ─► worker: Peer.announce (kademlia Store) ─────┤ channel
     wait ◄──────────────────────────────────────────────────────────────────────────────────────┘
     handle: WriteAt → have.Set → Library.markHave   (write, then publish)
             or markDead (close conn) / add providers / note announce
    ▼
  complete: file.Close; Download returns once announced
- stalled 15 s (canProgress false): Library.remove → close → delete file
+ stopped (stalled 15 s, or the caller's timeout): stopButKeepServing: close; entry and file stay,
+          still served, and the same fetch resumes. With no pieces yet: abort
+          (Library.remove → close → delete file), as when closing a finished file fails.
+
+ * on a resume, at once: it starts with pieces on disk.
 ```
 
 Each worker talks to the provider's server like this:
@@ -234,8 +252,8 @@ way.
    as observed, `127.0.0.1` ones included. On several machines that's
    only safe with one node per device ([09](09-multi-device.md), F2; a
    `SIMPLIFICATION:` in `closestExcluding`).
-4. **`Bucket`, `staleTracker`, `valueStore`, `Manifest`, `Bitfield`, `pickPiece`, and `MerkleTree` do
-   no network I/O.** Logic that's easy to get wrong stays unit-testable.
+4. **`Bucket`, `staleTracker`, `valueStore`, `Manifest`, `Bitfield`, `pickPiece`, `MerkleTree`, and
+   the magnet-link functions do no network I/O.** Logic that's easy to get wrong stays unit-testable.
 5. **Register `pending[rpcID]` before sending.**
 6. **Every UDP message fits in one datagram** (`maxDatagramSize` = 8 KB).
    That's why values are capped (`maxValueSize`, `maxValuesPerKey`) and
@@ -246,9 +264,16 @@ way.
    (`decodeBitfield`), manifests must hash to the requested key
    (`DecodeManifest`), and every piece must verify
    (`VerifyPiece`, which checks the piece's Merkle proof against the manifest's root) before it's written.
-8. **A download only ever creates a new file** (`O_EXCL`), and deletes it
-   on failure (after removing it from the library). It never overwrites
-   an existing path.
+8. **A download only ever creates a new file** (`O_EXCL`). It never
+   overwrites an existing path. The one exception is resuming: a
+   download that gave up stays in the library, and fetching the same key
+   into the same path reopens that file (`Library.claimForResume`), but
+   only after re-verifying every piece the library says is in it, with
+   the Merkle proof it arrived with (`reopenFile`): the file may have
+   been changed or replaced since. A download that gives up keeps its
+   file and keeps serving it; one with no pieces yet, or a finished file
+   that can't be closed, is removed from the library, then deleted
+   (`abort`).
 9. **Write, then publish.** A piece's bit is set in the library
    (`markHave`) only after its `WriteAt` completes, so a peer never
    serves a piece that isn't fully on disk.
@@ -282,17 +307,19 @@ way.
 | Add a DHT RPC | `messages.go` (types), `node.go` (`handleMessage` case, `replyXxx`, an `xxxRPC` client), check it fits a datagram, docs `03`/`06`, FAQ |
 | Change the bucket rule | `bucket.go`, `bucket_test.go`, `node.go` (`touchContact`/`resolveEviction`), doc `02` |
 | Change when a contact is stale | `stale.go`, `stale_test.go`, `node.go` (`noteFailure` in `sendAndWait`, `heardFrom` in `touchContact`), `lookup.go` (`addCandidate`), doc `02`, `scripts/edge/b1-half-the-network-dies.sh` (its recovery numbers), EDGE-CASES.md B1, FIXES.md |
-| Change lookup termination / concurrency | `lookup.go`, `integration_test.go`, `values_test.go`, doc `05`, `DRY-RUN.md` numbers |
+| Change lookup termination / concurrency | `lookup.go`, `integration_test.go`, `values_test.go`, `lookup_test.go` and `deadnodes_test.go` (dead candidates drop out, the next-closest move up), doc `05`, `DRY-RUN.md` numbers, `scripts/edge/b1-*.sh` / `b2-*.sh` and their EDGE-CASES.md sections |
 | Change value limits or storage rules | `store.go`, `store_test.go`, doc `06` |
 | Change bucket refresh | `refresh.go`, `refresh_test.go`, `lookup.go` (`noteLookup`), `node.go` (`Bootstrap` calls `refreshBuckets`), docs `02` and `04`, `DRY-RUN.md` part 2c (join log lines), `scripts/edge/a3-bridge-between-islands.sh` (waits for `msg="buckets refreshed" … reason=periodic`), `scripts/edge/a4-tiny-buckets.sh` (`--join-refresh=false`), EDGE-CASES.md A3/A4, FIXES.md |
 | Change republishing | `republish.go`, `republish_test.go`, `values.go` (`Store` records publications), `store.go` (`refreshed`), doc `06`, `scripts/edge/b2-record-holders-die.sh` and `b3-late-joiners-hide-a-value.sh` (they wait for `msg="republish complete" … key=<key> reason=publisher`), EDGE-CASES.md B2/B3, FIXES.md |
 | Change the TCP protocol | `protocol.go`, `server.go`, `client.go`, doc `07` (and `08` for `GET_BITFIELD`) |
+| Change what happens when a download gives up, or how it resumes | `download.go` (`stopButKeepServing`, `reopenFile`, the claim in `Download`), `library.go` (`claimForResume`, `stopDownloading`), `swarm_test.go`/`library_test.go`, doc `08` ("Why giving up mustn't delete", "Resuming"), invariant 8, `scripts/demo-give-up-resume.sh`, `DRY-RUN.md` part 8, field tests 2 and 4 |
 | Change piece selection or concurrency | `picker.go` (+ `swarm_unit_test.go`), `download.go` `schedule`, `swarm_test.go`, doc `08`, `DRY-RUN.md` part 5, `scripts/demo-seeder-death.sh` (its kill-window reasoning depends on `--max-inflight 1`) |
 | Change stall/rediscovery/bitfield timers | `download.go` constants, `TestDownloadGivesUpWhenNoOneHasTheRest`, doc `08` |
-| Change how pieces/keys are hashed | `manifest.go`, `manifest_test.go`, doc `07`, FAQ |
+| Change how pieces/keys are hashed | `manifest.go`, `manifest_test.go`, doc `07`, FAQ; the worked example and `testKeyHex` in doc `12` / `magnet_test.go` assume today's hashing |
+| Change the magnet link format (namespace, parameters, escaping) | `magnet.go`, `magnet_test.go`; `nodeapi` tests that spell out a link (`api_test.go`, `control_test.go`); doc `12`, `NODE-API.md`, `DRY-RUN.md` part 7; `scripts/demo-magnet.sh` (it rewrites `&dn=` with `sed`) |
 | Change the join procedure | `node.go` `Bootstrap`; its tests in `integration_test.go`, `bootstrap_test.go` and `refresh_test.go` (the join refresh); doc `04` (the "Join scenarios" table names each test); `DRY-RUN.md`. `TestBootstrapNodeGoesSilentAfterPing` pins today's lenient behavior, so a stricter join would update it on purpose |
 | Change what `--bootstrap` accepts | `cmd/node/main.go` `parseBootstrap` and `TestParseBootstrap`; doc `04` |
-| Change log or console text | `scripts/demo.sh` greps `"bootstrap complete"` and `"TRIGGERED LOOKUP RESULT"`; `scripts/demo-transfer.sh` greps `"bootstrap complete"`, `"put greeting"`, `"get greeting:"`, `"content key:"`, `"fetch"`, `msg="piece received"`; `scripts/lib/nodes.sh` (used by the newer demos) greps `"node started"`, `"bootstrap complete"`, and `msg="piece received"` with an `index=N` field; `scripts/demo-seeder-death.sh` also greps console lines starting `fetch` / `fetched ` / `fetch failed`; `scripts/demo-big-network.sh` parses the console's `lookup <hex>: rounds=…` line and the numbered `   N. <id>@ip:port` lines after it, plus `content key:` and `^fetch`; `scripts/demo-parallel.sh` parses `msg="piece requested"` / `msg="piece received"` (`index=`, `from=`, `inflight=`), `max_inflight=` in `msg="download complete"`, and the console's `N piece(s) from` lines; `scripts/demo-merkle.sh` parses `msg="share complete"` (`key=`, `pieces=`, `merkle_root=`, `manifest_bytes=`, matched by ` name=<file> `), `msg="provider failed, trying the next one"` with `provider=` and `failed its Merkle proof check`, `msg="DEBUG: serving a corrupted piece"`, `msg="piece received"`, the console's `^fetch` and `N piece(s) from` lines, and relies on the old manifest format's exact JSON layout for its comparison column; `scripts/edge/b2-record-holders-die.sh` greps `content key:`, `^fetch`, `^fetch failed: transfer: no providers found`, `^PONG from` / `^no reply from`, and the log messages `"value stored"`, `"lookup converged"`, `"republish complete"` (with `key=… reason=publisher` and `values=…`), `"find_value finished"` with their `key=`/`target=`, `closest_found=` fields; `scripts/edge/b1-half-the-network-dies.sh` parses the console's `lookup <hex>: rounds=… rpcs_sent=… rpcs_failed=…` line, the numbered `   N. <id>@ip:port` lines after it, `lookup failed`, and `table`'s `<id>@` contact lines and `N contacts in M non-empty buckets`; `scripts/edge/a3-bridge-between-islands.sh` uses the same `lookup` and `table` lines (it expects `table` contacts indented by exactly 4 spaces; a stale contact's line ends with `  (stale: lookups skip it)`, so scripts match only the start of the line) plus `^PONG from` / `^no reply from`; `scripts/edge/b3-late-joiners-hide-a-value.sh` parses `put <name> (key …)`, `get <name>: N value(s) …` (a miss is `0 value(s)`), `get failed`, `"value stored"` and `"republish complete"` (`key=… reason=publisher`) log lines, and relies on a repeated `--id-seed` flag taking its last value; `scripts/edge/a4-tiny-buckets.sh` relies on the same `--id-seed` rule and parses the `lookup` lines; `scripts/edge/a2-thundering-herd.sh` greps `bootstrap complete` with its `routing_table_size=` field, `^error:` (a failed join), the `lookup` lines, and the race detector's `WARNING: DATA RACE`; `scripts/edge/run-all.sh` takes each script's last line starting `PASS`/`FAIL`; `scripts/netns/kill-seeder-when-spread.sh` greps `msg="piece received"` with its `index=` and `of=` fields, console lines starting `fetched `, and `msg="download complete"`; the eval scripts (`eval/scripts/*.sh`, through `eval/scripts/lib.sh`) and `eval/scripts/eval-field-tests.html` parse `msg=bootstrapping` and `msg="bootstrap complete"` (with `self_lookup_rounds=`/`self_lookup_rpcs=`), `msg="rpc sent"`, `msg="rpc received"` with its `bytes=`, `msg="piece received"` (with `have=` on the page), `msg="provider failed, trying the next one"` with its `provider=`, `msg="download complete"` with its `bytes=`, every line's leading `time=` field, and the control API's JSON fields `rounds`, `rpcs_sent`, `rpcs_failed`, `duration_ms`, `key` and `pieces_from`; the page also shows the console's `fetched …` / `fetch failed: …` lines; `scripts/multi-device/field-tests.html` shows the expected text of `advertise ip auto-detected`, `bootstrap complete`, the loopback-advertise warning, `provider failed, trying the next one`, `piece received … have=`, `fetch failed: …` and `fetched … / N piece(s) from` for people to compare against; `scripts/multi-device/join-tests.html` does the same for the console's `table` (`routing table is empty`, bucket and contact lines, the `N contacts in M non-empty buckets` summary), `lookup`, `put`, `get`, `PONG from` and `bootstrap complete` |
+| Change log or console text | `scripts/demo.sh` greps `"bootstrap complete"` and `"TRIGGERED LOOKUP RESULT"`; `scripts/demo-transfer.sh` greps `"bootstrap complete"`, `"put greeting"`, `"get greeting:"`, `"content key:"`, `"fetch"`, `msg="piece received"`; `scripts/lib/nodes.sh` (used by the newer demos) greps `"node started"`, `"bootstrap complete"`, and `msg="piece received"` with an `index=N` field; `scripts/demo-seeder-death.sh` also greps console lines starting `fetch` / `fetched ` / `fetch failed`; `scripts/demo-big-network.sh` parses the console's `lookup <hex>: rounds=…` line and the numbered `   N. <id>@ip:port` lines after it, plus `content key:` and `^fetch`; `scripts/demo-magnet.sh` greps `content key:` and `magnet link:` (taking `$3`), console lines starting `fetch` / `fetched "<name>"`, and the error text `BitTorrent magnet link`; `scripts/demo-give-up-resume.sh` greps `content key:` (taking `$3`), `msg="piece received"` (via `pieces_received`), console lines starting `fetch failed` (the `with N of M pieces` in them) and `fetched `, `files`' ` bytes, has N/M pieces` line, and `N piece(s) were already on disk (resumed)`; `scripts/demo-viz.sh` greps the event names in its list in `events.jsonl` and vizrun's `vizrun: PASS` / `check: ok sha256: … matches the original`; `scripts/demo-parallel.sh` parses `msg="piece requested"` / `msg="piece received"` (`index=`, `from=`, `inflight=`), `max_inflight=` in `msg="download complete"`, and the console's `N piece(s) from` lines; `scripts/demo-merkle.sh` parses `msg="share complete"` (`key=`, `pieces=`, `merkle_root=`, `manifest_bytes=`, matched by ` name=<file> `), `msg="provider failed, trying the next one"` with `provider=` and `failed its Merkle proof check`, `msg="DEBUG: serving a corrupted piece"`, `msg="piece received"`, the console's `^fetch` and `N piece(s) from` lines, and relies on the old manifest format's exact JSON layout for its comparison column; `scripts/edge/b2-record-holders-die.sh` greps `content key:`, `^fetch`, `^fetch failed: transfer: no providers found`, `^PONG from` / `^no reply from`, and the log messages `"value stored"`, `"lookup converged"`, `"republish complete"` (with `key=… reason=publisher` and `values=…`), `"find_value finished"` with their `key=`/`target=`, `closest_found=` fields; `scripts/edge/b1-half-the-network-dies.sh` parses the console's `lookup <hex>: rounds=… rpcs_sent=… rpcs_failed=…` line, the numbered `   N. <id>@ip:port` lines after it, `lookup failed`, and `table`'s `<id>@` contact lines and `N contacts in M non-empty buckets`; `scripts/edge/a3-bridge-between-islands.sh` uses the same `lookup` and `table` lines (it expects `table` contacts indented by exactly 4 spaces; a stale contact's line ends with `  (stale: lookups skip it)`, so scripts match only the start of the line) plus `^PONG from` / `^no reply from`; `scripts/edge/b3-late-joiners-hide-a-value.sh` parses `put <name> (key …)`, `get <name>: N value(s) …` (a miss is `0 value(s)`), `get failed`, `"value stored"` and `"republish complete"` (`key=… reason=publisher`) log lines, and relies on a repeated `--id-seed` flag taking its last value; `scripts/edge/a4-tiny-buckets.sh` relies on the same `--id-seed` rule and parses the `lookup` lines; `scripts/edge/a2-thundering-herd.sh` greps `bootstrap complete` with its `routing_table_size=` field, `^error:` (a failed join), the `lookup` lines, and the race detector's `WARNING: DATA RACE`; `scripts/edge/run-all.sh` takes each script's last line starting `PASS`/`FAIL`; `scripts/netns/kill-seeder-when-spread.sh` greps `msg="piece received"` with its `index=` and `of=` fields, console lines starting `fetched `, and `msg="download complete"`; the eval scripts (`eval/scripts/*.sh`, through `eval/scripts/lib.sh`) and `eval/scripts/eval-field-tests.html` parse `msg=bootstrapping` and `msg="bootstrap complete"` (with `self_lookup_rounds=`/`self_lookup_rpcs=`), `msg="rpc sent"`, `msg="rpc received"` with its `bytes=`, `msg="piece received"` (with `have=` on the page), `msg="provider failed, trying the next one"` with its `provider=`, `msg="download complete"` with its `bytes=`, every line's leading `time=` field, and the control API's JSON fields `rounds`, `rpcs_sent`, `rpcs_failed`, `duration_ms`, `key` and `pieces_from`; the page also shows the console's `fetched …` / `fetch failed: …` lines; `scripts/multi-device/field-tests.html` shows the expected text of `advertise ip auto-detected`, `bootstrap complete`, the loopback-advertise warning, `provider failed, trying the next one`, `piece received … have=`, `fetch failed: …` and `fetched … / N piece(s) from` for people to compare against; `scripts/multi-device/join-tests.html` does the same for the console's `table` (`routing table is empty`, bucket and contact lines, the `N contacts in M non-empty buckets` summary), `lookup`, `put`, `get`, `PONG from` and `bootstrap complete` |
 | Change how the advertise IP is chosen or validated | `cmd/node/main.go` (`chooseAdvertiseIP`, `parseAdvertiseIP`, `routeSourceIP`) and `main_test.go`; doc `09`; the `advertise ip auto-detected` row in `NODE-API.md` |
 | Pass contacts on differently in replies (e.g. filter loopback ones) | `node.go` `closestExcluding` (its `SIMPLIFICATION:` assumes one node per device), doc `09` F2, invariant 3 |
 | Change the network-namespace lab | `scripts/netns/*.sh`, doc `09` ("The lab"), `DRY-RUN.md` part 6 |
@@ -301,5 +328,6 @@ way.
 | Change `--debug-upload-rate` or the uplink pacing | `server.go` (`uplink`, `writeData`), `peer.go` (`SetDebugUploadRate`), `uplink_test.go`; keep `eval/fileserver/main.go`'s copy of the algorithm identical, or graph 2 compares unequal uplinks; `DEBUGGING.md`, doc `10` |
 | Change an eval script's output or a measurement's definition | the script's header comment, the CSV columns in `eval/README.md`, `eval/plot_graphs.py`, doc `10`; for graphs 3 and 4 also `eval/scripts/eval-field-tests.html`, whose awk one-liners must compute exactly what `recovery_time.sh` / `bytes_overhead.sh` compute |
 | Add a CLI flag or console command | `cmd/node`, README, `DEBUGGING.md`, `.vscode/launch.json` if relevant; a new console command probably wants a matching control endpoint (`internal/nodeapi/control.go`, NODE-API.md) |
-| Add or change an HTTP API endpoint or field | `internal/nodeapi/api.go` and `api_test.go`, `docs/NODE-API.md` (with real output); the visual demo, once it exists, reads these JSON field names |
-| Rename or remove any log message or attribute | it is also an `/api/events` event name/field: update the event table in `docs/NODE-API.md` and the visual demo (in addition to the demo scripts listed above) |
+| Add or change an HTTP API endpoint or field | `internal/nodeapi/api.go` and `api_test.go`, `docs/NODE-API.md` (with real output); the visualizer reads these JSON field names: `cmd/vizrun` (`/api/node` `id`, `routing_table_size`; `/api/table` `buckets[].contacts[].id`; `/api/store` `keys[].key`; the answers of `lookup` `rounds`/`rpcs_sent`/`closest[].id`, `put` `key`/`stored_at`/`stored_locally`, `get` `values[].text`/`from_local_store`/`rounds`, `share` `key`/`name`/`pieces`/`magnet`, `fetch` `pieces_from`/`already_had`) and `viz/` (`/api/node` `id`/`ip`/`udp_port`, `/api/table` `k`/`buckets[].index`/`contacts[].id`) |
+| Rename or remove any log message or attribute | it is also an `/api/events` event name/field: update the event table in `docs/NODE-API.md`, the demo scripts listed above, and the visualizer: `viz/rpc.js` pairs `rpc sent` / `rpc received` by `type`, `to`, `from`, `rpc_id` and knows `lookup round starting` (`round`, `batch`), `lookup converged`, `find_value finished`, `find_value answered from local store`, `value stored`, `store complete` (`stored_at`, `stored_locally`), `provider announced` (`replicas`), `share complete`; `viz/main.js` and `viz/scenes.js` use `piece received` (`index`, `of`, `from`, `have`), `provider failed, trying the next one` (`provider`), `download stalled: …`, `download gave up, still serving its pieces` (`have`, `of`), `download resumed`, `download complete`, `new providers found`, `providers found`, `bucket full, pinging…`, `stale contact still alive…`, `stale contact unresponsive…`; `cmd/vizrun` counts `lookup round starting` / `lookup converged` (`rounds`), `piece received` (`index`, `of`), `download complete`, `download gave up…`, `download resumed`, and waits for the node log line `bootstrap complete`; `scripts/demo-viz.sh` greps 17 event names in `events.jsonl` (its list) and vizrun's `vizrun: PASS` / `check: ok sha256: … matches the original` |
+| Change the visualizer's scenes | `cmd/vizrun/scenes.go` (actions, titles, checks) and `viz/scenes.js` (drawing), matched by `id`; the slides' titles; doc `13` (scene table, presenter's notes); `DRY-RUN.md` part 9; `scripts/demo-viz.sh` if an event kind or a check line changes |

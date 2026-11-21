@@ -6,7 +6,10 @@ serve. It also streams what it does as it happens, and, if you allow it,
 takes commands. It's built for the **visual demo**: a browser page
 reads each node's API, draws the network, and lets you click to make
 nodes act. It also works from `curl`, which makes it a debugging tool
-too.
+too. That page is `viz/` ([13-visualizer.md](13-visualizer.md)): it reads
+snapshots and one `/api/events?level=debug` stream per node, while
+`cmd/vizrun` drives the nodes through the control endpoints. Both use
+only what this document describes.
 
 | Part | Endpoints | Flag |
 |---|---|---|
@@ -186,7 +189,7 @@ store. It was added for this API, and the DHT itself never calls it.
 
 ### `GET /api/files`: files this node can serve
 
-This is node2 halfway through downloading a 4-piece file (the seeder ran
+This is node2 one piece into downloading a 4-piece file (the seeder ran
 with `--debug-serve-delay 400ms` so the download is slow enough to catch):
 
 ```
@@ -194,12 +197,13 @@ $ curl -s 127.0.0.1:8722/api/files
 {
   "files": [
     {
-      "key": "06c461bcbe27e57e7ef20e4654b89d62683ed400",
+      "key": "16fc6af0cf2598518cfc151c1ba6d408c8be4541",
       "name": "photo.bin",
       "size": 200000,
       "pieces": 4,
-      "have": 2,
-      "path": "/tmp/tmp.YkL1uMJUr9/copy.bin"
+      "have": 1,
+      "path": "copy.bin",
+      "magnet": "magnet:?xt=urn:tp2p:16fc6af0cf2598518cfc151c1ba6d408c8be4541&dn=photo.bin"
     }
   ]
 }
@@ -207,13 +211,22 @@ $ curl -s 127.0.0.1:8722/api/files
 
 The files the node shared, plus the ones it is downloading or has
 downloaded (`Peer.Library().List()`), sorted by name. `key` is the
-content key others pass to `fetch`. With no files, it's `{"files": []}`,
-an empty list rather than `null`.
+content key, and `magnet` is the same key as a link to hand to someone
+else ([12](12-magnet-links.md)). `fetch` accepts either. With no files,
+it's `{"files": []}`, an empty list rather than `null`.
+
+`magnet` contains a raw `&`. Go's JSON encoder would normally write it as
+`&` (an escape meant for JSON embedded in HTML pages). That decodes
+to the same string, but a link copied from `curl`'s output into a console
+would no longer parse, so `writeJSON` turns that escaping off
+(`SetEscapeHTML(false)`). The `/api/events` stream is unchanged.
 
 **`have` is how many pieces the node holds** and can serve. With partial
 seeding ([08](08-swarming.md)) a download enters the library as soon as
 it starts, and the node serves each piece once it's written, so
-`have < pieces` means "still downloading, already seeding what it has".
+`have < pieces` means "still downloading, already seeding what it has",
+or a download that gave up and keeps seeding what it has (fetching it
+again resumes it, [08](08-swarming.md#resuming)).
 A shared or finished file has `have == pieces`. Polling this is the
 simplest way to draw download progress; the `piece received` event
 below carries the same count as it changes.
@@ -316,7 +329,7 @@ full list is every `logger.Debug/Info/Warn/Error` call in
 | `stale contact replaced` | INFO | `evicted`, `replacement` | `node.go` `touchContact` | a new contact took a stale contact's slot in a full bucket, without a ping |
 | `lookup round starting` | DEBUG | `target`, `round`, `batch` | `lookup.go` | one α-wide round of a lookup |
 | `lookup converged` | INFO | `target`, `rounds`, `rpcs_sent`, `rpcs_failed`, `closest_found` | `lookup.go` | a FIND_NODE lookup finished |
-| `find_value finished` | INFO | `key`, `values_found`, `rounds`, … | `lookup.go` | a FIND_VALUE lookup finished |
+| `find_value finished` | INFO | `key`, `values_found`, `rounds`, `rpcs_sent`, `rpcs_failed`, `ask_all` | `lookup.go` | a FIND_VALUE lookup finished. `ask_all=true` is `FindAllValues` (a download looking for providers: it asks all k closest live nodes); `false` is `FindValue` (`get`: stops at the first holder) |
 | `value stored` | INFO | `key`, `bytes` | `node.go` `replyStore` | this node now holds a value for the network |
 | `buckets refreshed` | INFO | `reason` (`join` / `periodic`), `buckets`, `rpcs_sent`, `rpcs_failed`, `routing_table_size`, `learned` | `refresh.go` | one bucket-refresh pass: a lookup for a random ID in each idle bucket. Each lookup also produces its own `lookup converged` |
 | `republish complete` | INFO | `key`, `reason` (`publisher` / `holder`), `values`, `stored_at`, `stored_locally`, `failed` | `republish.go` | this node stored a key's values again on the k closest nodes (every `--republish-interval`) |
@@ -329,6 +342,8 @@ full list is every `logger.Debug/Info/Warn/Error` call in
 | `piece received` | INFO | `index`, `of`, `from`, `bytes`, `have`, `inflight`, `proof` | `download.go` | one piece arrived, passed its Merkle proof check, and is now served; `have` is the new count, `proof` how many hashes its proof had ([11](11-merkle-trees.md)) |
 | `provider failed, trying the next one` | WARN | `provider`, `error` | `download.go` | a provider was dropped mid-download |
 | `download stalled: no live provider has the missing pieces; looking for more` | WARN | `have`, `of` | `download.go` | nobody known has the missing pieces; the download gives up after 15 s of this |
+| `download gave up, still serving its pieces` | WARN | `key`, `have`, `of`, `error` | `download.go` `stopButKeepServing` | the download stopped without finishing: usually a 15 s stall (after `download stalled…`), but also the transfer timeout, a cancelled `/api/fetch`, or a write error (`error` says which). Its partial file stays, its `have` pieces are still served, and a fetch into the same path resumes it. With no pieces yet, nothing is kept and this isn't logged ([08](08-swarming.md#why-giving-up-mustnt-delete-two-leechers-end-with-different-pieces)) |
+| `download resumed` | INFO | `key`, `have`, `of` | `download.go` `reopenFile` | a fetch continued one that had given up, starting with `have` pieces on disk, each re-verified first (Merkle proof) ([08](08-swarming.md#resuming)) |
 | `announce failed; will retry` | WARN | `key`, `error` | `download.go` | a downloader couldn't announce itself as a provider yet |
 | `download complete` | INFO | `key`, `name`, `bytes`, `pieces`, `providers`, `failed_providers`, `max_inflight`, `duration` | `download.go` | a download finished |
 | `tcp request served` | INFO, DEBUG for `bitfield` | `to`, `op`, `index`, `bytes` | `server.go` | this node served a manifest, a piece, or (polled every ~500 ms, so DEBUG) its bitfield |
@@ -356,7 +371,7 @@ text.
 | `POST /api/put` | `{"name": "…", "text": "…"}` | STORE text under SHA-1(name) | `put` | `Node.Store` |
 | `POST /api/get` | `{"name": "…"}` | FIND_VALUE for SHA-1(name) | `get` | `Node.FindValue` |
 | `POST /api/share` | `{"path": "…"}` | publish a local file | `share` | `Peer.Share` |
-| `POST /api/fetch` | `{"key": "<40 hex>", "out": "…"}` | download a file | `fetch` | `Peer.Download` |
+| `POST /api/fetch` | `{"key": "<40 hex or magnet link>", "out": "…"}` | download a file | `fetch` | `Peer.Download` |
 
 **Requests** must send `Content-Type: application/json` (otherwise
 **415**; why is under "Safety" below). Unknown fields are rejected, so a
@@ -366,7 +381,7 @@ ones are relative to the node's working directory.
 
 **Responses:**
 - **200** with the result;
-- **400** `{"error": …}` when the request itself is wrong (bad hex, missing field);
+- **400** `{"error": …}` when the request itself is wrong (bad hex, a magnet link that isn't ours, missing field);
 - **500** `{"error": "<command> failed: …"}` when the node tried and failed (timeout, no providers, a value over 256 bytes, an existing `out` file).
 
 The request blocks until the operation finishes, just as the console
@@ -471,57 +486,89 @@ value. A key nobody holds gives `"values": []` with status 200.
 
 ### `POST /api/share` and `POST /api/fetch`
 
+All three nodes ran in one directory, so the relative paths below
+(`photo.bin`, `copy.bin`) are relative to it.
+
 ```
-$ curl -s -X POST -H 'Content-Type: application/json' -d '{"path":"/tmp/…/photo.bin"}' 127.0.0.1:8721/api/share
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"path":"photo.bin"}' 127.0.0.1:8721/api/share
 {
-  "key": "06c461bcbe27e57e7ef20e4654b89d62683ed400",
+  "key": "16fc6af0cf2598518cfc151c1ba6d408c8be4541",
   "name": "photo.bin",
   "size": 200000,
   "pieces": 4,
   "have": 4,
-  "path": "/tmp/tmp.YkL1uMJUr9/photo.bin"
+  "path": "photo.bin",
+  "magnet": "magnet:?xt=urn:tp2p:16fc6af0cf2598518cfc151c1ba6d408c8be4541&dn=photo.bin"
 }
 
-$ curl -s -X POST -H 'Content-Type: application/json' -d '{"key":"06c461bc…","out":"/tmp/…/copy.bin"}' 127.0.0.1:8722/api/fetch
+$ curl -s -X POST -H 'Content-Type: application/json' -d '{"key":"magnet:?xt=urn:tp2p:16fc6af0…&dn=photo.bin","out":"copy.bin"}' 127.0.0.1:8722/api/fetch
 {
-  "key": "06c461bcbe27e57e7ef20e4654b89d62683ed400",
+  "key": "16fc6af0cf2598518cfc151c1ba6d408c8be4541",
   "name": "photo.bin",
   "size": 200000,
   "pieces": 4,
-  "out": "/tmp/tmp.YkL1uMJUr9/copy.bin",
+  "out": "copy.bin",
   "providers_found": 1,
   "pieces_from": {
     "127.0.0.1:9721": 4
   },
   "failed_providers": [],
   "max_inflight": 1,
-  "duration_ms": 1610
+  "already_had": 0,
+  "duration_ms": 1609
 }
 ```
 
 (This is the slow download from the `/api/files` example: 4 pieces at
 400 ms each.) `share` answers with the same shape as an `/api/files`
-entry. `fetch`'s `pieces_from` is keyed by each provider's TCP address,
-and `max_inflight` is the most piece requests it had outstanding at once:
-here 1, because a download keeps at most one request per provider
-([08](08-swarming.md)). The copy was byte-for-byte identical.
+entry, `magnet` included. `fetch`'s `key` takes the 40-hex content key or
+a magnet link (`transfer.ParseKeyOrMagnet`, the same parser as the
+console). Only the key inside the link is used; its `dn` is ignored
+([12](12-magnet-links.md)). `fetch`'s `pieces_from` is keyed by each
+provider's TCP address, and `max_inflight` is the most piece requests it
+had outstanding at once: here 1, because a download keeps at most one
+request per provider ([08](08-swarming.md)). `already_had` is how many
+pieces were on disk when it started: 0 here, more when the fetch resumed
+one that gave up ([08](08-swarming.md#resuming)). The copy was
+byte-for-byte identical.
 
-A `fetch` can fail before any network traffic in two ways. On the same
-node again, the file is already in its library (shared, downloading, or
-downloaded):
+A `fetch` can fail without downloading a piece in four ways; the first
+three fail before any network traffic. On the same node again, the file
+is already in its library (shared, downloading, or downloaded):
 
 ```
 {
-  "error": "fetch failed: transfer: 06c461bcbe27e57e7ef20e4654b89d62683ed400 is already in the library"
+  "error": "fetch failed: transfer: 16fc6af0cf2598518cfc151c1ba6d408c8be4541 is already in the library"
+}
+```
+
+On the same node into a different `out`, after an earlier fetch of that
+key gave up: only its own path resumes.
+
+```
+{
+  "error": "fetch failed: transfer: 16fc6af0cf2598518cfc151c1ba6d408c8be4541 has a stopped partial download at copy.bin; fetch into that path to resume it"
 }
 ```
 
 On another node into the same `out` path, the path exists, and
-**downloads never overwrite** (`O_EXCL`, [07](07-file-transfer-over-tcp.md)):
+**downloads never overwrite** (`O_EXCL`, [07](07-file-transfer-over-tcp.md)).
+This one is checked only after the lookup and the manifest fetch, because
+creating the file needs the manifest:
 
 ```
 {
-  "error": "fetch failed: open /tmp/tmp.YkL1uMJUr9/copy.bin: file exists"
+  "error": "fetch failed: open copy.bin: file exists"
+}
+```
+
+A BitTorrent magnet link (`xt=urn:btih:…`), even one with the same 40 hex
+characters, is a **400**: it names a torrent in BitTorrent's network, not
+a file in this one ([12](12-magnet-links.md#why-tp2p-and-not-btih)):
+
+```
+{
+  "error": "key must be 40 hex characters or a magnet link: transfer: this is a BitTorrent magnet link (xt=urn:btih:...): it names a torrent in the BitTorrent network, not a file in this one, whose links use xt=urn:tp2p:<key>"
 }
 ```
 
@@ -634,6 +681,11 @@ state:
 - `share` on one node, `fetch` on another, with the file compared byte
   for byte, and a second fetch refused without touching the existing
   file;
+- `fetch` with the `magnet` link `share` returned, and with a copy whose
+  `dn` lies: both download the real file, named by its manifest
+  (`TestFetchAcceptsMagnetLink`); a `btih` link is a 400;
+- `/api/files` entries carry `magnet`, with `&` written as-is in the raw
+  body;
 - `/api/files` showing a slow download with `0 < have < pieces`, then
   `have == pieces` once it's done;
 - `ping` of a live and a dead address;

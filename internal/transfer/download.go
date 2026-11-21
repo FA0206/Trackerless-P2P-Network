@@ -35,6 +35,7 @@ type DownloadResult struct {
 	PiecesFrom      map[string]int // provider TCP address -> pieces fetched from it
 	FailedProviders []string       // providers abandoned during this download
 	MaxInFlight     int            // most piece requests that were outstanding at once
+	AlreadyHad      int            // pieces already on disk when it started: > 0 for a resume
 	Lookup          *kademlia.LookupResult
 	Duration        time.Duration
 }
@@ -51,13 +52,32 @@ type DownloadResult struct {
 //     rarest-first from idle providers (1 request per provider, at most
 //     MaxInFlight in total), verify, write, publish each piece; announce
 //     after the first piece; rediscover providers every second.
-//  5. Fail if no live provider has a missing piece for stallTimeout.
+//  5. Give up if no live provider has a missing piece for stallTimeout,
+//     but keep the partial file and keep serving its pieces. The same
+//     happens if the download stops for any other reason (the caller's
+//     timeout, a write error); with no pieces yet, the file is deleted.
+//
+// A Download of a key whose earlier download gave up, into the same path,
+// resumes it: steps 2 and 3 are replaced by reopenFile, which re-hashes
+// the pieces already on disk, and only missing pieces are fetched
+// (docs/08-swarming.md, "Resuming").
 func (p *Peer) Download(ctx context.Context, key kademlia.ID, outPath string) (*DownloadResult, error) {
-	if _, _, ok := p.lib.manifestFor(key); ok {
-		return nil, fmt.Errorf("transfer: %s is already in the library", key)
+	resume, err := p.lib.claimForResume(key, outPath)
+	if err != nil {
+		return nil, err
 	}
+	// From the claim (a resume) or addPartial (a fresh download) on, the
+	// library entry is marked downloading; hand that back however we return.
+	claimed := resume != nil
+	defer func() {
+		if claimed {
+			p.lib.stopDownloading(key)
+		}
+	}()
 	start := time.Now()
-	lookup, err := p.node.FindValue(ctx, key)
+	// FindAllValues, not FindValue: providers are a list spread over the
+	// k closest nodes, and this node's own store may hold only part of it.
+	lookup, err := p.node.FindAllValues(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -76,18 +96,29 @@ func (p *Peer) Download(ctx context.Context, key kademlia.ID, outPath string) (*
 		d.addProvider(r)
 	}
 
-	manifestBytes, err := d.fetchManifest()
-	if err != nil {
-		return nil, err
+	if resume != nil {
+		if err := d.reopenFile(outPath, resume); err != nil {
+			return nil, err
+		}
+	} else {
+		manifestBytes, err := d.fetchManifest()
+		if err != nil {
+			return nil, err
+		}
+		if err := d.openFile(outPath, manifestBytes); err != nil {
+			return nil, err
+		}
+		claimed = true
 	}
 	m := d.manifest
 	d.result = &DownloadResult{Key: key, Name: m.Name, Size: m.Size, Pieces: m.NumPieces(),
-		PiecesFrom: map[string]int{}, Lookup: lookup}
-	if err := d.openFile(outPath, manifestBytes); err != nil {
-		return nil, err
-	}
+		PiecesFrom: map[string]int{}, AlreadyHad: d.haveN, Lookup: lookup}
 	if err := d.run(); err != nil {
-		d.abort(outPath)
+		if d.haveN == 0 {
+			d.abort(outPath) // nothing to serve or resume: leave nothing behind
+		} else {
+			d.stopButKeepServing(err)
+		}
 		d.finishResult(start)
 		return d.result, err
 	}
@@ -229,7 +260,61 @@ func (d *swarmDownload) openFile(outPath string, manifestBytes []byte) error {
 	return nil
 }
 
-// abort stops serving the partial file, then deletes it (no resume yet).
+// reopenFile continues a download that gave up earlier. The file is
+// opened without O_EXCL, so before anything is written it must prove it's
+// still the partial this download wrote: every piece the library says is
+// on disk is re-hashed against the manifest. Nothing is trusted, not even
+// our own disk (invariant 8): since the download stopped, the file may
+// have been truncated, edited, or deleted and replaced by another file.
+func (d *swarmDownload) reopenFile(outPath string, resume *partialDownload) error {
+	f, err := os.OpenFile(outPath, os.O_RDWR, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		d.p.lib.remove(d.key) // deleted by hand: nothing left to serve or resume
+		return fmt.Errorf("transfer: resume %s: %w (dropped it from the library; fetch again to start over)", d.key, err)
+	}
+	if err != nil { // e.g. made read-only: its pieces are still good, keep serving them
+		return fmt.Errorf("transfer: resume %s: %w (still serving its pieces; fix this and fetch into the same path again)", d.key, err)
+	}
+	m, n := resume.manifest, resume.manifest.NumPieces()
+	for i := 0; i < n; i++ {
+		if !resume.have.Has(i) {
+			continue
+		}
+		buf := make([]byte, m.PieceLength(i))
+		_, err := f.ReadAt(buf, m.PieceOffset(i))
+		if err == nil {
+			err = m.VerifyPiece(i, buf, resume.proofs[i]) // the proof it arrived with
+		}
+		if err != nil {
+			f.Close()
+			d.p.lib.remove(d.key) // it no longer holds what we'd serve
+			return fmt.Errorf("transfer: resume %s: %s changed since the download stopped (piece %d: %v); "+
+				"dropped it from the library and left the file alone: move it away and fetch again", d.key, outPath, i, err)
+		}
+	}
+	d.manifest, d.file, d.have = m, f, resume.have
+	d.haveN = d.have.Count(n)
+	d.p.logger.Info("download resumed", "key", d.key.String(), "have", d.haveN, "of", n)
+	return nil
+}
+
+// stopButKeepServing ends a download that gave up. The library entry and
+// the file stay, so this peer keeps serving the pieces it has: a leecher
+// still copying from it isn't cut off (docs/08-swarming.md, "Why giving up
+// mustn't delete"), and a later Download into the same path resumes.
+//
+// SIMPLIFICATION: no resume after a restart. The library lives in memory,
+// so a restarted node forgets the partial file and doesn't serve it, and
+// the file blocks its path (downloads never overwrite). Delete it by hand;
+// the download then starts from zero.
+func (d *swarmDownload) stopButKeepServing(err error) {
+	d.file.Close() // every published piece was fully written before markHave
+	d.p.logger.Warn("download gave up, still serving its pieces", "key", d.key.String(),
+		"have", d.haveN, "of", d.manifest.NumPieces(), "error", err)
+}
+
+// abort stops serving a file, then deletes it: one that has no pieces to
+// serve, or whose finished copy couldn't be closed.
 func (d *swarmDownload) abort(outPath string) {
 	d.p.lib.remove(d.key)
 	d.file.Close()
@@ -289,9 +374,14 @@ func (d *swarmDownload) run() error {
 		}
 	}
 	// Make sure a finished download is announced before returning, so the
-	// next downloader can find us.
+	// next downloader can find us. If the caller stops waiting meanwhile
+	// (its timeout, a cancelled request), the file is still complete:
+	// report success; the announce runs on its own context and carries on.
 	for d.announcing {
 		if err := d.wait(nil); err != nil {
+			if d.ctx.Err() != nil {
+				return nil
+			}
 			return err
 		}
 	}
@@ -453,7 +543,7 @@ func (d *swarmDownload) startDiscovery() {
 	go func() {
 		ev := event{kind: evDiscovered}
 		var lookup *kademlia.LookupResult
-		if lookup, ev.err = p.node.FindValue(ctx, key); ev.err == nil {
+		if lookup, ev.err = p.node.FindAllValues(ctx, key); ev.err == nil {
 			ev.records = p.decodeProviders(lookup.Values)
 		}
 		events <- ev

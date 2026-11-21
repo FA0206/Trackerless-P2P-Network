@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"kademlia-demo/internal/kademlia"
+	"kademlia-demo/internal/transfer"
 )
 
 // Control endpoints: POST /api/lookup, /ping, /put, /get, /share, /fetch.
@@ -334,7 +335,9 @@ func (s *Server) handleShare(w http.ResponseWriter, r *http.Request) {
 }
 
 // FetchRequest downloads the file with content key Key into Out, which
-// must not exist yet (downloads never overwrite: O_EXCL, peer.go).
+// must not exist yet (downloads never overwrite: O_EXCL, peer.go). Key is
+// a 40-hex content key or a magnet link, like the console's fetch; a
+// link's dn (name) is ignored (docs/12-magnet-links.md).
 type FetchRequest struct {
 	Key string `json:"key"`
 	Out string `json:"out"`
@@ -351,6 +354,7 @@ type FetchResponse struct {
 	PiecesFrom      map[string]int `json:"pieces_from"` // provider TCP address -> pieces
 	FailedProviders []string       `json:"failed_providers"`
 	MaxInFlight     int            `json:"max_inflight"` // most piece requests outstanding at once
+	AlreadyHad      int            `json:"already_had"`  // pieces already on disk: > 0 when it resumed
 	DurationMS      int64          `json:"duration_ms"`
 }
 
@@ -359,17 +363,17 @@ func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if !decodeRequest(w, r, &req) {
 		return
 	}
-	key, err := kademlia.IDFromHex(req.Key)
+	key, err := transfer.ParseKeyOrMagnet(req.Key)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "key must be 40 hex characters")
+		writeError(w, http.StatusBadRequest, "key must be 40 hex characters or a magnet link: "+err.Error())
 		return
 	}
 	if req.Out == "" {
 		writeError(w, http.StatusBadRequest, "out is required")
 		return
 	}
-	_, transfer := s.opTimeouts()
-	ctx, cancel := context.WithTimeout(r.Context(), transfer)
+	_, transferTimeout := s.opTimeouts()
+	ctx, cancel := context.WithTimeout(r.Context(), transferTimeout)
 	defer cancel()
 	res, err := s.cfg.Peer.Download(ctx, key, req.Out)
 	if err != nil {
@@ -382,7 +386,7 @@ func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, FetchResponse{Key: key, Name: res.Name, Size: res.Size, Pieces: res.Pieces, Out: req.Out,
 		ProvidersFound: res.ProvidersFound, PiecesFrom: res.PiecesFrom, FailedProviders: failedProviders,
-		MaxInFlight: res.MaxInFlight, DurationMS: res.Duration.Milliseconds()})
+		MaxInFlight: res.MaxInFlight, AlreadyHad: res.AlreadyHad, DurationMS: res.Duration.Milliseconds()})
 }
 
 // allowPreflight answers a browser's CORS preflight (OPTIONS) for the

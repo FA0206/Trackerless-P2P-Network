@@ -3,6 +3,8 @@ package transfer
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 
@@ -32,6 +34,7 @@ type libraryEntry struct {
 	have          Bitfield    // guarded by Library.mu
 	tree          *MerkleTree // shared files: read-only, makes every proof
 	proofs        [][]Hash    // downloads: the proof received with each piece; guarded by Library.mu
+	downloading   bool        // a Download is writing into it right now; guarded by Library.mu
 }
 
 // SharedFile describes one library entry, for listing.
@@ -58,8 +61,8 @@ func (l *Library) addComplete(key kademlia.ID, m Manifest, manifestBytes []byte,
 }
 
 // addPartial registers a file being downloaded into path, with no pieces
-// yet. It refuses a key the library already has, so one download can
-// never clobber another entry.
+// yet, marked as downloading. It refuses a key the library already has, so
+// one download can never clobber another entry.
 func (l *Library) addPartial(key kademlia.ID, m Manifest, manifestBytes []byte, path string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -67,8 +70,70 @@ func (l *Library) addPartial(key kademlia.ID, m Manifest, manifestBytes []byte, 
 		return fmt.Errorf("transfer: %s is already in the library", key)
 	}
 	l.files[key] = &libraryEntry{manifest: m, manifestBytes: manifestBytes, path: path,
-		have: NewBitfield(m.NumPieces()), proofs: make([][]Hash, m.NumPieces())}
+		have: NewBitfield(m.NumPieces()), proofs: make([][]Hash, m.NumPieces()), downloading: true}
 	return nil
+}
+
+// stopDownloading marks key's entry as no longer being written. A partial
+// entry stays in the library, so its pieces are still served, and a later
+// Download into the same path can resume it (claimForResume).
+func (l *Library) stopDownloading(key kademlia.ID) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if e, ok := l.files[key]; ok {
+		e.downloading = false
+	}
+}
+
+// partialDownload is where a resumed download starts from.
+type partialDownload struct {
+	manifest Manifest
+	have     Bitfield // a copy: the download sets bits in it as pieces arrive
+	proofs   [][]Hash // the Merkle proof each piece in have arrived with, to re-check it
+}
+
+// claimForResume decides whether a Download of key into path may start. It
+// is one locked check-and-set, so two downloads of one key never both run:
+//   - key not in the library: (nil, nil), a fresh download;
+//   - a stopped partial download at the same path: mark it downloading
+//     again and return what it already has;
+//   - complete, being downloaded, a partial at another path, or a path that
+//     now belongs to another entry: an error.
+func (l *Library) claimForResume(key kademlia.ID, path string) (*partialDownload, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	e, ok := l.files[key]
+	if !ok {
+		return nil, nil
+	}
+	n := e.manifest.NumPieces()
+	if e.downloading || e.have.Count(n) == n {
+		return nil, fmt.Errorf("transfer: %s is already in the library", key)
+	}
+	if !samePath(e.path, path) {
+		return nil, fmt.Errorf("transfer: %s has a stopped partial download at %s; fetch into that path to resume it", key, e.path)
+	}
+	for other, o := range l.files {
+		if other != key && samePath(o.path, path) {
+			// Its partial was deleted and another file put there: never
+			// resume into a file that belongs to another library entry.
+			return nil, fmt.Errorf("transfer: %s: %s now belongs to the library entry for %s", key, path, other)
+		}
+	}
+	e.downloading = true
+	// The proofs are copied for the same reason as the bitfield: markHave
+	// writes e.proofs under l.mu while the resumed download reads its own
+	// copy. Each proof slice is never changed once stored, so sharing them
+	// is safe.
+	return &partialDownload{manifest: e.manifest, have: e.have.Clone(), proofs: slices.Clone(e.proofs)}, nil
+}
+
+// samePath compares two paths made absolute, so "out.bin" and "./out.bin"
+// name the same file.
+func samePath(a, b string) bool {
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	return errA == nil && errB == nil && absA == absB
 }
 
 // markHave publishes piece i, with the proof it was verified with: from
@@ -85,8 +150,8 @@ func (l *Library) markHave(key kademlia.ID, i int, proof []Hash) {
 	}
 }
 
-// remove forgets an entry (a failed download), so nothing more is served
-// from its file.
+// remove forgets an entry (a download whose file couldn't be finished or
+// reopened), so nothing more is served from its file.
 func (l *Library) remove(key kademlia.ID) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

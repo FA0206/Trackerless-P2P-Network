@@ -38,7 +38,9 @@ evaluation includes performance graphs:
 | Runs across multiple devices / Wi-Fi | ✅ Done for one subnet (home router, hotspot, switch) on branch `feature/multi-device`: the advertise IP is detected from the route to the bootstrap node, bad values are refused at startup, and every join scenario has a test. Tested in a network-namespace lab (separate network stacks on one laptop); the real-laptop runs are step-by-step checklists. No NAT traversal | [docs/09](docs/09-multi-device.md), `scripts/netns/`, `scripts/multi-device/` |
 | Sending messages (as opposed to files) | ⬜ Not started — `put`/`get` store short text, but there's no messaging feature | — |
 | Per-node HTTP API (for the visual demo) | ✅ Done: `--api` serves node info, routing table, stored values, files (with download progress) as JSON, plus a live event stream (SSE) of every RPC, stored value and piece; `--api-control` adds POST lookup/ping/put/get/share/fetch | `internal/nodeapi`, [docs/NODE-API.md](docs/NODE-API.md) |
-| Visual demo | ⬜ Not started | — |
+| Visual demo | ✅ Done on branch `feature/demo-ready`: `go run ./cmd/vizrun` runs 9 step-mode scenes on 21 live nodes (join, k-buckets, lookup, put/get, share + magnet link, swarming, killing the seeder, give-up/resume, finale), driven only through the per-node HTTP API, with a continuous mode and a recorded video; `scripts/demo-viz.sh` checks it headless | `cmd/vizrun`, `viz/`, [docs/13-visualizer.md](docs/13-visualizer.md) |
+| Magnet links; a download that gives up keeps seeding and resumes when fetched again | ✅ Done on branch `feature/demo-ready`: `share` prints `magnet:?xt=urn:tp2p:<key>&dn=<name>`, `fetch` takes a key or a link; a stopped download stays in the library, and a resume re-verifies every piece on disk first | [docs/12](docs/12-magnet-links.md), [docs/08](docs/08-swarming.md#resuming), `scripts/demo-magnet.sh`, `scripts/demo-give-up-resume.sh` |
+| Downloads find providers with `FindAllValues` | ✅ Done on branch `feature/demo-ready`: asks every one of the k closest live nodes and merges their records with the local store, instead of stopping at the first holder | `internal/kademlia/values.go`, [docs/06](docs/06-store-and-find-value.md) |
 | Performance graphs (the four above) | ✅ Done on branch `eval/performance-graphs`, plus two more for this branch's own features (provider fan-in, join time). Localhost results recorded; the real-laptop halves of graphs 3 and 4 are a checklist to run by hand | `eval/`, [docs/10](docs/10-performance-graphs.md) |
 | Merkle trees | ✅ Done on branch `feature/merkle` (4 steps, including a diagram of a real file's tree) (`scripts/demo-merkle.sh` catches a dishonest provider and prints a manifest-size table): the tree, proofs and verification (RFC 6962, tested against the standard test vectors), and transfers use them. The manifest carries one root (138 bytes for a 1 MiB file, against 1,146 before), every piece travels with its proof, and partial seeders pass proofs on | [docs/11](docs/11-merkle-trees.md), `internal/transfer/merkle.go` |
 
@@ -65,6 +67,8 @@ needed, and which function implements it.
 9. [09 — Several machines on one subnet](docs/09-multi-device.md)
 10. [10 — Performance graphs: what each one asks, and what it showed](docs/10-performance-graphs.md)
 11. [11 — Merkle trees: one hash for the whole file, a short proof per piece](docs/11-merkle-trees.md)
+12. [12 — Magnet links](docs/12-magnet-links.md)
+13. [13 — The visualizer: watching live nodes](docs/13-visualizer.md)
 
 **Reference:**
 
@@ -363,6 +367,39 @@ Catalogue, predictions, explanations, and the cases ranked by fix
 priority (lookup failure handling first, then republish, then bucket
 refresh): [docs/EDGE-CASES.md](docs/EDGE-CASES.md#fix-priority).
 
+### The visualizer (the live demo, with slides)
+
+```sh
+go run ./cmd/vizrun            # builds the node, starts viz0, serves the page
+```
+
+Open http://127.0.0.1:8790/ in Chrome, full screen (F11). Each press of
+→ (or Space, or a presentation clicker's PageDown) runs the next scene,
+and the page then holds on that scene's last frame, so the slides and the
+visualizer move together. Scene 6 runs on into scene 7 by itself, so the
+seeder is killed at exactly the right moment. Ctrl-C in the terminal
+stops every node.
+
+- **Every run is fresh** (a node fetches a file only once, and killed
+  nodes stay dead): to show it again, Ctrl-C, start `vizrun` again, and
+  reload the page.
+- **Keep the tab in front** and the laptop awake: a hidden tab gets no
+  animation frames, so its replays pause.
+- **Continuous mode**: http://127.0.0.1:8790/?mode=auto plays every
+  scene by itself (that's how the video was recorded).
+- **Headless check**: `bash scripts/demo-viz.sh` runs every scene with no
+  browser and prints PASS (~90 s).
+- **Busy port?** Another `vizrun` is probably still running: Ctrl-C it,
+  or start this one elsewhere, e.g. `--base-port 9800 --api-base 8800
+  --http 127.0.0.1:8792`.
+
+Everything on screen comes from the nodes' own log events and API
+answers. DHT scenes are replayed right after they happen, in their real
+order with their real duration on the badge; pieces are slowed to one a
+second (`--debug-serve-delay`), disclosed on screen. Presenter notes,
+how it works, and how to add a scene:
+[docs/13-visualizer.md](docs/13-visualizer.md).
+
 ### One node at a time (e.g. in split VSCode terminals)
 
 ```sh
@@ -479,12 +516,22 @@ internal/nodeapi/    the optional per-node HTTP API (docs/NODE-API.md)
   api.go             JSON snapshot endpoints, the SSE endpoint
   events.go          log tap (TeeHandler) + non-blocking event fan-out to viewers
   control.go         POST endpoints mirroring the console (only with --api-control)
+cmd/vizrun/          the visualizer's runner (docs/13-visualizer.md): starts nodes, serves viz/,
+                     runs one scene per key press; talks to nodes only over HTTP and signals
+  runner.go          the run, scene sequencing, checks;  nodes.go   start/kill node processes
+  recorder.go        every node's event stream → events.jsonl;  server.go  page + /viz/* endpoints
+  scenes.go          what each scene makes the nodes do
+viz/                 the visualizer page (plain JS + GSAP, no build step)
+  main.js            streams, status, keys;  ring.js  nodes on the ID ring, comets, mesh
+  rpc.js, replay.js  pairing events by rpc_id; the in-order replay
+  scenes.js          what each scene draws
 scripts/demo.sh            5 processes: joining and lookup
 scripts/demo-transfer.sh   5 processes: put/get, share, downloads, killed seeder
 scripts/demo-seeder-death.sh  seeder killed mid-download: leechers finish from each other
 scripts/demo-big-network.sh   20 nodes, random joins, lookups checked by brute force, transfer
 scripts/demo-parallel.sh   one download from 3 providers at once, with a timeline
 scripts/demo-merkle.sh     a dishonest provider caught by the Merkle proof check; manifest size table
+scripts/demo-viz.sh        the visualizer's scenes, headless: event kinds, dropped=0, SHA-256
 scripts/lib/nodes.sh       shared helper: start N nodes with console FIFOs (bash 3.2)
 scripts/lib/edge.sh        helpers for the edge cases: brute-force closest nodes, wait for the Nth log line
 scripts/edge/              edge-case scripts, one per case, and run-all.sh (docs/EDGE-CASES.md)
@@ -494,7 +541,7 @@ eval/                the performance graphs (eval/README.md, docs/10-performance
   fileserver/        graph 2's centralized baseline (plain net/http, same upload cap)
   plot_graphs.py     CSVs to PNGs (matplotlib)
   results/           the CSVs and the six PNGs
-docs/                concept docs 01-11 + reference docs
+docs/                concept docs 01-13 + reference docs
 .vscode/launch.json  debug configurations
 ```
 
@@ -517,13 +564,16 @@ Here is whether each one blocks the end goal:
 | **Values never expire** ([06](docs/06-store-and-find-value.md)) | Not for recovery (republish handles that), but dead providers' records linger: a downloader wastes one failed connection on each, and holders keep republishing them. Needs each STORE to carry the remaining lifetime. | Before long-running churn experiments. |
 | Republish: one interval for holders and the original publisher (paper: 1 h and 24 h); no lookup-free republish ([06](docs/06-store-and-find-value.md)) | No. More publisher traffic than the paper's, and one lookup per key per interval. | Keep; count republish traffic in the control-bytes graph. |
 | No caching of found values ([06](docs/06-store-and-find-value.md)) | No. | Keep. |
-| One failure drops a provider for the whole download; no retries; no resume ([07](docs/07-file-transfer-over-tcp.md), [08](docs/08-swarming.md)) | Not yet. | Revisit with real networks / Wi-Fi. |
+| One failure drops a provider for the whole download; no retries ([07](docs/07-file-transfer-over-tcp.md), [08](docs/08-swarming.md)) | Not yet. | Revisit with real networks / Wi-Fi. |
+| No resume after a restart: the library lives in memory, so a restarted node forgets a partial file, doesn't serve it, and the file blocks its path ([08](docs/08-swarming.md)) | No. | When demoing node restarts: write to `<out>.part` and re-verify it against the manifest on re-fetch (saving the proofs too). |
 | One outstanding request per provider, no pipelining ([08](docs/08-swarming.md)) | No; limits one provider's throughput. | Before throughput/download-time graphs, if it shows. |
 | Bitfields polled every 500 ms instead of pushed `have` messages; providers rediscovered by polling `FIND_VALUE` every 1 s ([08](docs/08-swarming.md)) | No, but adds control traffic and some duplicate seeder uploads. | Count it in the control-bytes graph; push-based updates if it dominates. |
 | Fixed swarm timers: 500 ms / 1 s / 15 s stall ([08](docs/08-swarming.md)) | No. | Tune for Wi-Fi. |
 | Rarest-first uses only the downloader's own (possibly stale) view ([08](docs/08-swarming.md)) | No. | Keep. |
 | No choking, upload limits, or fairness ([08](docs/08-swarming.md)) | Not in the goal list. | Later, if ever. |
 | No security (ID spoofing, Sybil, rate limits) | Not in the goal list. | Later, if at all. |
+| Visualizer replays DHT scenes in their real order, not their real timing (a lookup's 4 ms become a few seconds; the real duration is on the badge) ([13](docs/13-visualizer.md)) | No. | Never, for a localhost demo. |
+| The visualizer's runner checks downloaded files' SHA-256 by reading them from this machine's disk ([13](docs/13-visualizer.md)) | **Yes, for watching other laptops.** Their copies aren't on this disk. | When the visualizer watches nodes on other laptops: each laptop hashes its own copy. |
 
 **Found by the edge cases, and fixed** ([FIXES.md](docs/FIXES.md)):
 - Lookups used to come back short after nodes died, because failed
@@ -544,6 +594,12 @@ Here is whether each one blocks the end goal:
   ([02](docs/02-routing-table-and-kbuckets.md#bucket-refresh-keeping-quiet-buckets-alive)).
   Quiet islands connect before their bridge dies (A3), k = 1 tables fill
   up (A4), and every node tests its own contacts (B1).
+
+- Downloads looked for providers with `FindValue`, which stops at the
+  first node holding any record, possibly this node's own store. Now
+  they use `FindAllValues`, which asks every one of the k closest live
+  nodes and merges what they hold ([06](docs/06-store-and-find-value.md);
+  on `feature/demo-ready`).
 
 **Found by the edge cases, not fixed yet:** value expiry, hand-over on
 join, and synchronous lookup rounds (see the table above and

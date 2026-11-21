@@ -74,8 +74,14 @@ A lookup never returns the searching node itself (invariant 3 in
 [ARCHITECTURE.md](ARCHITECTURE.md)). So `Store` checks separately whether
 this node would rank among the k closest (`selfAmongClosest` in
 [`values.go`](../internal/kademlia/values.go)). If so, it keeps a copy
-and sends one fewer `STORE`, keeping the total at k. `FindValue` likewise
-checks the local store before going to the network.
+and sends one fewer `STORE`, keeping the total at k. If the lookup found
+fewer than k nodes, it counts itself in. That's only right because the
+lookup now carries on past dead nodes ([05](05-iterative-parallel-lookup.md)):
+"fewer than k" means the network really is that small. Before that fix,
+one dead node near a key made every node storing under it, near or far,
+keep a copy. `FindValue` likewise checks the local store before going to
+the network, which suits `get`; finding a file's providers uses
+`FindAllValues` instead (below).
 
 ### A key holds several values
 
@@ -85,6 +91,31 @@ store ([`store.go`](../internal/kademlia/store.go)) keeps a list of
 distinct values per key. Storing a new value adds it, and storing an
 identical value again just refreshes it. BitTorrent's DHT does the same
 with its per-file peer lists.
+
+### Reading a list: `FindAllValues`
+
+For a key with many values, no single node is guaranteed to hold them
+all. Each provider stores its record on the k closest nodes *as its own
+lookup saw them*, and a provider that is itself among them keeps one copy
+and sends only k − 1. So `FindValue`'s two shortcuts lose providers:
+answering from the local store (it never asks anyone), and stopping at
+the first round that returns any value.
+
+`FindAllValues` (`values.go`) is for that case: the lookup runs to the
+end in `FIND_VALUE` mode, asks every one of the k closest live nodes, and
+merges their values with this node's own, without duplicates. The
+transfer code uses it to find providers ([08](08-swarming.md)); `get`
+keeps `FindValue`, because a text value under a name is one value and any
+copy is it. The cost is a few more RPCs per provider lookup.
+
+Found by the visualizer: a leecher that held a provider record itself
+(its own, kept because of the lookup bug above) gave up when its seeder
+died, then fetched again after a new seeder appeared. `FindValue` answered
+from its own store, saw only itself, and the fetch failed with `no
+providers found` ([DRY-RUN.md part 9](DRY-RUN.md#part-9--the-visualizer-cmdvizrun--viz)).
+`TestFindAllValuesLooksPastItsOwnStore` and
+`TestFindAllValuesMergesDifferentHolders` (`deadnodes_test.go`) cover
+it.
 
 ### Values are small, on purpose
 

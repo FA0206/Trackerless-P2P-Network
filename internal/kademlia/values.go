@@ -106,7 +106,32 @@ func (n *Node) FindValue(ctx context.Context, key ID) (*LookupResult, error) {
 		n.logger.Info("find_value answered from local store", "key", key.String(), "values_found", len(local))
 		return &LookupResult{Target: key, Values: local, ValuesFrom: []Contact{n.Self()}, FromLocalStore: true}, nil
 	}
-	return n.iterativeFind(ctx, key, true)
+	return n.iterativeFind(ctx, key, modeFindValue)
+}
+
+// FindAllValues collects every value stored under key by the k closest
+// live nodes, plus any this node holds itself, merged without duplicates.
+// It's for keys that hold a *list* that keeps growing, like a file's
+// provider records (internal/transfer): each provider stores its record on
+// the k nodes closest to the key *as it saw them*, and a provider that is
+// itself among them keeps one copy and sends only k-1, so no single holder
+// -- this node included -- is guaranteed to have them all.
+//
+// FindValue would get that wrong twice: it answers from this node's own
+// store without asking anyone ("find_value answered from local store"),
+// and otherwise stops at the first round that returns any value. Then a
+// downloader that holds a record (say its own, or a dead seeder's) never
+// learns about providers whose records went elsewhere. So this runs the
+// lookup to completion in FIND_VALUE mode and asks every one of the k
+// closest live nodes, at the cost of a few more RPCs. `get` keeps using
+// FindValue: a text value under a name is one value, and any copy is it.
+func (n *Node) FindAllValues(ctx context.Context, key ID) (*LookupResult, error) {
+	result, err := n.iterativeFind(ctx, key, modeFindAllValues)
+	if local := n.store.get(key); len(local) > 0 {
+		result.Values = appendDistinct(local, result.Values)
+		result.ValuesFrom = append([]Contact{n.Self()}, result.ValuesFrom...)
+	}
+	return result, err
 }
 
 // StoredKeyCount returns how many distinct keys this node holds values

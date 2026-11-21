@@ -308,9 +308,36 @@ slow the DHT.
 
 Add `--api-control` and a program can also make the node act: POST
 `lookup`, `ping`, `put`, `get`, `share` or `fetch`, the console's
-commands. That's how the visual demo will let you click a node to make
-it look something up. Leave it off when you don't need it: any web page
-open in your browser could send those commands too.
+commands. That's how the visualizer's runner (`cmd/vizrun`) makes nodes
+share, fetch and look things up, one scene at a time. Leave it off when
+you don't need it: any web page open in your browser could send those
+commands too.
+
+### Is the visualizer a simulation? How do we know it isn't faked?
+
+No. `go run ./cmd/vizrun` starts 21 real `cmd/node` processes, and the
+page draws only what they report: each node's `/api/events` stream (its
+own log records), its snapshots (`/api/table`, …), and facts from the
+runner (which node it killed, the SHA-256 of each downloaded file). The
+runner also writes every event to `events.jsonl`; after a run, the
+page's own counters equalled that file's for every message kind checked
+(DRY-RUN part 9). Two things are slowed down, and both are labeled on
+screen: DHT scenes are **replayed** right after they happen, in their
+real order with their real duration on the badge (a lookup takes ~4 ms
+on localhost), and pieces are served once a second
+(`--debug-serve-delay`, a DEBUG-only flag). See
+[13](13-visualizer.md).
+
+### Why does the visualizer replay lookups instead of showing them live?
+
+A whole 3-round lookup takes about 4 ms on one machine: drawn live, all
+its arrows would flash at once. A fixed slow-motion factor big enough to
+see it (~1000×) would also blow a 2 ms scheduler hiccup up into a
+2-second pause. So the page buffers the real events of each action and
+replays them in their real order, one round at a time. Order is what the
+scene teaches (round 2 asks the nodes round 1's replies named); the real
+duration is printed on the badge. File transfers are slow enough to show
+live.
 
 ## Wire protocol
 
@@ -438,19 +465,23 @@ built.
 
 ### How do I know which key to ask for? If I want an Ace Attorney file, what do I query?
 
-**Today: you can't find it by name. Someone has to give you the key.**
-Each file has exactly one key, its content key. That key is the first
-160 bits of SHA-256 over the file's manifest bytes (`ContentKey` in
-`internal/transfer/manifest.go`). It's computed in `Peer.Share`
-(`peer.go`) and printed by the console's `share` command
-(`content key: …`). The manifest includes the file name, size, piece
-size, and every piece hash. So the same bytes shared under a different
+**You can't find it by name. Someone has to give you the key, usually
+inside a magnet link.** Each file has exactly one key, its content key.
+That key is the first 160 bits of SHA-256 over the file's manifest bytes
+(`ContentKey` in `internal/transfer/manifest.go`). It's computed in
+`Peer.Share` (`peer.go`) and printed by the console's `share` command,
+on its own (`content key: …`) and as a magnet link
+(`magnet link: magnet:?xt=urn:tp2p:<key>&dn=<name>`,
+[12](12-magnet-links.md)). The manifest includes the file name, size, piece
+size, and the Merkle root over the pieces. So the same bytes shared under a different
 file name get a *different* key.
 
 The DHT can answer "who stores values under key X?". It can't answer
 "which keys exist?" or "which key is Ace Attorney?". Values live only on
 the k nodes closest to their key, and nothing indexes keys. You get the
-key out of band: a chat message, a web page, a QR code. (The console's
+key out of band: a chat message, a web page, a QR code. Real BitTorrent
+works the same way, and so do we: `fetch` accepts the key or the magnet
+link carrying it. (The console's
 `put`/`get` *is* a name → value store, with key = SHA-1(name) in
 `consoleEnv.put`, `cmd/node/console.go`. But it stores text, not file
 keys, and anyone can write to any name.)
@@ -466,6 +497,8 @@ keys, and anyone can write to any name.)
   `FIND_VALUE` → `GET_MANIFEST` → `DecodeManifest`. What makes the
   network trackerless is finding *peers*; finding *what to download*
   still happens outside it, usually on websites that list magnet links.
+  **This project does the same**, with its own `urn:tp2p:` namespace
+  because our key isn't a BitTorrent info hash ([12](12-magnet-links.md)).
 - **Keyword search inside a DHT.** eMule's Kad network publishes two kinds
   of keys: a **source key** (hash of the file) pointing to peers that have
   it, and a **keyword key** per word of the file name, pointing to source
@@ -516,6 +549,54 @@ Mitigations real systems use: signed records (BEP 44 style), trusted
 publisher lists or a web of trust, ranking by independent confirmations
 (cheap to fake with Sybils), and expiry with republishing. Each would be
 its own step.
+
+### Why doesn't a joining node get a list of the files already shared?
+
+**Because no node has that list, and building one would undo
+"trackerless".** The tempting design is "when I join, the bootstrap node
+tells me which files exist". Here's why it doesn't work:
+
+- **A share isn't broadcast.** `share` runs `Node.Store(key, record)`,
+  which sends `STORE` to the k nodes closest to the *file's key*, and to
+  no one else ([06](06-store-and-find-value.md)). With k = 3:
+  `store complete … stored_at=2 stored_locally=true` → `replicas=3`. In
+  `demo-big-network.sh` (20 nodes, k = 4), 16 nodes never hear that a
+  file exists. The bootstrap node knows only the files whose keys happen
+  to land near its ID.
+- **If it did know, it would be a tracker.** If every node reported its
+  shares to the bootstrap node, killing that node would kill discovery,
+  which is the single point of failure this project exists to avoid. And
+  any node can be someone's bootstrap node, so there's no one place to
+  report to.
+- **A list copied at join time goes stale** the moment the next file is
+  shared.
+- **Broadcasting every share to every node** would keep lists current,
+  but it costs N messages per share, needs someone who knows every node
+  (nobody does: a bucket holds at most k contacts), and loses shares sent
+  while a node is down or joining. Raft's leader does send every entry to
+  every follower, but a Raft cluster has about 5 servers that all need
+  the whole log. A DHT gives each of many nodes a small slice.
+- **Real trackerless BitTorrent doesn't do it either.**
+  [BEP 5](https://www.bittorrent.org/beps/bep_0005.html) has no catalog. People find magnet links on websites and in chats.
+
+What we built instead is magnet links ([12](12-magnet-links.md)): the key
+travels outside the network, as in BitTorrent.
+
+The one design that *would* work is a catalog under a well-known key,
+for example each `share` also stores `{key, name, size}` under
+`SHA-1("catalog")` and a `catalog` command runs `FindValue` on it. It
+stays current because every query pulls the latest records. It's an
+extension beyond BitTorrent (closer to eMule's Kad), with this project's
+limits:
+- at most 16 records per key (`maxValuesPerKey`), so only the 16 newest
+  shares would be listed;
+- `FindValue` stops at the first round with values, and nothing
+  republishes, so a query may see only one holder's copy;
+- anyone can post fake entries;
+- entries never expire.
+
+Like the keyword index in the previous question, it would be its own
+step.
 
 ### How does the output of the Kademlia algorithm tell us how to open a TCP connection?
 
@@ -634,6 +715,50 @@ because replies don't repeat the index, so there's no pipelining. On
 although the format already allowed any order. Details:
 [07, "Can pieces arrive out of order?"](07-file-transfer-over-tcp.md#can-pieces-arrive-out-of-order).
 
+### The seeder died early, and my two leechers ended with different missing pieces. Shouldn't they match?
+
+**They should, and now they do.** Once the seeder is gone, the only
+pieces left are the ones some leecher holds: their *union*. If both keep
+trading, both end with exactly that union, missing the same pieces (the
+ones only the seeder had).
+
+They didn't match before because each leecher gives up on its own 15 s
+clock, and giving up used to **delete the file and stop serving it**.
+The leecher that needed less from the other finished copying first, gave
+up first, and cut the other off mid-copy. In a replay, that left 23 vs
+18 of 32. Now a download that gives up keeps its file and keeps serving
+it, so the other catches up, and both end at 23. The file is still lost,
+because 9 pieces died with the seeder; that part is correct. Real
+BitTorrent clients go further: a stalled download never gives up at all;
+it sits "stalled", seeding, until a source returns **(not verified**
+against client source; it's how clients present it**)**. Timeline and logs:
+[08, "Why giving up mustn't delete"](08-swarming.md#why-giving-up-mustnt-delete-two-leechers-end-with-different-pieces);
+demo: `scripts/demo-give-up-resume.sh` (DRY-RUN part 8).
+
+### Can a download that gave up continue later?
+
+**Yes, while the node keeps running.** Run the same `fetch` again, into
+the same output path. It starts from the pieces already on disk and
+fetches only the missing ones, e.g. after the seeder comes back or
+someone else shares the same file. The console prints `N piece(s) were
+already on disk (resumed)`. Into another path it's refused, naming the
+partial file's path. Before writing anything, the resume re-hashes every
+piece it thinks is on disk: if the file was edited or replaced in the
+meantime, it refuses and leaves the file alone.
+
+**Not after a restart.** The library lives in memory, so a restarted
+node forgets the partial file, and the file blocks its path (downloads
+never overwrite). Delete it by hand and fetch again from zero. Real
+clients keep partial files under a temporary name (Transmission can add
+`.part`, its `rename_partial_files` setting in
+[Editing-Configuration-Files.md](https://github.com/transmission/transmission/blob/main/docs/Editing-Configuration-Files.md))
+and save their progress in a resume file, so a restart doesn't lose it.
+When they re-check pieces against their hashes after a restart is a
+detail we haven't checked **(not verified)**. The listed fix for us is
+simpler: write to `<out>.part` and re-hash it on a re-fetch, as a resume
+already does
+([08, SIMPLIFICATIONS](08-swarming.md#new-simplifications)).
+
 ### Why SHA-1 for node IDs but SHA-256 for files?
 
 Kademlia IDs and keys are 160 bits, SHA-1's output size, so node IDs use
@@ -642,6 +767,31 @@ it just has to be spread out. File integrity does: the content key is
 the root of the trust chain, and SHA-1 has practical collision attacks.
 So file keys are **SHA-256 truncated to 160 bits** (BitTorrent v2 does
 the same), and the Merkle tree over the pieces uses full SHA-256.
+
+### Is our content key an info hash? Why do our magnet links say `urn:tp2p`, not `urn:btih`?
+
+**It's an info hash, but not BitTorrent's.** BitTorrent's info hash isn't
+a separate value. It's *defined* as the hash of the file's description,
+the `info` dictionary (name, piece size, length, piece hashes). Our
+`Manifest` holds the same four things, and the content key is its hash:
+
+| | Description | Key |
+|---|---|---|
+| BitTorrent v1 | `info` dictionary, bencoded | SHA-1 → 160 bits |
+| BitTorrent v2 ([BEP 52](https://www.bittorrent.org/beps/bep_0052.html)) | `info` dictionary, bencoded | SHA-256, cut to 160 bits for the DHT |
+| Ours | `Manifest`, JSON | SHA-256, cut to 160 bits (`ContentKey`) |
+
+Hashing the description, not the whole file, is what lets you check each
+piece as it arrives: key → manifest → piece hashes
+([07](07-file-transfer-over-tcp.md#the-integrity-chain)).
+
+`btih` means "BitTorrent info hash", so a link labelled `btih` would send
+a real BitTorrent client searching for a torrent that doesn't exist.
+Computing a real BitTorrent info hash (bencode + SHA-1) wouldn't make us
+compatible either, because every message on our wire differs (next
+section). So our links use their own namespace, `urn:tp2p` (Trackerless
+P2P), and `fetch` refuses `btih` links. [12](12-magnet-links.md) works
+through a real manifest and its key byte by byte.
 
 ### Do Merkle trees make sense here?
 
@@ -715,6 +865,7 @@ lookup carry over almost unchanged.
 | Pipelining | one request outstanding per connection | many outstanding requests per connection |
 | File description | manifest = JSON with a Merkle root over the pieces (RFC 6962 hashing); key = SHA-256(manifest)[:20] | `info` dictionary, bencoded; v1 infohash = SHA-1(info); piece hashes = 20-byte SHA-1s concatenated |
 | Getting the description from peers | `GET_MANIFEST` | `ut_metadata` ([BEP 9](https://www.bittorrent.org/beps/bep_0009.html)) over the BEP 10 extension protocol, in 16 KiB blocks |
+| Handing someone a file | `magnet:?xt=urn:tp2p:<key>&dn=<name>` ([12](12-magnet-links.md)) | `magnet:?xt=urn:btih:<infohash>&dn=<name>` (BEP 9), optionally `tr=` trackers and `x.pe=` peers |
 
 One genuine match: both frame messages with a 4-byte big-endian length
 prefix. After BitTorrent's fixed-size handshake (which isn't framed),

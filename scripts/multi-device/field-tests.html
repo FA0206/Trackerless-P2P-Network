@@ -163,7 +163,7 @@ footer { color: var(--muted); font-size: 14px; border-top: 1px solid var(--line)
     <div class="role"><span class="chip b">B · second laptop</span><p>Gets <code>node-linux</code> from A and runs <code>./node-linux</code>. Never needs to know its own IP.</p></div>
     <div class="role"><span class="chip c">C · third laptop</span><p>Only for tests 3 and 4. Same file as B, started the same way.</p></div>
   </div>
-  <p class="muted"><b>terminal</b> means a normal shell. <b>node console</b> means typing into the window where a node is running: log lines scroll past, but typing still works. Stop a node with <kbd>Ctrl</kbd>+<kbd>C</kbd>. A <b>fresh start</b> means stopping every node and starting again: the network keeps everything in memory, so stopping wipes it.</p>
+  <p class="muted"><b>terminal</b> means a normal shell. <b>node console</b> means typing into the window where a node is running: log lines scroll past, but typing still works. Stop a node with <kbd>Ctrl</kbd>+<kbd>C</kbd>. A <b>fresh start</b> means stopping every node, deleting any downloaded <code>two-mb.bin</code> on B and C (<code>rm -f two-mb.bin</code>), and starting again: the network keeps everything in memory, so stopping wipes it, and a restarted node forgets its partial files while <code>fetch</code> never overwrites one.</p>
 </section>
 
 <section aria-labelledby="addr">
@@ -250,12 +250,15 @@ fetch failed: transfer: fetch manifest: every provider failed</pre></div></div><
         <div class="cmd"><div class="cmd-bar"><span class="chip b">B</span><span class="where">node console</span><button class="copy" type="button">Copy</button></div><pre><code>fetch &lt;key&gt; two-mb.bin</code></pre></div></div></li>
       <li><div class="step-text"><p>When B's log shows <code>msg="piece received" … have=5</code>, <b>A turns its Wi-Fi off</b>.</p>
         <div class="expect"><span class="label">Expect on B, about 25 s later</span><pre class="out">msg="provider failed, trying the next one" provider={A}:9000 error="… i/o timeout"
+msg="download gave up, still serving its pieces" key=… have=5 of=32
 fetch failed: transfer: stalled for 15s with 5 of 32 pieces: no live provider has the rest</pre></div>
         <div class="cmd"><div class="cmd-bar"><span class="chip b">B</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>ls two-mb.bin</code></pre></div>
-        <div class="expect"><span class="label">Expect</span><pre class="out">ls: cannot access 'two-mb.bin': No such file or directory</pre></div></div></li>
-      <li><div class="step-text"><p>Turn Wi-Fi back on, do a fresh start, and repeat with A pressing <kbd>Ctrl</kbd>+<kbd>C</kbd> instead. B now fails after about 15 s, because A's laptop answers "nobody here" at once.</p></div></li>
+        <div class="expect"><span class="label">Expect</span><pre class="out">two-mb.bin</pre></div>
+        <p class="muted">The partial file stays, and B keeps serving its 5 pieces. Running the same <code>fetch</code> again on B, once A is back, resumes from them.</p></div></li>
+      <li><div class="step-text"><p>Turn Wi-Fi back on, do a fresh start (including <code>rm -f two-mb.bin</code> on B: the partial file from step 3 is still there), and repeat with A pressing <kbd>Ctrl</kbd>+<kbd>C</kbd> instead. B now fails after about 15 s, because A's laptop answers "nobody here" at once.</p></div></li>
     </ol>
-    <div class="passwhen"><strong>Pass when</strong><p>The fetch gives up with that message in about 25 s (Wi-Fi off) or 15 s (<kbd>Ctrl</kbd>+<kbd>C</kbd>), and no half-written file is left behind.</p></div>
+    <div class="passwhen"><strong>Pass when</strong><p>The fetch gives up with that message in about 25 s (Wi-Fi off) or 15 s (<kbd>Ctrl</kbd>+<kbd>C</kbd>), and the partial file stays.</p>
+      <p class="muted">Changed after this test passed: B used to delete the partial file here, and <code>ls</code> found nothing. Re-run to confirm the new behavior on real devices (docs/08-swarming.md, "Why giving up mustn't delete").</p></div>
   </article>
 </section>
 
@@ -302,7 +305,7 @@ fetch failed: transfer: stalled for 15s with 5 of 32 pieces: no live provider ha
     provider {A}:9000 failed and was skipped</pre></div></div></li>
     </ol>
     <div class="passwhen"><strong>Pass when</strong><p>Both B and C finish after A is gone.</p>
-      <p class="muted">Why 22–28: B and C each get about one piece a second, and they're steered to different pieces, so together they hold all 32 once B is near 21. B alone would finish at 32. Stop A earlier and some piece may exist only on A: losing the file is then the correct outcome (B and C fail with "no live provider has the rest"), so try again and stop A later.</p></div>
+      <p class="muted">Why 22–28: B and C each get about one piece a second, and they're steered to different pieces, so together they hold all 32 once B is near 21. B alone would finish at 32. Stop A earlier and some piece may exist only on A: losing the file is then the correct outcome (B and C fail with "no live provider has the rest"), so do a fresh start (delete <code>two-mb.bin</code> on B and C first) and try again, stopping A later. When A is stopped too early, B and C fail with the <i>same</i> count: a laptop that gives up keeps serving what it has, so the other catches up first. (Before, the one that gave up first deleted its file, and the other could end several pieces short.)</p></div>
   </article>
 </section>
 

@@ -176,8 +176,9 @@ func TestShareOnOneNodeFetchOnAnother(t *testing.T) {
 	seederAddr := "127.0.0.1:" + strconv.Itoa(nodes[1].peer.TCPPort()) // pieces_from is keyed by TCP address
 	// One provider: at most one request in flight (docs/08-swarming.md).
 	if fetched.Pieces != 3 || fetched.ProvidersFound != 1 || fetched.PiecesFrom[seederAddr] != 3 ||
-		fetched.FailedProviders == nil || len(fetched.FailedProviders) != 0 || fetched.MaxInFlight != 1 {
-		t.Errorf("fetch: %+v, want 3 pieces from the seeder at %s, 1 in flight", fetched, seederAddr)
+		fetched.FailedProviders == nil || len(fetched.FailedProviders) != 0 || fetched.MaxInFlight != 1 ||
+		fetched.AlreadyHad != 0 {
+		t.Errorf("fetch: %+v, want 3 pieces from the seeder at %s, 1 in flight, none already had", fetched, seederAddr)
 	}
 
 	// Downloads never overwrite: fetching into an existing path fails and
@@ -194,6 +195,44 @@ func TestShareOnOneNodeFetchOnAnother(t *testing.T) {
 	}
 	if !strings.Contains(e["error"], "fetch failed") {
 		t.Errorf("error body: %v", e)
+	}
+}
+
+// The magnet link /api/share returns is enough for another node to fetch
+// the file, and a link whose dn lies still yields the real file: only the
+// content key inside it is used (docs/12-magnet-links.md).
+func TestFetchAcceptsMagnetLink(t *testing.T) {
+	nodes := startNodes(t, 3)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "notes.txt")
+	content := bytes.Repeat([]byte("magnet "), 20000) // 140 KB: 3 pieces
+	if err := os.WriteFile(src, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var shared File
+	if st := post(t, nodes[0], "/api/share", ShareRequest{Path: src}, &shared); st != http.StatusOK {
+		t.Fatalf("share: status %d", st)
+	}
+	if want := "magnet:?xt=urn:tp2p:" + shared.Key.String() + "&dn=notes.txt"; shared.Magnet != want {
+		t.Fatalf("share: magnet %q, want %q", shared.Magnet, want)
+	}
+
+	links := []string{
+		shared.Magnet,
+		strings.Replace(shared.Magnet, "dn=notes.txt", "dn=lies.txt", 1),
+	}
+	for i, link := range links {
+		out := filepath.Join(dir, "copy"+strconv.Itoa(i))
+		var fetched FetchResponse
+		if st := post(t, nodes[i+1], "/api/fetch", FetchRequest{Key: link, Out: out}, &fetched); st != http.StatusOK {
+			t.Fatalf("fetch %q: status %d", link, st)
+		}
+		if fetched.Key != shared.Key || fetched.Name != "notes.txt" {
+			t.Errorf("fetch %q: key %s name %q, want %s and the manifest's name notes.txt", link, fetched.Key, fetched.Name, shared.Key)
+		}
+		if got, err := os.ReadFile(out); err != nil || !bytes.Equal(got, content) {
+			t.Errorf("fetch %q: file differs (err %v)", link, err)
+		}
 	}
 }
 
@@ -214,6 +253,7 @@ func TestControlRejectsBadRequests(t *testing.T) {
 		{"/api/share", "application/json", `{}`, http.StatusBadRequest},
 		{"/api/fetch", "application/json", `{"key":"abc","out":"/tmp/x"}`, http.StatusBadRequest},
 		{"/api/fetch", "application/json", `{"key":"` + strings.Repeat("a", 40) + `"}`, http.StatusBadRequest},
+		{"/api/fetch", "application/json", `{"key":"magnet:?xt=urn:btih:` + strings.Repeat("a", 40) + `","out":"/tmp/x"}`, http.StatusBadRequest},
 		{"/api/put", "application/json", `{"name":"big","text":"` + strings.Repeat("x", 300) + `"}`, http.StatusInternalServerError}, // over maxValueSize: the node refuses
 	}
 	for _, c := range cases {

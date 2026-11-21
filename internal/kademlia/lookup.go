@@ -30,6 +30,15 @@ type lookupCandidate struct {
 	failed  bool
 }
 
+// lookupMode says which RPC a lookup sends and when it stops.
+type lookupMode int
+
+const (
+	modeFindNode      lookupMode = iota // FIND_NODE until the k closest live nodes have answered
+	modeFindValue                       // FIND_VALUE; stop after the first round that returns values
+	modeFindAllValues                   // FIND_VALUE to every one of the k closest live nodes; merge all values
+)
+
 // Lookup is Kademlia's node-lookup procedure (paper Sec. 2.3): the
 // "most important procedure a Kademlia participant must perform", used to
 // find the k nodes closest to `target`, and the basis for both Bootstrap
@@ -64,17 +73,21 @@ type lookupCandidate struct {
 // lands. A dead contact therefore costs one full rpcTimeout per round.
 // See docs/05-iterative-parallel-lookup.md.
 func (n *Node) Lookup(ctx context.Context, target ID) (*LookupResult, error) {
-	return n.iterativeFind(ctx, target, false)
+	return n.iterativeFind(ctx, target, modeFindNode)
 }
 
 // iterativeFind is the lookup algorithm shared by FIND_NODE and FIND_VALUE
 // (paper Sec. 2.3: "value lookups use FIND_VALUE rather than FIND_NODE
 // RPCs. Moreover, the procedure halts immediately when any node returns
-// the value"). With findValue set, each RPC is a FIND_VALUE, and the
-// lookup stops after the first round in which any node returned values.
-func (n *Node) iterativeFind(ctx context.Context, target ID, findValue bool) (*LookupResult, error) {
+// the value"). In modeFindValue each RPC is a FIND_VALUE, and the lookup
+// stops after the first round in which any node returned values. In
+// modeFindAllValues it doesn't stop early: it asks every one of the k
+// closest live nodes and merges whatever values they hold (see
+// FindAllValues in values.go).
+func (n *Node) iterativeFind(ctx context.Context, target ID, mode lookupMode) (*LookupResult, error) {
 	result := &LookupResult{Target: target}
 	n.noteLookup(target) // this bucket needs no refresh for a while (refresh.go)
+	findValue := mode != modeFindNode
 
 	candidates := make(map[ID]*lookupCandidate)
 	var order []ID // candidate IDs, kept sorted nearest-to-target first
@@ -206,7 +219,7 @@ func (n *Node) iterativeFind(ctx context.Context, target ID, findValue bool) (*L
 		// contacts per reply.
 		sortByDistance()
 
-		if len(result.Values) > 0 {
+		if mode == modeFindValue && len(result.Values) > 0 {
 			// FIND_VALUE found something: stop. Every reply in this round
 			// was already collected (rounds are synchronous), so values
 			// from several holders in the same round are merged.
@@ -219,7 +232,8 @@ func (n *Node) iterativeFind(ctx context.Context, target ID, findValue bool) (*L
 	}
 	if findValue {
 		n.logger.Info("find_value finished", "key", target.String(), "values_found", len(result.Values),
-			"rounds", result.Rounds, "rpcs_sent", result.RPCsSent, "rpcs_failed", result.RPCsFailed)
+			"rounds", result.Rounds, "rpcs_sent", result.RPCsSent, "rpcs_failed", result.RPCsFailed,
+			"ask_all", mode == modeFindAllValues)
 	} else {
 		n.logger.Info("lookup converged", "target", target.String(), "rounds", result.Rounds,
 			"rpcs_sent", result.RPCsSent, "rpcs_failed", result.RPCsFailed, "closest_found", len(result.Closest))

@@ -50,7 +50,11 @@ bash scripts/demo-seeder-death.sh               # seeder dies mid-download; PASS
 bash scripts/demo-big-network.sh                # 20 nodes, random joins, lookups vs brute force + transfer; must print PASS
 bash scripts/demo-parallel.sh                   # one download from 3 providers at once; must print PASS
 bash scripts/demo-merkle.sh                     # dishonest provider caught by the Merkle proof check; must print PASS
+bash scripts/demo-magnet.sh                     # share prints a magnet link; fetch by link; lying name ignored; BitTorrent link refused; must print PASS
+bash scripts/demo-give-up-resume.sh             # seeder dies too early: both leechers give up with the same pieces, keep serving, then fetch resumes; must print PASS (~1 min)
 bash scripts/edge/run-all.sh                    # every edge case; each PASS = behaved as docs/EDGE-CASES.md predicts
+bash scripts/demo-viz.sh                        # visualizer headless: all 9 scenes on 21 live nodes, dropped=0, hashes match; must print PASS (~90 s)
+go run ./cmd/vizrun                             # the visualizer: open http://127.0.0.1:8790/, → runs the next scene (docs/13-visualizer.md)
 ```
 
 A core fix (lookup, refresh, republish) is expected to flip some edge-case
@@ -62,7 +66,9 @@ Packages: `internal/kademlia` (the DHT, opaque values), `internal/transfer`
 `[length][body]` frames), `internal/nodeapi` (optional per-node HTTP API:
 `--api` for snapshots and the event stream, `--api-control` for console-style
 commands; public APIs only), `cmd/node` (CLI + console). Dependencies point
-only downward; see `docs/ARCHITECTURE.md`.
+only downward; see `docs/ARCHITECTURE.md`. The visualizer, `cmd/vizrun`
+(runner) + `viz/` (page), uses nodes only through their HTTP API and
+signals; it imports nothing from `internal/` (`docs/13-visualizer.md`).
 
 ## Invariants that are easy to break (details: docs/ARCHITECTURE.md)
 
@@ -74,7 +80,7 @@ only downward; see `docs/ARCHITECTURE.md`.
 3. A node never stores or returns itself, and replies never return the
    requester (`closestExcluding`).
 4. `Bucket`, `staleTracker`, `valueStore`, `Manifest`, `Bitfield`, `pickPiece`, `MerkleTree` (and
-   `id.go`) do no network I/O; the eviction ping lives in `Node`.
+   `id.go`, `magnet.go`) do no network I/O; the eviction ping lives in `Node`.
 5. Register `pending[rpcID]` before sending a request.
 6. A lookup's candidate state, and a download's `swarmDownload` state,
    live in one goroutine (the download's event loop, `download.go`);
@@ -87,7 +93,10 @@ only downward; see `docs/ARCHITECTURE.md`.
    validated, manifests must hash to the content key, pieces must verify
    against the manifest's Merkle root with the proof sent alongside
    (`VerifyPiece`; root and piece count come from the manifest, never
-   the sender). Downloads only create new files (`O_EXCL`). Write, then
+   the sender). Downloads only create new files (`O_EXCL`), except a
+   resume reopening its own partial file (`Library.claimForResume`), whose
+   pieces on disk are re-verified first, with the proofs they arrived
+   with (`reopenFile`). Write, then
    publish: a piece is marked servable (`Library.markHave`) only after
    its `WriteAt` completed.
 9. With `--api`, every log record is also an `/api/events` event
