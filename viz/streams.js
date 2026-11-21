@@ -1,5 +1,5 @@
-// One node's live connection: its snapshots and its /api/events stream
-// (docs/NODE-API.md). Every later increment builds on this; a page with
+// One node's live connection: its snapshots and its /api/events stream.
+// Every later increment builds on this; a page with
 // 20 nodes simply calls Viz.connectNode 20 times (decision 4: one
 // EventSource per node, straight to the node).
 "use strict";

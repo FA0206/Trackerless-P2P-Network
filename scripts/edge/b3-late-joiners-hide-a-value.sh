@@ -2,7 +2,7 @@
 #
 # Edge case B3: nodes that join late, with IDs closer to a key than the
 # nodes holding its value, make the value hard to find, though nothing
-# died.  (docs/EDGE-CASES.md, case B3)
+# died.
 #
 #   N nodes (default 8), k=2, all joining via node0. node1 `put`s a short
 #   text; it lands on the 2 nodes closest to the key SHA-1(name).
@@ -30,12 +30,12 @@
 #     Values don't move to closer nodes that join later until a republish.
 #     Not EVERY newcomer misses: one whose table happens to lack the other
 #     newcomers still has a holder among its 2 closest contacts. The first
-#     run predicted "all miss" and was wrong (see docs/EDGE-CASES.md), so
+#     run predicted "all miss" and was wrong, so
 #     the check is "at least one newcomer misses".
 #   - step 4: node1's republish looks the key up again, finds the 2
 #     closest nodes (newcomers), the value lands on them, and every
 #     newcomer finds it. (Before republishing existed, step 4 was a manual
-#     re-`put`; see docs/EDGE-CASES.md.)
+#     re-`put`.)
 # The script PASSes when all three hold.
 #
 # Usage: scripts/edge/b3-late-joiners-hide-a-value.sh

@@ -25,7 +25,7 @@ import (
 //
 // They change things (share publishes a local file, fetch writes one), so
 // they're registered only with Config.Control (cmd/node: --api-control).
-// See docs/NODE-API.md, "Control endpoints", for what that exposes.
+//
 
 // maxRequestBody bounds a control request's JSON body. The largest
 // legitimate one is a `put` with 256 bytes of text.
@@ -337,7 +337,7 @@ func (s *Server) handleShare(w http.ResponseWriter, r *http.Request) {
 // FetchRequest downloads the file with content key Key into Out, which
 // must not exist yet (downloads never overwrite: O_EXCL, peer.go). Key is
 // a 40-hex content key or a magnet link, like the console's fetch; a
-// link's dn (name) is ignored (docs/12-magnet-links.md).
+// link's dn (name) is ignored.
 type FetchRequest struct {
 	Key string `json:"key"`
 	Out string `json:"out"`

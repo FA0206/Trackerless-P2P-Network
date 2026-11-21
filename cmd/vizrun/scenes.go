@@ -16,8 +16,7 @@ import (
 
 // scene is the runner's half of one scene: what to make the nodes do.
 // The page's half (what to draw) is the object with the same id in
-// viz/scenes.js. To add a scene, add one of each (docs/13-visualizer.md,
-// "How to add a scene").
+// viz/scenes.js. To add a scene, add one of each.
 type scene struct {
 	id    string
 	title string // must match the slide title, and viz/scenes.js
@@ -61,8 +60,7 @@ const (
 	pieceSize   = 64 * 1024
 )
 
-// window brackets an action for the page's replay (docs/13-visualizer.md,
-// "Replay"): the page buffers every event between "window open" and
+// window brackets an action for the page's replay: the page buffers every event between "window open" and
 // "window closed", then replays them in their real order. The pauses let
 // the open reach the page before the action starts, and the action's
 // last events arrive before the close.
@@ -544,7 +542,7 @@ func fileSHA256(path string) (string, error) {
 
 // --- 8. Giving up keeps seeding; fetching again resumes --------------------
 
-// sceneResume is DRY-RUN part 8 on this network: the seeder of a new
+// sceneResume is scripts/demo-give-up-resume.sh on this network: the seeder of a new
 // file dies too early (some pieces existed only on it). Both leechers
 // stall for 15 s and give up, but keep serving what they have. Then a
 // fresh node (viz<n>) shares the same bytes, and both leechers run the
@@ -553,7 +551,7 @@ func fileSHA256(path string) (string, error) {
 // It needs the core's lookup to skip dead nodes and downloads to find
 // providers with FindAllValues: before those fixes, a leecher holding a
 // provider record itself never saw the new seeder's, and the resume
-// failed with "no providers found" (docs/13-visualizer.md, DRY-RUN part 9).
+// failed with "no providers found".
 func sceneResume(ctx context.Context, r *runner) error {
 	seeder := r.nodeAt(castSeeder2)
 	f, err := r.share(ctx, seeder, "dataset.bin", file2Pieces, false)
@@ -589,7 +587,7 @@ func sceneResume(ctx context.Context, r *runner) error {
 		r.emit("fetch done", map[string]any{"node": res.node, "ok": res.err == nil, "error": errString(res.err), "have": have, "of": of})
 	}
 	// Both must have stopped short, keeping what they had. They usually
-	// end equal (DRY-RUN part 8), but not always: if the second leecher's
+	// end equal, but not always: if the second leecher's
 	// last piece came from the seeder and its provider record is still
 	// being stored when the first one's 15 s run out, the first stops one
 	// short. That's the DHT's timing, shown as it happens.

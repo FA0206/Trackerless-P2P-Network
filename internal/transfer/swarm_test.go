@@ -56,7 +56,7 @@ func TestParallelDownloadFromThreeProviders(t *testing.T) {
 		res.Duration.Round(time.Millisecond), pieces*delay, res.MaxInFlight, res.PiecesFrom)
 }
 
-// The scenario DRY-RUN part 3 shows failing on main: the seeder dies before
+// The scenario that used to lose the file: the seeder dies before
 // any leecher has finished. Here pieces have spread first -- the leechers
 // TOGETHER hold every piece, though none holds all of them -- so every
 // leecher finishes from the others.
@@ -189,7 +189,7 @@ func waitGaveUp(t *testing.T, errc chan error) error {
 // If the only node holding the missing pieces dies, the download must give
 // up after stallTimeout -- not keep waiting because bitfield polling looks
 // like activity. Giving up keeps the partial file and keeps serving its
-// pieces (docs/08-swarming.md, "Why giving up mustn't delete").
+// pieces.
 func TestDownloadGivesUpWhenNoOneHasTheRest(t *testing.T) {
 	shortStall(t)
 	peers := startNetwork(t, 3)

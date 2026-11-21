@@ -1,5 +1,4 @@
-// Which nodes to watch (docs/13-visualizer.md, "Nodes come from a config
-// list"). Never hard-coded to localhost: each entry is a name and the
+// Which nodes to watch. Never hard-coded to localhost: each entry is a name and the
 // node's API address, so the same page can later watch nodes on other
 // laptops just by getting a different list.
 "use strict";

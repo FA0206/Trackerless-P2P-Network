@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Graph 1: lookup latency vs. network size (docs/10-performance-graphs.md).
+# Graph 1: lookup latency vs. network size.
 #
 #   One network grows on localhost, each node joining through a randomly
 #   chosen running node. Each time it reaches a size in NS, LOOKUPS lookups

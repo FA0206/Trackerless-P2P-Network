@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Edge case A3: two islands that know each other only through one bridge
-# node, and the bridge dies.  (docs/EDGE-CASES.md, case A3)
+# node, and the bridge dies.
 #
 # Two separate networks run side by side, built the same way:
 #

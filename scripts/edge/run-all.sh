@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Run every edge-case script (docs/EDGE-CASES.md) one after another and
+# Run every edge-case script one after another and
 # print one verdict line per case. Each script's full output is kept in a
 # directory printed at the end. Exits non-zero if any case FAILed, i.e.
 # behaved differently from its documented prediction. After a fix to the

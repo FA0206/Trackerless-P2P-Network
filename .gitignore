@@ -1,8 +1,8 @@
 .DS_Store
 
-# Scratch area for the multi-device lab (docs/09-multi-device.md): the
+# Scratch area for the multi-device lab: the
 # node binary, test files and logs. Never committed.
 /lab/
 
-# matplotlib for eval/plot_graphs.py (eval/README.md)
+# matplotlib for eval/plot_graphs.py
 /eval/.venv/

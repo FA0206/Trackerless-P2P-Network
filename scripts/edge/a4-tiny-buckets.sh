@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Edge case A4: does a small k alone, with no failures, break lookups?
-# (docs/EDGE-CASES.md, case A4)
+#
 #
 #   The SAME 20-node network is built four times: k = 1 without the
 #   refresh at join (--join-refresh=false, the original code's join), then

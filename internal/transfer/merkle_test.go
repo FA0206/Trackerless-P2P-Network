@@ -153,9 +153,8 @@ func TestLeafAndNodeHashesAreDomainSeparated(t *testing.T) {
 	}
 }
 
-// The worked example in docs/11-merkle-trees.md: 5 pieces "piece 0" ..
-// "piece 4". The doc's hashes were computed separately (Python hashlib);
-// this keeps doc and code in agreement.
+// A worked example: 5 pieces "piece 0" .. "piece 4". The expected hashes
+// were computed separately (Python hashlib).
 func TestWorkedExampleFromTheDoc(t *testing.T) {
 	leaves := leavesFor(5)
 	tree := NewMerkleTree(leaves)

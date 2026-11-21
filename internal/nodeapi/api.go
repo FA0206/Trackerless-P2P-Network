@@ -4,7 +4,7 @@
 //
 // It sits above the DHT and file transfer and uses only their public API
 // (kademlia.Node, transfer.Peer); nothing in those packages knows it
-// exists. See docs/NODE-API.md for every endpoint with real output.
+// exists.
 package nodeapi
 
 import (
@@ -142,7 +142,7 @@ func writeEvent(w io.Writer, ev Event, dropped uint64) error {
 // Handler returns the API's HTTP handler. Every response allows any
 // origin (CORS), so a visualizer page served from somewhere else (a file,
 // another port) can read every node's API. That is safe only because the
-// API listens on localhost by default; see docs/NODE-API.md.
+// API listens on localhost by default.
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -195,7 +195,7 @@ type Table struct {
 }
 
 // Bucket is one k-bucket: index i holds contacts at XOR distance in
-// [2^i, 2^(i+1)) from this node (docs/02-routing-table-and-kbuckets.md).
+// [2^i, 2^(i+1)) from this node.
 type Bucket struct {
 	Index    int            `json:"index"`
 	Contacts []TableContact `json:"contacts"`
@@ -266,7 +266,7 @@ func (s *Server) handleStore(w http.ResponseWriter, r *http.Request) {
 }
 
 // Files is GET /api/files: the files this node can serve, sorted by name.
-// With partial seeding (docs/08-swarming.md) that includes downloads still
+// With partial seeding that includes downloads still
 // in progress: Have < Pieces until the last piece is written.
 type Files struct {
 	Files []File `json:"files"`

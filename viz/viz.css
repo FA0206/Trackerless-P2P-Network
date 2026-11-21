@@ -1,4 +1,4 @@
-/* The visualizer's look (docs/13-visualizer.md, "Visual direction"):
+/* The visualizer's look:
    dark navy, neutral nodes, cyan = DHT control traffic, amber = file
    payload, red only for failure, green only for "verified".
    The stage is a fixed 1920x1080 canvas, scaled to fit the window by

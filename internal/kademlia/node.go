@@ -72,7 +72,7 @@ type Config struct {
 	// SIMPLIFICATION: it's configured by the caller (cmd/node takes it
 	// from -advertise-ip or detects it from the route to the bootstrap
 	// node). There's no discovery of how other nodes see us and no NAT
-	// traversal (docs/09-multi-device.md). If it's loopback and a remote
+	// traversal. If it's loopback and a remote
 	// peer shows up, warnIfAdvertisingLoopback says so once.
 	AdvertiseIP string
 	K           int           // default DefaultK
@@ -500,8 +500,8 @@ func (n *Node) replyFindValue(from *net.UDPAddr, req Envelope) {
 // 127.0.0.1 contact (another node on this machine that reached us over
 // loopback) means "this machine" only to us; handed to a peer on another
 // machine, it points that peer at itself. This assumes one node per device
-// on a multi-device network, or every node on one machine -- never a mix
-// (docs/09-multi-device.md, F2), so no loopback contact ever meets a remote
+// on a multi-device network, or every node on one machine -- never a mix,
+// so no loopback contact ever meets a remote
 // requester.
 func (n *Node) closestExcluding(target, requester ID) []Contact {
 	out := n.rt.Closest(target, n.k+1)
@@ -523,7 +523,7 @@ func (n *Node) reply(to *net.UDPAddr, req Envelope, msgType MessageType, payload
 }
 
 // Bootstrap joins the network given only the UDP address of one node that
-// is already in it. Two steps (docs/04-bootstrap-and-join.md):
+// is already in it. Two steps:
 //
 //  1. PING the address. We only know an IP:port, not who is listening
 //     there; the PONG's envelope carries the responder's real node ID, and

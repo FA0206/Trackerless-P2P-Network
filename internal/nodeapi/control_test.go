@@ -174,7 +174,7 @@ func TestShareOnOneNodeFetchOnAnother(t *testing.T) {
 		t.Fatalf("fetched file differs (err %v)", err)
 	}
 	seederAddr := "127.0.0.1:" + strconv.Itoa(nodes[1].peer.TCPPort()) // pieces_from is keyed by TCP address
-	// One provider: at most one request in flight (docs/08-swarming.md).
+	// One provider: at most one request in flight.
 	if fetched.Pieces != 3 || fetched.ProvidersFound != 1 || fetched.PiecesFrom[seederAddr] != 3 ||
 		fetched.FailedProviders == nil || len(fetched.FailedProviders) != 0 || fetched.MaxInFlight != 1 ||
 		fetched.AlreadyHad != 0 {
@@ -200,7 +200,7 @@ func TestShareOnOneNodeFetchOnAnother(t *testing.T) {
 
 // The magnet link /api/share returns is enough for another node to fetch
 // the file, and a link whose dn lies still yields the real file: only the
-// content key inside it is used (docs/12-magnet-links.md).
+// content key inside it is used.
 func TestFetchAcceptsMagnetLink(t *testing.T) {
 	nodes := startNodes(t, 3)
 	dir := t.TempDir()

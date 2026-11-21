@@ -2,8 +2,6 @@
 // distance metric, the k-bucket routing table, UDP message framing, and the
 // iterative lookup algorithm described in Maymounkov & Mazieres,
 // "Kademlia: A Peer-to-peer Information System Based on the XOR Metric".
-//
-// See docs/01-ids-and-xor-distance.md for the reasoning behind this file.
 package kademlia
 
 import (

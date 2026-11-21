@@ -16,7 +16,7 @@ import "sort"
 // memory. The cost we're accepting: in a network with many millions of
 // nodes, the tree version lets a node keep *more than k* contacts in the
 // range nearest its own ID (by splitting that region further), which this
-// fixed version cannot do. See docs/02-routing-table-and-kbuckets.md.
+// fixed version cannot do.
 type RoutingTable struct {
 	self    ID
 	k       int
@@ -78,7 +78,7 @@ func (rt *RoutingTable) ReplaceStale(stale, replacement Contact) bool {
 // a few thousand at most for any k used in practice -- we just collect
 // every contact we know about and sort the whole thing. That's O(n log n)
 // instead of roughly O(k), which is fine at this scale and much simpler to
-// get right; see docs/02-routing-table-and-kbuckets.md.
+// get right.
 //
 // Stale contacts (stale.go) are left out: they failed several RPCs in a
 // row, so neither our lookups nor our FIND_NODE replies should send anyone

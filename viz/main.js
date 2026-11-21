@@ -1,4 +1,4 @@
-// The visualizer's glue (docs/13-visualizer.md): load the node list,
+// The visualizer's glue: load the node list,
 // open one event stream per node, follow the runner's status stream,
 // and hand everything to the current scene (scenes.js).
 //
@@ -105,8 +105,8 @@
   function onNodeEvent(n, ev) {
     n.events.push(ev);
     app.counts[ev.msg] = (app.counts[ev.msg] || 0) + 1;
-    // `dropped` is this viewer's running loss count for that node
-    // (NODE-API.md); it must stay 0. A gap in `seq` is NOT a loss.
+    // `dropped` is this viewer's running loss count for that node;
+    // it must stay 0. A gap in `seq` is NOT a loss.
     if ((ev.dropped || 0) > n.dropped) {
       n.dropped = ev.dropped;
       renderBadge();

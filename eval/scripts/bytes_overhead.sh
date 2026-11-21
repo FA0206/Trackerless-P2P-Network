@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #
-# Graph 4, localhost half: DHT control bytes vs. file payload bytes
-# (docs/10-performance-graphs.md).
+# Graph 4, localhost half: DHT control bytes vs. file payload bytes.
 #
 #   Each trial: a fresh localhost network of a seeder (node 0) and a leecher
 #   (node 1), the same two-node setup the real-host checklist uses. The

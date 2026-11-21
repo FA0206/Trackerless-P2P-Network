@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #
-# Graph 5: download throughput vs. number of providers
-# (docs/10-performance-graphs.md).
+# Graph 5: download throughput vs. number of providers.
 #
 #   For each provider count P, TRIALS times: a fresh localhost network of P
 #   providers + 1 leecher. Every provider shares the same FILE_SIZE file

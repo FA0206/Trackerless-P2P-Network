@@ -10,7 +10,7 @@ import (
 
 // A magnet link is a content key packaged for people to pass around: in a
 // chat message, on a web page, as a QR code. The DHT finds *who has* a
-// file; it can't tell you *which* files exist (docs/12-magnet-links.md).
+// file; it can't tell you *which* files exist.
 // Real trackerless BitTorrent works the same way: its magnet links (BEP 9)
 // look like
 //

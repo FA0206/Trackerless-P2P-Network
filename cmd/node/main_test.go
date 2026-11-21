@@ -8,7 +8,7 @@ import (
 
 // TestParseAdvertiseIP: only an IPv4 address another machine can dial is
 // accepted. Each rejected kind would otherwise fail late and quietly on
-// the downloader's side (docs/09-multi-device.md, F1).
+// the downloader's side.
 func TestParseAdvertiseIP(t *testing.T) {
 	tests := []struct {
 		in, want string // want "" means rejected

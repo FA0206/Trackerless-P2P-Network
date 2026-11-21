@@ -15,13 +15,13 @@
 # shows exactly what changed: the kill rule and the verdict.
 #
 # On this branch downloaders fetch rarest-first and serve pieces as soon as
-# they have them (docs/08-swarming.md), so after the seeder dies the leechers
+# they have them, so after the seeder dies the leechers
 # finish from each other. This demo PASSES when every leecher ends up with a
 # byte-identical copy although no node held the whole file when the seeder
 # died.
 #
 # Timing: every node runs with the DEBUG ONLY --debug-serve-delay (off by
-# default; docs/DEBUGGING.md), and the script watches logs instead of
+# default), and the script watches logs instead of
 # sleeping. Kill rule: as soon as the leechers together hold every piece,
 # never after any leecher has finished. (main's version has a fallback --
 # "or the leading leecher has 3/4 of the pieces" -- because there the

@@ -1,4 +1,4 @@
-# Shared helpers for the eval scripts (docs/10-performance-graphs.md).
+# Shared helpers for the eval scripts.
 # Source it from a script in eval/scripts/:   . eval/scripts/lib.sh
 # (each script first cds to the repo root).
 #
@@ -15,7 +15,7 @@ API_OFFSET=10000
 RESULTS=eval/results
 NODE_COUNT=0 # nodes started in the current run (indexes 0..NODE_COUNT-1)
 
-command -v go >/dev/null || { echo "go is not on PATH (see eval/README.md)" >&2; exit 1; }
+command -v go >/dev/null || { echo "go is not on PATH" >&2; exit 1; }
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
 mkdir -p "$RESULTS"
 

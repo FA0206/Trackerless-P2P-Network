@@ -14,7 +14,7 @@
 #                                                               +-- bridge p2pbr = 10.10.0.254/24 (host)
 #
 # One node per namespace: the multi-device setup assumes one node per
-# device (docs/09-multi-device.md). Build into the git-ignored lab/
+# device. Build into the git-ignored lab/
 # (go build -o lab/node ./cmd/node), then run a node inside namespace i
 # as yourself, not root, from the repo root:
 #   sudo ip netns exec p2p1 sudo -u "$USER" ./lab/node --port 9000 --id-seed A --advertise-ip 10.10.0.1

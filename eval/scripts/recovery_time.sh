@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Graph 3, localhost half: does a file survive its seeder dying, and how
-# fast do the leechers recover? (docs/10-performance-graphs.md)
+# fast do the leechers recover?
 #
 #   The defaults are exactly eval-field-tests.html's test 1, so the
 #   localhost and real-laptop series differ only by the network: a seeder
@@ -34,7 +34,7 @@
 #               noticed the seeder was gone) to its next "piece received";
 #               the slowest leecher's value, i.e. until the whole swarm is
 #               moving again. Both timestamps come from the leecher's own
-#               log, never two machines' clocks (docs/09-multi-device.md),
+#               log, never two machines' clocks,
 #               so the real-host checklist computes it the same way. A
 #               leecher that never noticed (no request to the seeder after
 #               the kill) wasn't held up: 0. SIGTERM, like Ctrl+C, closes

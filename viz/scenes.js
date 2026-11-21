@@ -1,4 +1,4 @@
-// The page's half of each scene: what to draw (docs/13-visualizer.md).
+// The page's half of each scene: what to draw.
 // The runner's half, what the nodes do, is the scene with the same id in
 // cmd/vizrun/scenes.go, which also holds the title (sent with "scene
 // started", so titles live in one place and match the slides).

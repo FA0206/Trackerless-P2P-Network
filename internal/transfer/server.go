@@ -37,15 +37,14 @@ type server struct {
 	// DEBUG ONLY (--debug-corrupt-pieces): flip one byte of every piece
 	// before sending it, with its genuine Merkle proof. It plays a
 	// dishonest provider, so a demo can show the downloader's proof check
-	// catching it (docs/11-merkle-trees.md). Off by default.
+	// catching it. Off by default.
 	debugCorrupt atomic.Bool
 
 	// DEBUG ONLY (--debug-upload-rate): caps this node's total upload, over
 	// all its connections, at a fixed number of bytes per second. Loopback
 	// has no bandwidth limit, so without it a localhost swarm can't show
 	// what P2P is for: a central server's one uplink is shared by every
-	// client, while each peer adds its own (docs/10-performance-graphs.md,
-	// graph 2). 0 (the default) means no cap.
+	// client, while each peer adds its own (performance graph 2). 0 (the default) means no cap.
 	uplink uplink
 }
 

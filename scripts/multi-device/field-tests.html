@@ -1,11 +1,11 @@
 <!doctype html>
 <!--
   Kademlia LAN Field Tests: step-by-step tests for running the network on
-  real laptops on one Wi-Fi (docs/09-multi-device.md). A static page, no
+  real laptops on one Wi-Fi. A static page, no
   build step. Open it in a browser:  xdg-open scripts/multi-device/field-tests.html
   Typing each laptop's IP into the page fills in every command.
   The expected output it shows is real log and console text: keep it in
-  sync when that text changes (docs/ARCHITECTURE.md, "If you change X").
+  sync when that text changes.
 -->
 <html lang="en">
 <head>
@@ -258,7 +258,7 @@ fetch failed: transfer: stalled for 15s with 5 of 32 pieces: no live provider ha
       <li><div class="step-text"><p>Turn Wi-Fi back on, do a fresh start (including <code>rm -f two-mb.bin</code> on B: the partial file from step 3 is still there), and repeat with A pressing <kbd>Ctrl</kbd>+<kbd>C</kbd> instead. B now fails after about 15 s, because A's laptop answers "nobody here" at once.</p></div></li>
     </ol>
     <div class="passwhen"><strong>Pass when</strong><p>The fetch gives up with that message in about 25 s (Wi-Fi off) or 15 s (<kbd>Ctrl</kbd>+<kbd>C</kbd>), and the partial file stays.</p>
-      <p class="muted">Changed after this test passed: B used to delete the partial file here, and <code>ls</code> found nothing. Re-run to confirm the new behavior on real devices (docs/08-swarming.md, "Why giving up mustn't delete").</p></div>
+      <p class="muted">Changed after this test passed: B used to delete the partial file here, and <code>ls</code> found nothing. Re-run to confirm the new behavior on real devices.</p></div>
   </article>
 </section>
 
@@ -330,7 +330,6 @@ fetch failed: transfer: stalled for 15s with 5 of 32 pieces: no live provider ha
 </section>
 
 <footer>
-  <p>Background for every test, with real logs: <a href="../../docs/09-multi-device.md"><code>docs/09-multi-device.md</code></a>.</p>
   <p>Not covered here: 20-node lookups and very large network messages need more nodes than laptops, and run in a simulated network on one machine (<code>scripts/netns/</code>).</p>
 </footer>
 </div>

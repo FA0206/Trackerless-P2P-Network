@@ -12,7 +12,7 @@ import (
 	"kademlia-demo/internal/kademlia"
 )
 
-// Swarm-download timers (docs/08-swarming.md).
+// Swarm-download timers.
 // SIMPLIFICATION: fixed values, not tuned for real networks.
 const (
 	bitfieldMaxAge  = 500 * time.Millisecond // re-ask an idle provider what it has after this
@@ -42,7 +42,7 @@ type DownloadResult struct {
 
 // Download fetches the file with the given content key into outPath,
 // which must not exist yet, from every provider the DHT knows of, in
-// parallel (docs/08-swarming.md):
+// parallel:
 //
 //  1. FIND_VALUE(key) -> provider records.
 //  2. Fetch the manifest from any provider; check it hashes to key.
@@ -58,9 +58,8 @@ type DownloadResult struct {
 //     timeout, a write error); with no pieces yet, the file is deleted.
 //
 // A Download of a key whose earlier download gave up, into the same path,
-// resumes it: steps 2 and 3 are replaced by reopenFile, which re-hashes
-// the pieces already on disk, and only missing pieces are fetched
-// (docs/08-swarming.md, "Resuming").
+// resumes it: steps 2 and 3 are replaced by reopenFile, which re-checks
+// the pieces already on disk, and only missing pieces are fetched.
 func (p *Peer) Download(ctx context.Context, key kademlia.ID, outPath string) (*DownloadResult, error) {
 	resume, err := p.lib.claimForResume(key, outPath)
 	if err != nil {
@@ -167,7 +166,7 @@ type event struct {
 	err      error
 }
 
-// swarmDownload is one download's state. Invariant 6 (CLAUDE.md): only the
+// swarmDownload is one download's state. Invariant 6: only the
 // event-loop goroutine (Download -> run) reads or writes it; workers get
 // the few values they need as arguments and report back on `events`.
 type swarmDownload struct {
@@ -199,7 +198,7 @@ type swarmDownload struct {
 
 func (d *swarmDownload) addProvider(r ProviderRecord) bool {
 	if _, known := d.providers[r.NodeID]; known {
-		return false // includes dead ones: they stay dead (SIMPLIFICATION, docs/08)
+		return false // includes dead ones: they stay dead (SIMPLIFICATION)
 	}
 	d.providers[r.NodeID] = &providerState{rec: r}
 	d.order = append(d.order, r.NodeID)
@@ -300,8 +299,7 @@ func (d *swarmDownload) reopenFile(outPath string, resume *partialDownload) erro
 
 // stopButKeepServing ends a download that gave up. The library entry and
 // the file stay, so this peer keeps serving the pieces it has: a leecher
-// still copying from it isn't cut off (docs/08-swarming.md, "Why giving up
-// mustn't delete"), and a later Download into the same path resumes.
+// still copying from it isn't cut off, and a later Download into the same path resumes.
 //
 // SIMPLIFICATION: no resume after a restart. The library lives in memory,
 // so a restarted node forgets the partial file and doesn't serve it, and

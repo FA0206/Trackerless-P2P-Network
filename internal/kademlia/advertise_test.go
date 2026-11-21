@@ -9,7 +9,7 @@ import (
 )
 
 // TestWarnIfAdvertisingLoopback: a node advertising 127.0.0.1 warns once,
-// on the first message from another machine (docs/09-multi-device.md, F1).
+// on the first message from another machine.
 // The test feeds handleMessage directly with made-up sender addresses. It
 // uses PONGs, which are replies: with no RPC waiting for them they're
 // dropped, so nothing is sent back to those (fake) addresses.

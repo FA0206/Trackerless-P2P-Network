@@ -24,7 +24,7 @@ import (
 // about 18 or more others. A FIND_VALUE_RESP holding 16 values of 250
 // bytes is about 5.6 KB, 4 fragments. Fragments are reassembled fine
 // on a LAN; under packet loss they raise rpcs_failed. SIMPLIFICATION:
-// measured, not avoided (docs/09-multi-device.md, F4).
+// measured, not avoided.
 const maxDatagramSize = 8192
 
 // Transport owns the raw UDP socket and the wire framing: turning an
@@ -37,7 +37,7 @@ const maxDatagramSize = 8192
 // uses. A UDP datagram already arrives whole, so here the prefix is a
 // sanity check: a datagram that was truncated (e.g. bigger than our read
 // buffer) or isn't ours fails the length check and is dropped before we
-// try to parse it. See docs/03-message-framing.md.
+// try to parse it.
 type Transport struct {
 	conn   *net.UDPConn
 	logger *slog.Logger

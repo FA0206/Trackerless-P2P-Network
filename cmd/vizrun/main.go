@@ -1,4 +1,4 @@
-// Command vizrun runs the visualizer demo (docs/13-visualizer.md): it
+// Command vizrun runs the visualizer demo: it
 // builds and starts a network of real nodes, serves the page in viz/,
 // and runs one scene each time the page asks (the presenter presses →).
 //
@@ -22,7 +22,7 @@ import (
 	"time"
 )
 
-// config holds the flags. Plain flags, no config files (CLAUDE.md).
+// config holds the flags. Plain flags, no config files.
 type config struct {
 	n           int
 	k           int

@@ -1,7 +1,7 @@
 // Package transfer is the file-sharing layer on top of the Kademlia DHT:
 // it splits files into verifiable pieces, announces "I have file X" in the
 // DHT, and moves the actual bytes between peers over TCP. The DHT only
-// ever carries small provider records; see docs/07-file-transfer-over-tcp.md.
+// ever carries small provider records.
 package transfer
 
 import (
@@ -26,8 +26,7 @@ const (
 )
 
 // Manifest describes a shared file: its size, how it's cut into pieces,
-// and the root of the Merkle tree over its pieces (merkle.go,
-// docs/11-merkle-trees.md). Its hash is the file's content key
+// and the root of the Merkle tree over its pieces (merkle.go). Its hash is the file's content key
 // (ContentKey), so whoever knows the key can check that a manifest is
 // genuine, and then check every piece, with its proof, against the root.
 //

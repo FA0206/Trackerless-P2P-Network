@@ -1,5 +1,5 @@
-# Shared helpers for the edge-case scripts in scripts/edge/
-# (docs/EDGE-CASES.md). Source it AFTER nodes.sh:
+# Shared helpers for the edge-case scripts in scripts/edge/.
+# Source it AFTER nodes.sh:
 #
 #   . scripts/lib/nodes.sh
 #   . scripts/lib/edge.sh

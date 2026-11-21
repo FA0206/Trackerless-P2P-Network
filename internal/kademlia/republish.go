@@ -35,7 +35,7 @@ const DefaultRepublishInterval = time.Hour
 // here both use the same interval and nothing expires (store.go). It also
 // skips the lookup before a holder's republish by using its split
 // buckets (Sec. 2.5, second optimization), which our flat routing table
-// can't do (docs/02-routing-table-and-kbuckets.md).
+// can't do.
 
 // publications is what this node itself published: key -> values. Only
 // Store adds to it; nothing removes from it (a node publishes until it

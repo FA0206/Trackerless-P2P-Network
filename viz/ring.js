@@ -1,11 +1,11 @@
-// The ring: every node drawn at the angle its ID predicts
-// (docs/13-visualizer.md). Kademlia IDs are points in [0, 2^160); going
+// The ring: every node drawn at the angle its ID predicts.
+// Kademlia IDs are points in [0, 2^160); going
 // once around the circle covers that whole space, starting at 12 o'clock
 // (ID 0x000…) and running clockwise. Deterministic: the same seeds give
 // the same picture on every run, and nodes never jitter.
 //
 // Position on the ring is just a way to *see* IDs. Kademlia's distance is
-// XOR, not the angle between two dots (docs/01): two neighbours on the
+// XOR, not the angle between two dots: two neighbours on the
 // ring are close in XOR only when their IDs share a long prefix.
 //
 // Also drawn here: comets (one message travelling between two nodes, on

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #
-# Graph 2: download time vs. number of leechers, P2P vs. centralized
-# (docs/10-performance-graphs.md).
+# Graph 2: download time vs. number of leechers, P2P vs. centralized.
 #
 #   For each leecher count L, TRIALS times each:
 #   - p2p: a fresh localhost network of 1 seeder + L leechers. The seeder

@@ -10,8 +10,8 @@ type holderView struct {
 	idle bool
 }
 
-// pickPiece chooses the next piece to request and who to request it from
-// (docs/08-swarming.md, "Which piece next"): among pieces in `need` that
+// pickPiece chooses the next piece to request and who to request it from:
+// among pieces in `need` that
 // at least one idle holder has, the one held by the fewest holders
 // (rarest first); ties broken at random. The provider is a random idle
 // holder of that piece. Returns ok=false if nothing can be assigned now.

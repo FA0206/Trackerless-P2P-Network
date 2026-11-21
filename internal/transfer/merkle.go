@@ -11,7 +11,7 @@ import (
 // whole file, and any single piece can be checked against that root with a
 // short proof (log2 of the piece count, rounded up, sibling hashes)
 // instead of the full list of piece hashes. BitTorrent v2 does the same.
-// See docs/11-merkle-trees.md.
+//
 //
 // Pure functions, no I/O (like bitfield.go and picker.go). The manifest
 // carries the root (manifest.go), every piece travels with its proof

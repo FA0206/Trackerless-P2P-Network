@@ -14,8 +14,7 @@ import (
 )
 
 // consoleEnv runs typed commands against this process's node and peer, so
-// you can drive a running node by hand from its terminal (see
-// docs/DEBUGGING.md). The console is a convenience; nothing in the
+// you can drive a running node by hand from its terminal. The console is a convenience; nothing in the
 // protocol depends on it.
 type consoleEnv struct {
 	node            *kademlia.Node
@@ -209,13 +208,13 @@ func (c *consoleEnv) share(ctx context.Context, args []string) {
 		return
 	}
 	// The "content key:" line must stay as it is: the demo scripts grep it
-	// and take its third field (docs/ARCHITECTURE.md, "If you change X").
+	// and take its third field.
 	fmt.Fprintf(c.out, "shared %s\n  content key: %s\n  magnet link: %s\n  others can run: fetch %s <out-path>\n",
 		args[0], key, c.magnetFor(key), key)
 }
 
 // magnetFor returns the magnet link for a file in this node's library,
-// named by its manifest (docs/12-magnet-links.md).
+// named by its manifest.
 func (c *consoleEnv) magnetFor(key kademlia.ID) string {
 	for _, f := range c.peer.Library().List() {
 		if f.Key == key {

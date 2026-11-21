@@ -1,4 +1,4 @@
-// The replay buffer (docs/13-visualizer.md, "Replay"). The runner
+// The replay buffer. The runner
 // brackets each fast action with "window open" / "window closed"; every
 // node event that arrives in between is buffered, and when the window
 // closes it is replayed: in its real order, at a pace people can follow,

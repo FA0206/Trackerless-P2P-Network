@@ -7,8 +7,9 @@ import (
 	"kademlia-demo/internal/kademlia"
 )
 
-// testKeyHex is the content key of the 150 000-byte notes.txt worked
-// through in docs/12-magnet-links.md.
+// testKeyHex is the content key of a 150 000-byte notes.txt made of the
+// lines "line 1 of the notes", "line 2 of the notes", ..., as printed by a
+// real node that shared it.
 const testKeyHex = "2217015135a0bf9f2b8af56b5faa7608e5e515c7"
 
 func mustKey(t *testing.T) kademlia.ID {

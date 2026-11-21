@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Edge case A2: a thundering herd. Many nodes join through the same node
-# at the same moment.  (docs/EDGE-CASES.md, case A2)
+# at the same moment.
 #
 #   node0 starts alone. Then N-1 nodes (default 19) are launched at once,
 #   all with --bootstrap node0, without waiting for one another. k=4, so
@@ -17,8 +17,7 @@
 #
 # Prediction: it holds up. Every join completes, every lookup is correct,
 # and no process reports a data race. Concurrent packets are handled on
-# separate goroutines, with the shared state behind locks
-# (docs/ARCHITECTURE.md, "Goroutines and shared state").
+# separate goroutines, with the shared state behind locks.
 #
 # Usage: scripts/edge/a2-thundering-herd.sh
 #        (env: N=20 K=4 QUERIERS=4 TARGETS=3 BASE_PORT=9425 SEED=1 RACE=1)

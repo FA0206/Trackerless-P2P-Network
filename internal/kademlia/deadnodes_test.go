@@ -80,7 +80,7 @@ func TestLookupSkipsADeadNodeNearTheKey(t *testing.T) {
 
 // Even when every one of a node's own closest contacts is dead, the
 // lookup carries on with the rest of its routing table and finds the k
-// closest live nodes (EDGE-CASES B2: before, it gave up after one round).
+// closest live nodes.
 func TestLookupFindsLiveNodesWhenAllNearestAreDead(t *testing.T) {
 	const size, k = 12, 3
 	nodes := smallKNetwork(t, size, k)

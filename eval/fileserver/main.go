@@ -1,5 +1,5 @@
-// Command fileserver is the centralized baseline for graph 2
-// (docs/10-performance-graphs.md): one plain HTTP server that every client
+// Command fileserver is the centralized baseline for graph 2:
+// one plain HTTP server that every client
 // downloads the whole file from. Written in Go with net/http so the
 // comparison with the P2P swarm isn't skewed by a slower runtime.
 //

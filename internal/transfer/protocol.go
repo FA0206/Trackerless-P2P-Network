@@ -14,9 +14,9 @@ import "kademlia-demo/internal/kademlia"
 // is what tells the reader where one message ends. The data frame is raw
 // bytes rather than JSON, so a piece isn't inflated by base64.
 // A GET_PIECE reply's header also carries the piece's Merkle proof
-// (merkle.go, docs/11-merkle-trees.md), which the downloader checks
+// (merkle.go), which the downloader checks
 // against the manifest's root.
-// See docs/07-file-transfer-over-tcp.md.
+//
 
 const (
 	opGetManifest = "GET_MANIFEST"

@@ -11,7 +11,7 @@ import (
 )
 
 // The node's stream: a comment first, `id:` + `data:` per event, a blank
-// line after each, heartbeats as comments (docs/NODE-API.md).
+// line after each, heartbeats as comments.
 func TestParseSSEReadsOnlyData(t *testing.T) {
 	stream := ": events from node 2b37…, level DEBUG and above\n\n" +
 		"id: 1\ndata: {\"seq\":1,\"msg\":\"rpc received\"}\n\n" +

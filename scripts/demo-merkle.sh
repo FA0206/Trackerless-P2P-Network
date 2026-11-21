@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Merkle tree demo (docs/11-merkle-trees.md): a dishonest provider is
+# Merkle tree demo: a dishonest provider is
 # caught by the proof check, and the manifest no longer grows with the file.
 #
 #   Part 1, tamper: node1 shares a 1 MiB file (16 pieces). node2 downloads

@@ -31,15 +31,14 @@ const (
 // It covers every node this node sends RPCs to, not only routing-table
 // contacts. After a mass death, most dead nodes a lookup meets are ones it
 // heard about in other nodes' replies, never in its own table (edge case
-// B1, docs/EDGE-CASES.md). Counting only table contacts barely helped.
+// B1). Counting only table contacts barely helped.
 //
 // No network I/O here, like bucket.go: Node reports failures (sendAndWait)
 // and successes (handleMessage).
 //
 // SIMPLIFICATION: the paper also keeps a replacement cache of contacts
 // that arrived while a bucket was full. We don't: a stale table contact is
-// replaced only when a new contact for its bucket next messages us. See
-// docs/02-routing-table-and-kbuckets.md.
+// replaced only when a new contact for its bucket next messages us.
 type staleTracker struct {
 	mu         sync.Mutex
 	staleAfter int           // failures in a row that make a node stale; <= 0 turns tracking off

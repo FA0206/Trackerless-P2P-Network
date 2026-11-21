@@ -10,7 +10,7 @@ import (
 	"kademlia-demo/internal/nodeapi"
 )
 
-// startAPI serves the per-node HTTP API (internal/nodeapi, docs/NODE-API.md)
+// startAPI serves the per-node HTTP API (internal/nodeapi)
 // on addr, e.g. "127.0.0.1:8000". It returns a function that stops the
 // server. Only called when --api is set; without it the node opens no
 // HTTP socket at all.

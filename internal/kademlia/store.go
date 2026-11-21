@@ -11,7 +11,7 @@ import (
 // values travel base64-encoded inside JSON (4/3 the size), so the worst
 // case is 16 values * 256 B * 4/3 ~= 5.5 KB, leaving room for the envelope.
 // That's plenty for small records like "node X has file Y" -- and it's why
-// file data itself never goes through the DHT (docs/06-store-and-find-value.md).
+// file data itself never goes through the DHT.
 const (
 	maxValueSize    = 256
 	maxValuesPerKey = 16

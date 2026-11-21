@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Headless check of the visualizer's run (docs/13-visualizer.md): runs
+# Headless check of the visualizer's run: runs
 # every scene with `vizrun --auto` (no browser), then checks the evidence
 # the page would draw from:
 #   - vizrun's own checks passed (lookup rounds, SHA-256 of every copy,

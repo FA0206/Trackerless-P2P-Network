@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Graph 6: join (bootstrap) time vs. network size (docs/10-performance-graphs.md).
+# Graph 6: join (bootstrap) time vs. network size.
 #
 #   Each trial grows a fresh localhost network the way lookup_latency.sh
 #   does (random bootstrap node per join) to max(NS)+1 nodes. Node N joins

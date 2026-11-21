@@ -1,7 +1,7 @@
 // Package framing implements the [4-byte big-endian length][body] message
 // format used on both of this project's channels: the Kademlia UDP socket
 // (one frame per datagram) and the TCP file-transfer connections (many
-// frames back to back on one byte stream). See docs/03-message-framing.md.
+// frames back to back on one byte stream).
 package framing
 
 import (

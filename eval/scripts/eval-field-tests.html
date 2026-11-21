@@ -1,15 +1,14 @@
 <!doctype html>
 <!--
   Kademlia LAN Eval Runs: the real-laptop halves of performance graphs 3 and
-  4 (docs/10-performance-graphs.md). Same pattern as
+  4. Same pattern as
   scripts/multi-device/field-tests.html, but every test ends in numbers, not
   pass/fail. A static page, no build step. Open it in a browser:
     xdg-open eval/scripts/eval-field-tests.html
   Typing each laptop's IP into the page fills in every command.
   The awk one-liners must compute what eval/scripts/recovery_time.sh and
   eval/scripts/bytes_overhead.sh compute on localhost, and the expected
-  output is real log and console text: keep both in sync when either changes
-  (docs/ARCHITECTURE.md, "If you change X").
+  output is real log and console text: keep both in sync when either changes.
 -->
 <html lang="en">
 <head>
@@ -148,7 +147,7 @@ footer { color: var(--muted); font-size: 14px; border-top: 1px solid var(--line)
   <div class="eyebrow">Trackerless P2P network · performance graphs</div>
   <h1>Kademlia LAN Eval Runs</h1>
   <p class="lede">The real-laptop halves of two performance graphs: how fast a swarm recovers when its seeder dies (graph 3), and how much DHT traffic a download costs next to the file itself (graph 4). Each run ends in a CSV row, plotted next to the same experiment on localhost.</p>
-  <p class="muted">Same setup as the <a href="../../scripts/multi-device/field-tests.html">LAN field tests</a>: no SSH, every laptop typed at by hand. Why each graph exists and how the localhost half runs: <a href="../../docs/10-performance-graphs.md"><code>docs/10-performance-graphs.md</code></a>.</p>
+  <p class="muted">Same setup as the <a href="../../scripts/multi-device/field-tests.html">LAN field tests</a>: no SSH, every laptop typed at by hand.</p>
 </header>
 
 <section aria-labelledby="who">
@@ -306,7 +305,6 @@ footer { color: var(--muted); font-size: 14px; border-top: 1px solid var(--line)
 
 <footer>
   <p>Same steps on localhost, scripted: <code>eval/scripts/recovery_time.sh</code> and <code>eval/scripts/bytes_overhead.sh</code>.</p>
-  <p>Background for every graph: <a href="../../docs/10-performance-graphs.md"><code>docs/10-performance-graphs.md</code></a>.</p>
 </footer>
 </div>
 

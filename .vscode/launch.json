@@ -1,5 +1,4 @@
 {
-    // See docs/DEBUGGING.md for how to use these.
     // Start them in order (node0, wait for "node started", then node1, ...):
     // a node that starts bootstrapping before its seed is listening will
     // wait a full --rpc-timeout for a PONG that never comes.

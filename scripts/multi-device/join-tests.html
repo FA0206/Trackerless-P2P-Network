@@ -2,11 +2,10 @@
 <!--
   Kademlia Join Tests: three joining scenarios on real laptops on one Wi-Fi
   (no --bootstrap; two nodes without --bootstrap; two nodes with the same
-  ID). Each is also a Go test in internal/kademlia/bootstrap_test.go, and
-  docs/04-bootstrap-and-join.md lists every join scenario. A static page:
+  ID). Each is also a Go test in internal/kademlia/bootstrap_test.go. A static page:
   xdg-open scripts/multi-device/join-tests.html
   The expected output is real console and log text: keep it in sync when
-  that text changes (docs/ARCHITECTURE.md, "If you change X").
+  that text changes.
 -->
 <html lang="en">
 <head>
@@ -366,7 +365,6 @@ msg="bootstrap complete" routing_table_size=1 self_lookup_rounds=1 self_lookup_r
 </section>
 
 <footer>
-  <p>Every join scenario, including the ones not on this page, with its automated test: <a href="../../docs/04-bootstrap-and-join.md#join-scenarios-what-if"><code>docs/04-bootstrap-and-join.md</code></a>.</p>
   <p>Tests of moving files between laptops: <a href="field-tests.html"><code>field-tests.html</code></a>.</p>
 </footer>
 </div>

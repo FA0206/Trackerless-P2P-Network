@@ -15,8 +15,7 @@ import (
 // tapping the logger gives a visualizer all of that without changing
 // internal/kademlia or internal/transfer at all. The price: an event's
 // name is its log message ("rpc sent"), so log text is part of the API's
-// contract, as it already is for the demo scripts (ARCHITECTURE.md, "If
-// you change X").
+// contract, as it already is for the demo scripts.
 
 // Event is one log record, as the event stream sends it.
 type Event struct {

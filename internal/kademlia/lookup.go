@@ -55,8 +55,7 @@ const (
 // and gotten responses from the k closest nodes it has seen" -- is what
 // makes this terminate in O(log n) rounds instead of needing a fixed
 // iteration count, and it's why the answer is the k closest LIVE nodes
-// even when some of the closest contacts are dead (edge case B1,
-// docs/EDGE-CASES.md).
+// even when some of the closest contacts are dead (edge case B1).
 //
 // SIMPLIFICATION: the paper additionally short-circuits early once a round
 // returns nothing closer than what's already known UNLESS the k closest
@@ -71,7 +70,6 @@ const (
 // RPCs (including timeouts) before picking the next batch, whereas the
 // paper keeps alpha RPCs in flight and continues as soon as any reply
 // lands. A dead contact therefore costs one full rpcTimeout per round.
-// See docs/05-iterative-parallel-lookup.md.
 func (n *Node) Lookup(ctx context.Context, target ID) (*LookupResult, error) {
 	return n.iterativeFind(ctx, target, modeFindNode)
 }

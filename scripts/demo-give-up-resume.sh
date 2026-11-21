@@ -15,12 +15,11 @@
 #   mid-copy and the two ended with different counts (e.g. 23 vs 18). Now a
 #   download that gives up keeps serving what it has, so node2 catches up
 #   and both end with the same pieces: the ones that died with the seeder
-#   are missing from both. See docs/08-swarming.md, "Why giving up mustn't
-#   delete".
+#   are missing from both.
 #
 #   Then node3 joins (serving at full speed) and shares the same file (same
 #   bytes, same key), and node1 runs the same fetch again: it resumes,
-#   fetching only the missing pieces (docs/08-swarming.md, "Resuming").
+#   fetching only the missing pieces.
 #
 # PASS: both leechers give up with the same count, `files` lists the
 # partial file on both with that count, and node1's second fetch resumes

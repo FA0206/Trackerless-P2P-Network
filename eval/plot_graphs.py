@@ -5,7 +5,6 @@ Usage (from the repo root):  eval/.venv/bin/python eval/plot_graphs.py
 Every graph is drawn from whatever rows its CSV has, so it works before all
 experiments have run: a missing CSV is skipped with a note, and graphs 3 and
 4 show only the localhost series until real-host rows are recorded.
-What each graph measures and why: docs/10-performance-graphs.md.
 """
 
 import csv
@@ -40,7 +39,7 @@ K, ALPHA = 20, 3
 
 def expected_rpcs(n):
     """A lookup stops once it's heard from the k closest nodes, so it costs
-    about min(n-1, k) RPCs, whatever the network's size (docs/10, graph 1)."""
+    about min(n-1, k) RPCs, whatever the network's size."""
     return min(n - 1, K)
 
 

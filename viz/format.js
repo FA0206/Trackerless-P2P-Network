@@ -1,4 +1,4 @@
-// Turning node events into short, readable text (docs/13-visualizer.md).
+// Turning node events into short, readable text.
 // Pure functions: no network, no DOM. Classic scripts sharing one
 // `window.Viz` namespace, not ES modules: no build step, nothing to bundle.
 "use strict";

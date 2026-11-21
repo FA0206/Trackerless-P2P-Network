@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Edge case B1: half the network dies at once; the survivors keep looking
-# things up.  (docs/EDGE-CASES.md, case B1)
+# things up.
 #
 #   N nodes (default 16), k=4, each joining through a randomly chosen
 #   running node (as in demo-big-network.sh), so lookups take several
@@ -25,11 +25,11 @@
 #     pass, and some pass after pass 2 has none: lookups are back to
 #     milliseconds. With the paper's 5 that takes a few passes; with
 #     NODE_FLAGS="--stale-after 1" it's pass 3. (Before that fix, pass 3
-#     asked the same dead nodes again: see docs/EDGE-CASES.md.)
+#     asked the same dead nodes again.)
 #   - no answer is SHORT: every lookup that finishes returns k live nodes,
 #     because a failed candidate gives up its place to the next-closest
 #     one (lookup.go, paper Sec. 2.3). Before that fix, answers came back
-#     short (see docs/EDGE-CASES.md).
+#     short.
 #   - reported, not asserted: an answer can still miss a live node that
 #     no survivor mentions. Survivors' tables keep their dead contacts,
 #     and a FIND_NODE reply carries only the k closest of them, so dead

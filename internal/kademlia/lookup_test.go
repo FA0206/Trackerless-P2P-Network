@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// TestLookupAfterHalfTheNetworkDies is edge case B1 (docs/EDGE-CASES.md)
+// TestLookupAfterHalfTheNetworkDies is edge case B1
 // as a Go test. After 8 of 16 nodes die, a lookup must still return k
 // LIVE nodes. Dead contacts stay in the survivors' routing tables
 // (nothing evicts them yet), so the lookup meets them and must skip past

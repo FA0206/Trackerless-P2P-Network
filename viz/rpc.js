@@ -1,5 +1,4 @@
-// Turning a burst of real events from several nodes into replay steps
-// (docs/13-visualizer.md, "Replay" and "Pairing events across nodes").
+// Turning a burst of real events from several nodes into replay steps.
 // Pure: no DOM, no network. `resolve(contactText)` maps "id@ip:port" or
 // "ip:port" to a node name (or "" if unknown).
 //
@@ -38,7 +37,7 @@ window.Viz = window.Viz || {};
   // buildSteps sorts the window's events by time and groups them into
   // steps: a set of requests leaving together, a set of replies coming
   // back together, a round marker, or a result label. Order is kept;
-  // spacing is not (the SIMPLIFICATION in docs/13-visualizer.md).
+  // spacing is not (SIMPLIFICATION: the real duration is shown on the badge).
   // Each event is {node, ev}. Returns {steps, realNs, rpcs}.
   function buildSteps(items, resolve) {
     const { timeNs } = Viz.format;

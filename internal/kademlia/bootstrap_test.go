@@ -13,9 +13,7 @@ import (
 
 // Join scenarios beyond the happy path: no bootstrap address at all, the
 // bootstrap node leaving, duplicate IDs, and something at the bootstrap
-// address that isn't a working node. The table in
-// docs/04-bootstrap-and-join.md ("Join scenarios") lists every case and
-// its test. The happy paths are in integration_test.go.
+// address that isn't a working node. The happy paths are in integration_test.go.
 
 func joinCtx(t *testing.T) context.Context {
 	t.Helper()

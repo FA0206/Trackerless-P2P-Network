@@ -14,19 +14,19 @@ import (
 // Library is the set of files a peer can serve: files it shared (complete)
 // and files it is downloading or has downloaded. A partial entry serves
 // only the pieces whose bit is set in `have`, and a bit is set only after
-// that piece was verified and written to disk (docs/08-swarming.md,
-// "write, then publish"). Shared with the TCP server's goroutines, hence
+// that piece was verified and written to disk ("write, then publish").
+// Shared with the TCP server's goroutines, hence
 // the mutex.
 type Library struct {
 	mu    sync.RWMutex
 	files map[kademlia.ID]*libraryEntry
 }
 
-// Every piece is served with its Merkle proof (docs/11-merkle-trees.md).
+// Every piece is served with its Merkle proof.
 // A file this peer shared has the whole tree and can make any proof. A
 // file it's downloading has no tree: it can't build one without every
 // piece, so it keeps the proof that came with each piece and passes that
-// on (partial seeding, docs/08-swarming.md).
+// on (partial seeding).
 type libraryEntry struct {
 	manifest      Manifest
 	manifestBytes []byte

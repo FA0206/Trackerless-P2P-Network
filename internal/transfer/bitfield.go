@@ -5,7 +5,7 @@ import "fmt"
 // Bitfield records which pieces a peer has: bit i is piece i, with the
 // high bit of byte 0 for piece 0 -- the same layout as BitTorrent's
 // `bitfield` message (BEP 3), so the bytes go on the wire unchanged in a
-// GET_BITFIELD reply. Pure data, no I/O. See docs/08-swarming.md.
+// GET_BITFIELD reply. Pure data, no I/O.
 type Bitfield []byte
 
 // NewBitfield returns an all-zero bitfield for n pieces.

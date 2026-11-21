@@ -4,7 +4,7 @@ import "sync"
 
 // Bucket is a single k-bucket: an ordered list of up to k contacts, oldest
 // (least-recently-seen) first and newest (most-recently-seen) last. See
-// docs/02-routing-table-and-kbuckets.md and paper Sec. 2.2/2.4.
+// paper Sec. 2.2/2.4.
 //
 // Eviction needs a network round-trip (ping the oldest contact before
 // dropping it), which this type can't do by itself. So Update doesn't

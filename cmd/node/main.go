@@ -31,7 +31,7 @@ func main() {
 func run() error {
 	port := flag.Int("port", 9000, "UDP port to listen on")
 	tcpPort := flag.Int("tcp-port", 0, "TCP port for serving files; 0 means the same number as -port (TCP and UDP port numbers don't clash)")
-	advertiseIP := flag.String("advertise-ip", "127.0.0.1", "IPv4 address other nodes use to download files from this one (it goes into provider records). If not given, it's detected from the route to the -bootstrap node, which can be any node of the network on another machine; without one, it stays 127.0.0.1. So a node started without -bootstrap, like the first one, must be given its IP (docs/09-multi-device.md)")
+	advertiseIP := flag.String("advertise-ip", "127.0.0.1", "IPv4 address other nodes use to download files from this one (it goes into provider records). If not given, it's detected from the route to the -bootstrap node, which can be any node of the network on another machine; without one, it stays 127.0.0.1. So a node started without -bootstrap, like the first one, must be given its IP")
 	idSeed := flag.String("id-seed", "", "deterministic node ID = SHA-1(id-seed); if empty, a random ID is used")
 	bootstrap := flag.String("bootstrap", "", "host:port of an existing node to join through (optional)")
 	lookupTarget := flag.String("lookup", "", "after joining, perform one extra lookup for this ID (40-char hex), log the result, and keep running")
@@ -50,8 +50,8 @@ func run() error {
 	maxInFlight := flag.Int("max-inflight", transfer.DefaultMaxInFlight, "most piece requests a download keeps in flight at once (always at most 1 per provider)")
 	debugCorrupt := flag.Bool("debug-corrupt-pieces", false, "DEBUG ONLY: flip one byte of every piece this node serves (sending the genuine Merkle proof), to show downloaders catching a dishonest provider")
 	debugServeDelay := flag.Duration("debug-serve-delay", 0, "DEBUG ONLY: wait this long before answering each piece request, so a demo can kill this node mid-transfer (0 = off)")
-	debugUploadRate := flag.Int64("debug-upload-rate", 0, "DEBUG ONLY: cap this node's total file upload at this many bytes per second, across all connections, to model a real uplink on localhost (0 = off; docs/10-performance-graphs.md)")
-	apiAddr := flag.String("api", "", "serve this node's state as JSON over HTTP on host:port, e.g. 127.0.0.1:8000 (off if empty; see docs/NODE-API.md)")
+	debugUploadRate := flag.Int64("debug-upload-rate", 0, "DEBUG ONLY: cap this node's total file upload at this many bytes per second, across all connections, to model a real uplink on localhost (0 = off)")
+	apiAddr := flag.String("api", "", "serve this node's state as JSON over HTTP on host:port, e.g. 127.0.0.1:8000 (off if empty)")
 	apiControl := flag.Bool("api-control", false, "with -api: also accept POST lookup/ping/put/get/share/fetch, so a page can make this node act (any website open in your browser could too; demo use only)")
 	flag.Parse()
 	if *apiControl && *apiAddr == "" {
@@ -73,7 +73,7 @@ func run() error {
 	logger := kademlia.NewLogger(id, level)
 	// With --api, every log record is also an event for GET /api/events.
 	// The tee passes the printed handler exactly the records it would get
-	// anyway, so stdout is unchanged (docs/NODE-API.md).
+	// anyway, so stdout is unchanged.
 	var events *nodeapi.Events
 	if *apiAddr != "" {
 		events = nodeapi.NewEvents()
@@ -251,7 +251,7 @@ func parseBootstrap(s string) (*net.UDPAddr, error) {
 // SIMPLIFICATION: the detected IP is the source of one route, the one to
 // the bootstrap node. Right when every node is on one subnet; wrong behind
 // NAT, or when other peers reach us over a different interface. Nothing
-// discovers how other nodes actually see us (docs/09-multi-device.md).
+// discovers how other nodes actually see us.
 func chooseAdvertiseIP(value string, set bool, seed *net.UDPAddr,
 	routeSource func(*net.UDPAddr) (net.IP, error)) (ip string, detected bool, err error) {
 	if set {

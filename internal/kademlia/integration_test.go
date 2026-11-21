@@ -11,7 +11,7 @@ import (
 
 // spinUpNode starts a real, listening Node on an OS-assigned loopback
 // port and registers its cleanup. Logs are discarded unless
-// KADEMLIA_TEST_LOGS=1 is set (see docs/DEBUGGING.md).
+// KADEMLIA_TEST_LOGS=1 is set.
 func spinUpNode(t *testing.T, id ID) *Node {
 	t.Helper()
 	logger := slog.New(slog.DiscardHandler)

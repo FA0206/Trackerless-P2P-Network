@@ -12,7 +12,7 @@ import (
 
 // TestListenReportsDatagramSize: the size Listen hands to its handler is the
 // full datagram, framing prefix included. The "rpc received" log's bytes
-// field (summed for the control-bytes graph, docs/10-performance-graphs.md)
+// field (summed for the control-bytes graph)
 // relies on it.
 func TestListenReportsDatagramSize(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)

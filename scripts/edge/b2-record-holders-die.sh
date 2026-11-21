@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Edge case B2: every node holding a file's provider record dies, while
-# the seeder itself stays online.  (docs/EDGE-CASES.md, case B2)
+# the seeder itself stays online.
 #
 #   N nodes (default 8), k=3, all join through node0. node1 shares a file.
 #   Its provider record ("node1 has it, at 127.0.0.1:<port>") is STOREd on
@@ -27,7 +27,7 @@
 # dead holders (lookup.go, Sec. 2.3), and stores the record on the k
 # closest LIVE nodes, where the third leecher's FIND_VALUE finds it.
 # (Before republishing existed, step 4 was a manual re-share; before the
-# lookup fix, even that failed. See docs/EDGE-CASES.md.)
+# lookup fix, even that failed.)
 # The script PASSES when all four steps behave as predicted.
 #
 # Usage: scripts/edge/b2-record-holders-die.sh   (env: N=8 BASE_PORT=9525 SEED=1 REPUBLISH=15s)

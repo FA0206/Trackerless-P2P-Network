@@ -11,7 +11,7 @@
 #
 # k=3, so each value lives on only 3 of the 5 nodes and FIND_VALUE has to
 # search for it. Each node reads console commands from a named pipe (FIFO)
-# that this script writes to. See docs/DRY-RUN.md, part 2.
+# that this script writes to.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

@@ -12,7 +12,7 @@ import (
 	"sync"
 )
 
-// nodeEvent is one /api/events event (docs/NODE-API.md), plus the name
+// nodeEvent is one /api/events event, plus the name
 // of the node whose stream it came on: events carry no node ID.
 type nodeEvent struct {
 	Node    string         `json:"node"`
@@ -26,7 +26,7 @@ type nodeEvent struct {
 
 // pieceState is what one node's current download has, from its own
 // "piece received" events (piece events carry no key, so it's one
-// download per node at a time; docs/13-visualizer.md).
+// download per node at a time).
 type pieceState struct {
 	have     map[int]bool
 	of       int

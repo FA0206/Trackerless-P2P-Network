@@ -8,7 +8,7 @@
 #   the manifest, because only the content key (xt) is used. Last, node2 is
 #   handed a BitTorrent link (urn:btih) with the same 40 hex characters and
 #   refuses it: it names a torrent in BitTorrent's network, not a file in
-#   ours. See docs/12-magnet-links.md.
+#   ours.
 #
 # PASS: both copies are byte-identical, the lying link's download reports
 # the manifest's real name, and the BitTorrent link is refused without
