@@ -1,0 +1,394 @@
+<!doctype html>
+<!--
+  Kademlia LAN Field Tests: step-by-step tests for running the network on
+  real laptops on one Wi-Fi (docs/09-multi-device.md). A static page, no
+  build step. Open it in a browser:  xdg-open scripts/multi-device/field-tests.html
+  Typing each laptop's IP into the page fills in every command.
+  The expected output it shows is real log and console text: keep it in
+  sync when that text changes (docs/ARCHITECTURE.md, "If you change X").
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kademlia LAN Field Tests</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@500;600;700&display=swap">
+<style>
+/* Layout: one reading column; a protocol sheet. Each laptop has a fixed colour (A, B, C) used on every step it runs. */
+:root {
+  --bg: #f4f6f8;
+  --surface: #ffffff;
+  --ink: #15212c;
+  --muted: #586777;
+  --line: #d9e0e7;
+  --code-bg: #eaeff4;
+  --accent: #1d6a86;
+  --role-a: #4453c9;
+  --role-b: #0d806a;
+  --role-c: #a4600a;
+  --pass: #1d7f47;
+  --fail: #b93a27;
+  --font-display: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f151b; --surface: #151d25; --ink: #e2e8ee; --muted: #93a1af; --line: #27323d;
+    --code-bg: #1b2530; --accent: #63b4d2; --role-a: #93a0ff; --role-b: #4cc7a6; --role-c: #e2a64d;
+    --pass: #55c487; --fail: #ff7c66; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f151b; --surface: #151d25; --ink: #e2e8ee; --muted: #93a1af; --line: #27323d;
+  --code-bg: #1b2530; --accent: #63b4d2; --role-a: #93a0ff; --role-b: #4cc7a6; --role-c: #e2a64d;
+  --pass: #55c487; --fail: #ff7c66; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink);
+  font: 15px/1.6 var(--font-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 32px 64px;
+}
+.page { max-width: 820px; margin: 0 auto; display: grid; gap: 40px; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; line-height: 1.2; }
+h1 { font-size: clamp(28px, 5vw, 38px); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 22px; font-weight: 600; }
+h3 { font-size: 18px; font-weight: 600; }
+p { margin: 0; max-width: 68ch; }
+a { color: var(--accent); }
+code, pre, kbd { font-family: var(--font-mono); font-size: 13px; }
+:not(pre) > code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; background: var(--surface); }
+.eyebrow { font: 600 12px/1.4 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.muted { color: var(--muted); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* header */
+header.top { display: grid; gap: 14px; }
+.lede { font-size: 17px; }
+.result { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.result-label { font: 600 13px/1.4 var(--font-mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.passed { display: inline-flex; align-items: center; gap: 6px; font: 600 12px/1 var(--font-mono); padding: 5px 9px; border-radius: 999px; border: 1px solid var(--pass); color: var(--pass); white-space: nowrap; }
+.passed::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--pass); }
+
+/* roles */
+.roles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.role { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 14px 16px; display: grid; gap: 6px; align-content: start; }
+.role p { font-size: 14px; color: var(--muted); }
+.chip { display: inline-flex; align-items: center; gap: 6px; font: 600 12px/1 var(--font-mono); padding: 4px 8px; border-radius: 999px; color: var(--surface); white-space: nowrap; width: fit-content; }
+.chip.a { background: var(--role-a); }
+.chip.b { background: var(--role-b); }
+.chip.c { background: var(--role-c); }
+.chip.ab { background: linear-gradient(90deg, var(--role-a) 50%, var(--role-b) 50%); }
+.chip.bc { background: linear-gradient(90deg, var(--role-b) 50%, var(--role-c) 50%); }
+
+/* address panel */
+.panel { border: 1px solid var(--line); background: var(--surface); border-radius: 10px; padding: 18px; display: grid; gap: 14px; }
+.fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.field { display: grid; gap: 6px; }
+.field label { font: 600 13px/1.3 var(--font-body); display: flex; gap: 8px; align-items: center; }
+.field input { font: 15px/1.2 var(--font-mono); padding: 9px 11px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); width: 100%; min-width: 0; }
+.field input:focus { outline: 2px solid var(--accent); outline-offset: 0; border-color: transparent; }
+.field input[aria-invalid="true"] { border-color: var(--fail); }
+.field small { color: var(--muted); font-size: 12.5px; }
+
+/* sections and tests */
+section { display: grid; gap: 16px; }
+.section-head { display: grid; gap: 6px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.test { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 18px; display: grid; gap: 14px; }
+.test-head { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: flex-start; justify-content: space-between; }
+.test-head .title { display: grid; gap: 4px; min-width: 0; flex: 1 1 320px; }
+.num { font: 600 12px/1 var(--font-mono); color: var(--accent); letter-spacing: 0.06em; text-transform: uppercase; }
+.why { color: var(--muted); }
+
+ol.steps { margin: 0; padding: 0; list-style: none; counter-reset: s; display: grid; gap: 12px; }
+ol.steps > li { counter-increment: s; display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 4px 8px; }
+ol.steps > li::before { content: counter(s); font: 600 12px/22px var(--font-mono); color: var(--muted); text-align: center; border: 1px solid var(--line); border-radius: 50%; width: 22px; height: 22px; }
+ol.steps > li > * { grid-column: 2; }
+.step-text { display: grid; gap: 8px; min-width: 0; }
+
+.cmd { border-radius: 8px; background: var(--code-bg); overflow: hidden; min-width: 0; }
+.cmd-bar { display: flex; align-items: center; gap: 8px; padding: 6px 8px 0 10px; flex-wrap: wrap; }
+.where { font: 500 11.5px/1 var(--font-mono); color: var(--muted); letter-spacing: 0.04em; }
+.copy { margin-left: auto; font: 600 12px/1 var(--font-body); padding: 6px 10px; border-radius: 5px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+.copy:hover { border-color: var(--accent); }
+.cmd pre { margin: 0; padding: 8px 12px 12px; overflow-x: auto; white-space: pre; line-height: 1.55; }
+.ph { color: var(--fail); font-weight: 600; }
+.ip { color: var(--accent); font-weight: 600; }
+
+.expect { display: grid; gap: 6px; min-width: 0; }
+.expect .label { font: 600 11.5px/1 var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--pass); }
+pre.out { margin: 0; padding: 10px 12px; border-left: 3px solid var(--pass); background: var(--bg); overflow-x: auto; white-space: pre; line-height: 1.55; font-size: 12.5px; border-radius: 0 6px 6px 0; }
+pre.out.bad { border-left-color: var(--fail); }
+.passwhen { border-top: 1px dashed var(--line); padding-top: 12px; display: grid; gap: 6px; }
+.passwhen strong { font-family: var(--font-display); }
+.observed { border-radius: 8px; background: var(--bg); border: 1px solid var(--line); padding: 10px 14px; font-size: 14px; display: grid; gap: 4px; }
+.observed b { font-family: var(--font-display); }
+
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; min-width: 620px; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+th { font: 600 12px/1.3 var(--font-mono); letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+tr:last-child td { border-bottom: 0; }
+footer { color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); padding-top: 16px; display: grid; gap: 6px; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .copy { transition: border-color .15s; }
+}
+</style>
+</head>
+<body>
+<div class="page">
+
+<header class="top">
+  <div class="eyebrow">Trackerless P2P network · multi-device</div>
+  <h1>Kademlia LAN Field Tests</h1>
+  <p class="lede">Four tests that check what only real laptops on one Wi-Fi can show: a laptop announcing a wrong address, a laptop vanishing mid-download, downloading from two laptops at once, and a file surviving the death of the laptop that shared it.</p>
+  <div class="result"><span class="result-label">Result: 4 of 4 passed</span><span class="passed">Test 1</span><span class="passed">Test 2</span><span class="passed">Test 3</span><span class="passed">Test 4</span></div>
+  <p class="muted">Before these, the basics passed on campus Wi-Fi: two laptops joined, saw each other, and shared the Kademlia paper in both directions. Speed measurements are left for the performance analysis.</p>
+</header>
+
+<section aria-labelledby="who">
+  <div class="section-head">
+    <h2 id="who">Who runs what</h2>
+    <p class="muted">Every command is tagged with the laptop that runs it, and with where you type it.</p>
+  </div>
+  <div class="roles">
+    <div class="role"><span class="chip a">A · has the repo</span><p>Builds the program, starts first, shares the files. Runs <code>./lab/node</code> from the repo folder.</p></div>
+    <div class="role"><span class="chip b">B · second laptop</span><p>Gets <code>node-linux</code> from A and runs <code>./node-linux</code>. Never needs to know its own IP.</p></div>
+    <div class="role"><span class="chip c">C · third laptop</span><p>Only for tests 3 and 4. Same file as B, started the same way.</p></div>
+  </div>
+  <p class="muted"><b>terminal</b> means a normal shell. <b>node console</b> means typing into the window where a node is running: log lines scroll past, but typing still works. Stop a node with <kbd>Ctrl</kbd>+<kbd>C</kbd>. A <b>fresh start</b> means stopping every node and starting again: the network keeps everything in memory, so stopping wipes it.</p>
+</section>
+
+<section aria-labelledby="addr">
+  <div class="panel">
+    <h2 id="addr">Your addresses</h2>
+    <p class="muted">Type the IPs once and every command on this page fills them in. They're saved in this browser only. A finds its own in the first setup step; B's and C's appear in A's <code>table</code> output once they've joined.</p>
+    <div class="fields">
+      <div class="field"><label for="ipA"><span class="chip a">A</span> Laptop A's IP</label><input id="ipA" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="192.168.0.101"><small>Needed for every test</small></div>
+      <div class="field"><label for="ipB"><span class="chip b">B</span> Laptop B's IP</label><input id="ipB" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="192.168.0.105"><small>From A's <code>table</code></small></div>
+      <div class="field"><label for="ipC"><span class="chip c">C</span> Laptop C's IP</label><input id="ipC" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="optional"><small>Tests 3 and 4 only</small></div>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="setup">
+  <div class="section-head">
+    <h2 id="setup">Before you start</h2>
+    <p class="muted">All laptops on the same network. Campus Wi-Fi worked for us; a phone hotspot is the fallback if a network blocks laptops from talking to each other.</p>
+  </div>
+  <ol class="steps">
+    <li><div class="step-text"><p>Find A's IP: it's the number after <code>src</code>. Put it in the box above.</p>
+      <div class="cmd"><div class="cmd-bar"><span class="chip a">A</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>ip route get 1.1.1.1</code></pre></div></div></li>
+    <li><div class="step-text"><p>Build the program, plus a copy to send to B and C over USB, Drive or Telegram (about 9 MB). Run from the repo folder.</p>
+      <div class="cmd"><div class="cmd-bar"><span class="chip a">A</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>go build -o lab/node ./cmd/node &amp;&amp; cp lab/node lab/node-linux</code></pre></div></div></li>
+    <li><div class="step-text"><p>Make the received file runnable.</p>
+      <div class="cmd"><div class="cmd-bar"><span class="chip bc">B + C</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>chmod +x node-linux</code></pre></div></div></li>
+    <li><div class="step-text"><p>Check the firewall on every laptop. If it says <code>Status: active</code>, open port 9000 for UDP (the network) and TCP (file data).</p>
+      <div class="cmd"><div class="cmd-bar"><span class="chip ab">all laptops</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>sudo ufw status</code></pre></div>
+      <div class="cmd"><div class="cmd-bar"><span class="chip ab">all laptops</span><span class="where">terminal, only if active</span><button class="copy" type="button">Copy</button></div><pre><code>sudo ufw allow 9000/udp &amp;&amp; sudo ufw allow 9000/tcp</code></pre></div></div></li>
+    <li><div class="step-text"><p>Make a 2 MiB test file: 32 pieces of 64 KiB.</p>
+      <div class="cmd"><div class="cmd-bar"><span class="chip a">A</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>head -c 2M /dev/urandom &gt; lab/two-mb.bin</code></pre></div></div></li>
+  </ol>
+</section>
+
+<section aria-labelledby="start">
+  <div class="section-head">
+    <h2 id="start">Standard start</h2>
+    <p class="muted">Most tests begin like this. A starts first and states its IP; B joins through A and works out its own IP.</p>
+  </div>
+  <ol class="steps">
+    <li><div class="step-text">
+      <div class="cmd"><div class="cmd-bar"><span class="chip a">A</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>./lab/node --port 9000 --id-seed laptopA --advertise-ip {A}</code></pre></div></div></li>
+    <li><div class="step-text">
+      <div class="cmd"><div class="cmd-bar"><span class="chip b">B</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>./node-linux --port 9000 --id-seed laptopB --bootstrap {A}:9000</code></pre></div>
+      <div class="expect"><span class="label">Expect on B</span><pre class="out">msg="advertise ip auto-detected" ip={B} via={A}:9000
+…
+msg="bootstrap complete" routing_table_size=1 …</pre></div>
+      <div class="expect"><span class="label">Expect on A</span><pre class="out">msg="rpc received" type=PING from=…@{B}:9000 …</pre></div></div></li>
+    <li><div class="step-text"><p>Quick check on both: each lists exactly one contact, the other laptop, with its Wi-Fi IP.</p>
+      <div class="cmd"><div class="cmd-bar"><span class="chip ab">A + B</span><span class="where">node console</span><button class="copy" type="button">Copy</button></div><pre><code>table</code></pre></div></div></li>
+  </ol>
+</section>
+
+<section aria-labelledby="two">
+  <div class="section-head">
+    <h2 id="two">Two laptops</h2>
+  </div>
+
+  <article class="test" id="t1">
+    <div class="test-head"><div class="title"><span class="num">Test 1</span><h3>Forget <code>--advertise-ip</code> on purpose</h3><p class="why">A laptop started without its IP tells others "my files are at 127.0.0.1", which every laptop reads as itself. This checks the warning added for exactly that mistake.</p></div><span class="passed">Passed</span></div>
+    <ol class="steps">
+      <li><div class="step-text"><p>Stop both nodes. A starts <b>without</b> its IP; B joins as usual.</p>
+        <div class="cmd"><div class="cmd-bar"><span class="chip a">A</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>./lab/node --port 9000 --id-seed laptopA</code></pre></div>
+        <div class="cmd"><div class="cmd-bar"><span class="chip b">B</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>./node-linux --port 9000 --id-seed laptopB --bootstrap {A}:9000</code></pre></div>
+        <div class="expect"><span class="label">Expect on A, the moment B joins</span><pre class="out bad">level=WARN msg="advertise ip is loopback but a remote peer contacted us" advertise_ip=127.0.0.1 from=…@{B}:9000</pre></div></div></li>
+      <li><div class="step-text"><p>A shares the Kademlia paper; send the printed key to B over chat.</p>
+        <div class="cmd"><div class="cmd-bar"><span class="chip a">A</span><span class="where">node console</span><button class="copy" type="button">Copy</button></div><pre><code>share maymounkov-kademlia-lncs.pdf</code></pre></div>
+        <div class="cmd"><div class="cmd-bar"><span class="chip b">B</span><span class="where">node console</span><button class="copy" type="button">Copy</button></div><pre><code>fetch &lt;key&gt; paper.pdf</code></pre></div>
+        <div class="expect"><span class="label">Expect on B: it connected to itself</span><pre class="out bad">msg="provider failed, trying the next one" provider=127.0.0.1:9000 error="provider refused: unknown content key …"
+fetch failed: transfer: fetch manifest: every provider failed</pre></div></div></li>
+      <li><div class="step-text"><p><b>Then stop both nodes and do a standard start.</b> B still holds the bad record, and records never expire, so restarting only A wouldn't fix it.</p></div></li>
+    </ol>
+    <div class="passwhen"><strong>Pass when</strong><p>A shows the warning as soon as B joins, and B's fetch fails exactly like this. Here, failing is the expected result.</p></div>
+  </article>
+
+  <article class="test" id="t2">
+    <div class="test-head"><div class="title"><span class="num">Test 2</span><h3>Pull the plug mid-download</h3><p class="why">On a real network, a laptop that vanishes is slower to notice than a program that quits. The download must fail cleanly, never hang.</p></div><span class="passed">Passed</span></div>
+    <ol class="steps">
+      <li><div class="step-text"><p>Start A so it waits 1 s before sending each piece, which gives you time to act. B joins as usual.</p>
+        <div class="cmd"><div class="cmd-bar"><span class="chip a">A</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>./lab/node --port 9000 --id-seed laptopA --advertise-ip {A} --debug-serve-delay 1s</code></pre></div>
+        <div class="cmd"><div class="cmd-bar"><span class="chip b">B</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>./node-linux --port 9000 --id-seed laptopB --bootstrap {A}:9000</code></pre></div></div></li>
+      <li><div class="step-text">
+        <div class="cmd"><div class="cmd-bar"><span class="chip a">A</span><span class="where">node console</span><button class="copy" type="button">Copy</button></div><pre><code>share lab/two-mb.bin</code></pre></div>
+        <div class="cmd"><div class="cmd-bar"><span class="chip b">B</span><span class="where">node console</span><button class="copy" type="button">Copy</button></div><pre><code>fetch &lt;key&gt; two-mb.bin</code></pre></div></div></li>
+      <li><div class="step-text"><p>When B's log shows <code>msg="piece received" … have=5</code>, <b>A turns its Wi-Fi off</b>.</p>
+        <div class="expect"><span class="label">Expect on B, about 25 s later</span><pre class="out">msg="provider failed, trying the next one" provider={A}:9000 error="… i/o timeout"
+fetch failed: transfer: stalled for 15s with 5 of 32 pieces: no live provider has the rest</pre></div>
+        <div class="cmd"><div class="cmd-bar"><span class="chip b">B</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>ls two-mb.bin</code></pre></div>
+        <div class="expect"><span class="label">Expect</span><pre class="out">ls: cannot access 'two-mb.bin': No such file or directory</pre></div></div></li>
+      <li><div class="step-text"><p>Turn Wi-Fi back on, do a fresh start, and repeat with A pressing <kbd>Ctrl</kbd>+<kbd>C</kbd> instead. B now fails after about 15 s, because A's laptop answers "nobody here" at once.</p></div></li>
+    </ol>
+    <div class="passwhen"><strong>Pass when</strong><p>The fetch gives up with that message in about 25 s (Wi-Fi off) or 15 s (<kbd>Ctrl</kbd>+<kbd>C</kbd>), and no half-written file is left behind.</p></div>
+  </article>
+</section>
+
+<section aria-labelledby="three">
+  <div class="section-head">
+    <h2 id="three">Three laptops</h2>
+    <p class="muted">C uses the same <code>node-linux</code> file as B, and its own firewall check.</p>
+  </div>
+
+  <article class="test" id="t3">
+    <div class="test-head"><div class="title"><span class="num">Test 3</span><h3>Two providers at once</h3><p class="why">A download pulls different pieces from several laptops in parallel.</p></div><span class="passed">Passed</span></div>
+    <ol class="steps">
+      <li><div class="step-text"><p>Fresh standard start for A and B, <b>without</b> <code>--debug-serve-delay</code> on either (see why below). A shares the 2 MiB file; B fetches it, which makes B a provider too.</p>
+        <div class="cmd"><div class="cmd-bar"><span class="chip a">A</span><span class="where">node console</span><button class="copy" type="button">Copy</button></div><pre><code>share lab/two-mb.bin</code></pre></div>
+        <div class="cmd"><div class="cmd-bar"><span class="chip b">B</span><span class="where">node console</span><button class="copy" type="button">Copy</button></div><pre><code>fetch &lt;key&gt; two-mb.bin</code></pre></div></div></li>
+      <li><div class="step-text">
+        <div class="cmd"><div class="cmd-bar"><span class="chip c">C</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>./node-linux --port 9000 --id-seed laptopC --bootstrap {A}:9000</code></pre></div>
+        <div class="cmd"><div class="cmd-bar"><span class="chip c">C</span><span class="where">node console</span><button class="copy" type="button">Copy</button></div><pre><code>fetch &lt;key&gt; two-mb.bin</code></pre></div>
+        <div class="expect"><span class="label">Expect on C</span><pre class="out">fetched "two-mb.bin" (2097152 bytes, 32 pieces) into two-mb.bin in …
+    N piece(s) from {A}:9000
+    M piece(s) from {B}:9000      (N + M = 32)</pre></div></div></li>
+    </ol>
+    <div class="passwhen"><strong>Pass when</strong><p>C lists pieces from <b>both</b> A and B.</p></div>
+    <div class="observed"><b>What we saw: 31 pieces from B, 1 from A, in both sharing orders.</b>
+      <p class="muted">The split follows speed, not who shared first. Each laptop gets its next piece only after answering the previous one, so a laptop that answers 30× faster gets about 30× the pieces. And once a piece is handed to a laptop, only that laptop is asked for it, so the download still waits for the slow laptop's piece at the end. A split this lopsided means one laptop answers far slower: a leftover <code>--debug-serve-delay</code> from test 2 or 4 is the usual cause, a weak Wi-Fi link the other. Compare <code>ping {A}:9000</code> and <code>ping {B}:9000</code> from C's node console to tell.</p></div>
+  </article>
+
+  <article class="test" id="t4">
+    <div class="test-head"><div class="title"><span class="num">Test 4 · the headline</span><h3>The seeder dies, the file survives</h3><p class="why">The project's main promise: once the downloaders <i>together</i> hold every piece, the laptop that shared the file can vanish, and they finish from each other.</p></div><span class="passed">Passed</span></div>
+    <ol class="steps">
+      <li><div class="step-text"><p>Fresh start. Every laptop sends each piece 1 s late, so there's time to act; B and C fetch one piece at a time.</p>
+        <div class="cmd"><div class="cmd-bar"><span class="chip a">A</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>./lab/node --port 9000 --id-seed laptopA --advertise-ip {A} --debug-serve-delay 1s</code></pre></div>
+        <div class="cmd"><div class="cmd-bar"><span class="chip b">B</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>./node-linux --port 9000 --id-seed laptopB --bootstrap {A}:9000 --debug-serve-delay 1s --max-inflight 1</code></pre></div>
+        <div class="cmd"><div class="cmd-bar"><span class="chip c">C</span><span class="where">terminal</span><button class="copy" type="button">Copy</button></div><pre><code>./node-linux --port 9000 --id-seed laptopC --bootstrap {A}:9000 --debug-serve-delay 1s --max-inflight 1</code></pre></div></div></li>
+      <li><div class="step-text">
+        <div class="cmd"><div class="cmd-bar"><span class="chip a">A</span><span class="where">node console</span><button class="copy" type="button">Copy</button></div><pre><code>share lab/two-mb.bin</code></pre></div>
+        <div class="cmd"><div class="cmd-bar"><span class="chip b">B</span><span class="where">node console</span><button class="copy" type="button">Copy</button></div><pre><code>fetch &lt;key&gt; two-mb.bin</code></pre></div></div></li>
+      <li><div class="step-text"><p>When B's log shows <code>have=10</code>, C starts too:</p>
+        <div class="cmd"><div class="cmd-bar"><span class="chip c">C</span><span class="where">node console</span><button class="copy" type="button">Copy</button></div><pre><code>fetch &lt;key&gt; two-mb.bin</code></pre></div></div></li>
+      <li><div class="step-text"><p>When B's log shows <code>have=</code> somewhere between <b>22 and 28</b>, A presses <kbd>Ctrl</kbd>+<kbd>C</kbd>.</p>
+        <div class="expect"><span class="label">Expect on B and on C</span><pre class="out">fetched "two-mb.bin" (2097152 bytes, 32 pieces) into two-mb.bin in …
+    … piece(s) from {A}:9000
+    … piece(s) from the other laptop
+    provider {A}:9000 failed and was skipped</pre></div></div></li>
+    </ol>
+    <div class="passwhen"><strong>Pass when</strong><p>Both B and C finish after A is gone.</p>
+      <p class="muted">Why 22–28: B and C each get about one piece a second, and they're steered to different pieces, so together they hold all 32 once B is near 21. B alone would finish at 32. Stop A earlier and some piece may exist only on A: losing the file is then the correct outcome (B and C fail with "no live provider has the rest"), so try again and stop A later.</p></div>
+  </article>
+</section>
+
+<section aria-labelledby="trouble">
+  <div class="section-head">
+    <h2 id="trouble">Troubleshooting</h2>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>What you see</th><th>Why</th><th>Fix</th></tr></thead>
+      <tbody>
+        <tr><td><code>error: bootstrap failed: …</code></td><td>The joining laptop's packets never reach A: different networks, Wi-Fi that blocks laptops from each other, or a firewall</td><td>Same phone hotspot; check <code>sudo ufw status</code> on A</td></tr>
+        <tr><td>A fetch fails mentioning <code>127.0.0.1</code> or <code>unknown content key</code></td><td>The sharing laptop was started without <code>--advertise-ip</code> (test 1 does this on purpose)</td><td>Stop every node, then a standard start</td></tr>
+        <tr><td>A fetch fails with <code>i/o timeout</code></td><td>The firewall lets UDP through but blocks TCP</td><td><code>sudo ufw allow 9000/tcp</code> on the sharing laptop</td></tr>
+        <tr><td>One laptop gives almost every piece (e.g. 31 of 32)</td><td>The other answers far slower</td><td>Restart it without <code>--debug-serve-delay</code>; compare <code>ping</code> times</td></tr>
+        <tr><td><code>error: -advertise-ip "…": must be an IPv4 address …</code></td><td>A name or an IPv6 address was given</td><td>Use the number from <code>ip route get 1.1.1.1</code></td></tr>
+        <tr><td><code>./node-linux: Permission denied</code></td><td>The file isn't marked runnable</td><td><code>chmod +x node-linux</code></td></tr>
+        <tr><td><code>cannot execute binary file: Exec format error</code></td><td>The laptop has an ARM processor (<code>uname -m</code> says <code>aarch64</code>)</td><td>A builds one for it: <code>GOOS=linux GOARCH=arm64 go build -o lab/node-linux-arm64 ./cmd/node</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<footer>
+  <p>Background for every test, with real logs: <a href="../../docs/09-multi-device.md"><code>docs/09-multi-device.md</code></a>.</p>
+  <p>Not covered here: 20-node lookups and very large network messages need more nodes than laptops, and run in a simulated network on one machine (<code>scripts/netns/</code>).</p>
+</footer>
+</div>
+
+<script>
+(function () {
+  var ROLES = ["A", "B", "C"];
+  var store = {
+    get: function (k) { try { return window.localStorage.getItem(k); } catch (e) { return null; } },
+    set: function (k, v) { try { window.localStorage.setItem(k, v); } catch (e) {} }
+  };
+  var IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
+  function esc(s) {
+    return s.replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; });
+  }
+
+  // Each command and expected-output block keeps its original text as a template.
+  var templated = Array.prototype.slice.call(document.querySelectorAll(".cmd pre, pre.out, .observed code"));
+  templated.forEach(function (el) { el.dataset.tpl = el.textContent; });
+
+  function render() {
+    var vals = {};
+    ROLES.forEach(function (r) {
+      var input = document.getElementById("ip" + r);
+      var v = input.value.trim();
+      input.setAttribute("aria-invalid", v && !IPV4.test(v) ? "true" : "false");
+      vals[r] = v && IPV4.test(v) ? v : "";
+    });
+    templated.forEach(function (el) {
+      var html = esc(el.dataset.tpl).replace(/\{([ABC])\}/g, function (_, r) {
+        return vals[r] ? '<span class="ip">' + esc(vals[r]) + "</span>" : '<span class="ph">&lt;' + r + "-IP&gt;</span>";
+      });
+      el.innerHTML = el.tagName === "PRE" && !el.classList.contains("out") ? "<code>" + html + "</code>" : html;
+    });
+  }
+
+  ROLES.forEach(function (r) {
+    var input = document.getElementById("ip" + r);
+    var saved = store.get("fieldtests.ip." + r);
+    if (saved) input.value = saved;
+    input.addEventListener("input", function () { store.set("fieldtests.ip." + r, input.value.trim()); render(); });
+  });
+  render();
+
+  // Copy buttons: copy the command as currently shown (with the IPs filled in).
+  document.addEventListener("click", function (ev) {
+    var btn = ev.target.closest(".copy");
+    if (!btn) return;
+    var pre = btn.closest(".cmd").querySelector("pre");
+    var text = pre.textContent;
+    function selectIt() {
+      var range = document.createRange(); range.selectNodeContents(pre);
+      var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+      btn.textContent = "Selected: press Ctrl+C";
+    }
+    try {
+      navigator.clipboard.writeText(text).then(function () { btn.textContent = "Copied"; }, selectIt);
+    } catch (e) { selectIt(); }
+    setTimeout(function () { btn.textContent = "Copy"; }, 1800);
+  });
+})();
+</script>
+</body>
+</html>

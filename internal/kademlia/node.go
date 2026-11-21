@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -48,6 +49,12 @@ type Node struct {
 
 	pendingMu sync.Mutex
 	pending   map[ID]chan Envelope // rpc id -> channel the waiting caller reads from
+
+	// advertiseLoopback: advertiseIP is a 127.x address, which only this
+	// machine can reach. warnedLoopbackAdvertise makes the warning about it
+	// (warnIfAdvertisingLoopback) fire once per node.
+	advertiseLoopback       bool
+	warnedLoopbackAdvertise atomic.Bool
 }
 
 // Config holds everything needed to create a Node. Zero values get
@@ -55,12 +62,18 @@ type Node struct {
 type Config struct {
 	ID   ID
 	Port int // UDP port; 0 lets the OS pick a free one
-	// AdvertiseIP is the address other nodes should use to reach this one,
-	// e.g. in provider records for file sharing. Default "127.0.0.1".
+	// AdvertiseIP is the address other nodes should use to reach this one.
+	// The DHT itself never needs it: peers record us under the source
+	// address of our packets (handleMessage). Only the layers on top
+	// announce it, e.g. provider records for file sharing (transfer). Default
+	// "127.0.0.1", which only this machine can reach; on several machines
+	// it must be this node's IPv4 address on the shared subnet.
 	//
-	// SIMPLIFICATION: it's configured by hand. There's no discovery of
-	// our own external address and no NAT traversal, so for a
-	// multi-device demo every node must be given its LAN IP here.
+	// SIMPLIFICATION: it's configured by the caller (cmd/node takes it
+	// from -advertise-ip or detects it from the route to the bootstrap
+	// node). There's no discovery of how other nodes see us and no NAT
+	// traversal (docs/09-multi-device.md). If it's loopback and a remote
+	// peer shows up, warnIfAdvertisingLoopback says so once.
 	AdvertiseIP string
 	K           int           // default DefaultK
 	Alpha       int           // default DefaultAlpha
@@ -140,7 +153,15 @@ func NewNode(cfg Config) (*Node, error) {
 		alpha:       cfg.Alpha,
 		rpcTimeout:  cfg.RPCTimeout,
 		pending:     make(map[ID]chan Envelope),
+
+		advertiseLoopback: isLoopbackIP(cfg.AdvertiseIP),
 	}, nil
+}
+
+// isLoopbackIP reports whether s is a 127.x (or ::1) address.
+func isLoopbackIP(s string) bool {
+	ip := net.ParseIP(s)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Addr returns the UDP address this node's socket is bound to.
@@ -211,6 +232,7 @@ func (n *Node) IsStale(id ID) bool {
 func (n *Node) handleMessage(from *net.UDPAddr, env Envelope) {
 	sender := ContactFromUDPAddr(env.SenderID, from)
 	n.logger.Info("rpc received", "type", string(env.Type), "from", sender.String(), "rpc_id", shortID(env.RPCID))
+	n.warnIfAdvertisingLoopback(sender)
 
 	n.touchContact(sender)
 
@@ -227,6 +249,24 @@ func (n *Node) handleMessage(from *net.UDPAddr, env Envelope) {
 		n.deliverResponse(env)
 	default:
 		n.logger.Warn("unknown message type", "type", string(env.Type), "from", sender.String())
+	}
+}
+
+// warnIfAdvertisingLoopback logs once when a peer on another machine
+// contacts us while we advertise a loopback IP. The DHT works regardless
+// (that peer records us under our packets' real source address), but the
+// layers on top announce AdvertiseIP: our provider records would send that
+// peer, and every other remote one, to its own machine, so it can't fetch
+// files from us. Checked here, on receipt, so it fires whatever the order
+// of events: even a node that shared a file before anyone joined, when
+// there was nobody remote to compare with. No I/O (log only).
+func (n *Node) warnIfAdvertisingLoopback(sender Contact) {
+	if !n.advertiseLoopback || isLoopbackIP(sender.IP) {
+		return
+	}
+	if n.warnedLoopbackAdvertise.CompareAndSwap(false, true) {
+		n.logger.Warn("advertise ip is loopback but a remote peer contacted us",
+			"advertise_ip", n.advertiseIP, "from", sender.String())
 	}
 }
 
@@ -455,6 +495,14 @@ func (n *Node) replyFindValue(from *net.UDPAddr, req Envelope) {
 // the requester. handleMessage has already added the requester to our
 // table, so it would otherwise often appear in its own answer -- a wasted
 // slot that, with a small k, hides a real node from it.
+//
+// SIMPLIFICATION: contacts are passed on exactly as we observed them. A
+// 127.0.0.1 contact (another node on this machine that reached us over
+// loopback) means "this machine" only to us; handed to a peer on another
+// machine, it points that peer at itself. This assumes one node per device
+// on a multi-device network, or every node on one machine -- never a mix
+// (docs/09-multi-device.md, F2), so no loopback contact ever meets a remote
+// requester.
 func (n *Node) closestExcluding(target, requester ID) []Contact {
 	out := n.rt.Closest(target, n.k+1)
 	for i, c := range out {
@@ -500,7 +548,9 @@ func (n *Node) Bootstrap(ctx context.Context, addr *net.UDPAddr) (*LookupResult,
 		return nil, fmt.Errorf("kademlia: bootstrap node %s did not answer PING: %w", addr, err)
 	}
 	if pong.SenderID == n.ID {
-		return nil, fmt.Errorf("kademlia: bootstrap address %s is this node itself", addr)
+		// The PONG carries our own ID: we can't tell ourselves from a twin.
+		return nil, fmt.Errorf("kademlia: the node at %s has the same ID as this node (%s): "+
+			"it is this node itself, or another node started with the same ID", addr, shortID(n.ID))
 	}
 	n.logger.Info("bootstrap node identified", "id", pong.SenderID.String(), "addr", addr.String())
 	self, err := n.Lookup(ctx, n.ID)

@@ -55,7 +55,8 @@ Code: package [`internal/transfer`](../internal/transfer). It uses
 4. **Announce**: `node.Store(key, providerRecord)`. That's a lookup for
    the key, then `STORE` to the k closest nodes ([06](06-store-and-find-value.md)).
    The record contains this node's ID, its advertise IP
-   (`--advertise-ip`), and its TCP port.
+   (`--advertise-ip`, or detected when the node joins through another
+   machine; [09](09-multi-device.md)), and its TCP port.
 
 No file data has moved yet. Sharing only puts a ~90-byte pointer into
 the DHT.
@@ -267,7 +268,7 @@ with pieces arriving rarest-first and in parallel.
 | One failure drops a provider for the rest of the download; no retries | Fine for now. Revisit with packet loss / Wi-Fi. |
 | Failed download deletes the partial file; no resume | No. |
 | Provider records never expire ([06](06-store-and-find-value.md)) | Costs one failed connection per dead provider; matters for recovery-time measurements. |
-| The advertise IP is set by hand (`--advertise-ip`, default `127.0.0.1`) | **Yes for multi-device**: each node must be started with its LAN IP. No NAT traversal. |
+| The advertise IP comes from `--advertise-ip` (default `127.0.0.1`), or from the route to the bootstrap node when a node joins through another machine | No, on one subnet: the first node is started with its IP, the others detect theirs, and bad values are refused at startup. No NAT traversal ([09](09-multi-device.md)). |
 | No upload limits, no tit-for-tat | Not in the goal list. |
 
 ## Where this lives in the code
