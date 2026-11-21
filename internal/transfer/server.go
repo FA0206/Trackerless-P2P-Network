@@ -37,7 +37,7 @@ type server struct {
 	// DEBUG ONLY (--debug-corrupt-pieces): flip one byte of every piece
 	// before sending it, with its genuine Merkle proof. It plays a
 	// dishonest provider, so a demo can show the downloader's proof check
-	// catching it (docs/09-merkle-trees.md). Off by default.
+	// catching it (docs/11-merkle-trees.md). Off by default.
 	debugCorrupt atomic.Bool
 
 	// DEBUG ONLY (--debug-upload-rate): caps this node's total upload, over

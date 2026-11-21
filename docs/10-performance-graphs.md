@@ -12,6 +12,15 @@ fan-in (swarming) and joining. How to run every experiment:
 one laptop; the real-laptop halves of graphs 3 and 4 are recorded by
 hand with [`eval/scripts/eval-field-tests.html`](../eval/scripts/eval-field-tests.html).
 
+**Which code these numbers come from.** They were measured on
+`eval/performance-graphs`, before the churn fixes (stale contacts,
+republishing, bucket refresh: [FIXES.md](FIXES.md)) and the Merkle
+proofs ([11](11-merkle-trees.md)) were merged into the same branch. They
+haven't been re-measured since. Two differences to expect if they are:
+graph 4's control bytes grow by the refresh and republish traffic, and
+every piece's reply header carries its proof (log₂ of the piece count,
+in hashes); graph 1's lookups skip dead contacts once they're stale.
+
 ## Two claims, three graphs each
 
 This project removes two things a BitTorrent-style system usually has:
@@ -197,8 +206,8 @@ leecher's own progress — well before it's done, but not as early as
 takes the 1 s serve delay, so read the bars as "1 s delay + what the
 network adds": the two series share that delay, and the gap between
 them is the network. This is resilience from the swarm (several
-holders), not from the DHT healing itself: this branch has no record
-republishing yet.
+holders), not from the DHT healing itself: the measured code had no
+record republishing yet (it's merged now; see the note at the top).
 
 ## Graph 4: DHT control traffic vs. file payload
 

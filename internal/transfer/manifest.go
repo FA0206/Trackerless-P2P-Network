@@ -27,7 +27,7 @@ const (
 
 // Manifest describes a shared file: its size, how it's cut into pieces,
 // and the root of the Merkle tree over its pieces (merkle.go,
-// docs/09-merkle-trees.md). Its hash is the file's content key
+// docs/11-merkle-trees.md). Its hash is the file's content key
 // (ContentKey), so whoever knows the key can check that a manifest is
 // genuine, and then check every piece, with its proof, against the root.
 //

@@ -120,7 +120,7 @@ path that already exists. Pieces are written at their offsets
 
 **Write, then publish:** a piece's bit is set in the library only after
 its `WriteAt` has completed. So the server only ever reads, and serves,
-pieces fully on disk. With the Merkle tree ([09](09-merkle-trees.md)),
+pieces fully on disk. With the Merkle tree ([11](11-merkle-trees.md)),
 the piece's proof is stored at that same moment, because a partial
 seeder can't build the tree itself: it serves each piece with the proof
 it received. On failure, the library entry is removed first (to stop

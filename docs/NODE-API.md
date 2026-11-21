@@ -326,7 +326,7 @@ full list is every `logger.Debug/Info/Warn/Error` call in
 | `providers found`, `tcp connected to provider` | INFO | `key`, `count` / `provider` | `download.go` | a download found providers / opened a connection |
 | `new providers found` | INFO | `key`, `added`, `known` | `download.go` | a running download rediscovered more providers (it re-asks the DHT every second) |
 | `piece requested` | INFO | `index`, `from`, `inflight` | `download.go` | a piece request went out; draw it as an arrow in flight |
-| `piece received` | INFO | `index`, `of`, `from`, `bytes`, `have`, `inflight`, `proof` | `download.go` | one piece arrived, passed its Merkle proof check, and is now served; `have` is the new count, `proof` how many hashes its proof had ([09](09-merkle-trees.md)) |
+| `piece received` | INFO | `index`, `of`, `from`, `bytes`, `have`, `inflight`, `proof` | `download.go` | one piece arrived, passed its Merkle proof check, and is now served; `have` is the new count, `proof` how many hashes its proof had ([11](11-merkle-trees.md)) |
 | `provider failed, trying the next one` | WARN | `provider`, `error` | `download.go` | a provider was dropped mid-download |
 | `download stalled: no live provider has the missing pieces; looking for more` | WARN | `have`, `of` | `download.go` | nobody known has the missing pieces; the download gives up after 15 s of this |
 | `announce failed; will retry` | WARN | `key`, `error` | `download.go` | a downloader couldn't announce itself as a provider yet |

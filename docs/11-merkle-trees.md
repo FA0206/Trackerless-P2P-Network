@@ -1,4 +1,4 @@
-# 09 — Merkle trees: one hash for the whole file, a short proof per piece
+# 11 — Merkle trees: one hash for the whole file, a short proof per piece
 
 > **Status:** all 4 steps are built:
 > 1. the tree, proofs and verification (`internal/transfer/merkle.go`);

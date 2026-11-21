@@ -593,7 +593,7 @@ peers that want it.
 ### How do we know a piece from a stranger isn't corrupted or fake?
 
 The content key is a hash of the file's manifest, which includes the
-root of a Merkle tree over every piece ([09](09-merkle-trees.md)). A
+root of a Merkle tree over every piece ([11](11-merkle-trees.md)). A
 downloader checks `hash(manifest) == key` (`DecodeManifest`). Then, for
 each piece, it combines the piece's hash with the short proof that came
 with it and checks that the result is the manifest's root
@@ -670,7 +670,7 @@ a good stretch goal if you want a concrete thing to show.
 history. The manifest carries the Merkle root instead of the list, and
 every piece travels with its proof. A partial seeder passes on the
 proof it received with each piece. How it works, with a worked example
-using real hashes, is in [09-merkle-trees.md](09-merkle-trees.md).
+using real hashes, is in [11-merkle-trees.md](11-merkle-trees.md).
 
 ## Compared with BitTorrent / libtorrent
 

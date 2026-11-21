@@ -222,7 +222,7 @@ WARN msg="DEBUG: serving a corrupted piece" index=8
 
 A downloader that asks it for a piece logs `provider failed, trying the
 next one … failed its Merkle proof check` and finishes from someone else.
-`scripts/demo-merkle.sh` does exactly this ([09](09-merkle-trees.md)).
+`scripts/demo-merkle.sh` does exactly this ([11](11-merkle-trees.md)).
 
 ### Slowing transfers down on purpose: `--debug-serve-delay`
 

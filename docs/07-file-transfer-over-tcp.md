@@ -35,7 +35,7 @@ Code: package [`internal/transfer`](../internal/transfer). It uses
 | Term | Meaning | Code |
 |---|---|---|
 | **piece** | A fixed-size chunk of a file (64 KiB; the last piece holds the remainder). The unit of transfer and verification. | `DefaultPieceSize` |
-| **manifest** | The file's description: name, size, piece size, and the root of the Merkle tree over its pieces ([09](09-merkle-trees.md)). About 150 bytes, whatever the file size. | `Manifest` in `manifest.go` |
+| **manifest** | The file's description: name, size, piece size, and the root of the Merkle tree over its pieces ([11](11-merkle-trees.md)). About 150 bytes, whatever the file size. | `Manifest` in `manifest.go` |
 | **content key** | The file's DHT key = SHA-256(manifest bytes), truncated to 160 bits. What you hand to someone so they can download. | `ContentKey` |
 | **provider record** | The DHT value under a content key: `{"node_id", "ip", "tcp_port"}`. One per peer holding the file. ~90 bytes. | `ProviderRecord` in `provider.go` |
 | **provider / seeder** | A peer that has the whole file and serves it over TCP. | `Peer`, `server.go` |
@@ -47,7 +47,7 @@ Code: package [`internal/transfer`](../internal/transfer). It uses
 
 1. `BuildManifest` reads the file in 64 KiB pieces, hashes each one as
    a leaf of a Merkle tree, and records the tree's root in the manifest
-   ([09](09-merkle-trees.md)). The library keeps the tree: it makes the
+   ([11](11-merkle-trees.md)). The library keeps the tree: it makes the
    proof sent with each piece.
 2. `EncodeManifest` → bytes; `ContentKey(bytes)` → the 160-bit key.
 3. Add the file to the peer's **library**: files it can serve,
@@ -104,7 +104,7 @@ hash, and the hash is the key you asked for.
 ### 4. Fetch every piece, from several providers at once
 
 Each piece arrives with its Merkle proof and is checked against the
-manifest's root (`Manifest.VerifyPiece`, [09](09-merkle-trees.md)), then
+manifest's root (`Manifest.VerifyPiece`, [11](11-merkle-trees.md)), then
 written at its offset in the output file.
 *Which* piece is fetched next, from whom, and how many at once is
 [08](08-swarming.md)'s subject: rarest-first, one request per provider,
@@ -162,7 +162,7 @@ Trust flows from the key alone. Providers are untrusted, and a provider
 that serves a corrupted piece is detected and dropped
 (`TestCorruptProviderIsSkipped`, where the bad provider even sends the
 genuine proofs; only its piece bytes are wrong). This is BitTorrent v2's
-design: one root, a proof per piece ([09](09-merkle-trees.md)). The
+design: one root, a proof per piece ([11](11-merkle-trees.md)). The
 first version used BitTorrent v1's flat list of every piece's hash,
 which grows with the file.
 
@@ -276,7 +276,7 @@ with pieces arriving rarest-first and in parallel.
 | Concept | Function / type | File |
 |---|---|---|
 | Pieces, Merkle root, content key | `BuildManifest`, `VerifyPiece`, `ContentKey`, `DecodeManifest` | `manifest.go` |
-| The Merkle tree, proofs | `MerkleTree`, `LeafHash`, `Proof`, `VerifyMerkleProof` | `merkle.go` ([09](09-merkle-trees.md)) |
+| The Merkle tree, proofs | `MerkleTree`, `LeafHash`, `Proof`, `VerifyMerkleProof` | `merkle.go` ([11](11-merkle-trees.md)) |
 | DHT value format | `ProviderRecord`, `decodeProviderRecord` | `provider.go` |
 | TCP message shapes | `request`, `responseHeader`, op names, size limits | `protocol.go` |
 | Files this peer can serve (complete or partial), with each piece's proof | `Library`, `readPiece`, `markHave` | `library.go` |
@@ -295,7 +295,7 @@ covers a download with one provider and then two, a download after the
 seeder shuts down, a provider serving corrupted pieces with genuine
 proofs, a downloader passing on exactly the seeder's proofs, and an
 unknown key. The Merkle tree has its own tests (`merkle_test.go`,
-[09](09-merkle-trees.md)).
+[11](11-merkle-trees.md)).
 
 ## What's next
 

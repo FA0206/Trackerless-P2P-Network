@@ -35,12 +35,12 @@ evaluation includes performance graphs:
 | Share a file / download it from the CLI; transfer demo | ✅ Done | `share` / `fetch` console commands, `scripts/demo-transfer.sh` |
 | Download from several peers **in parallel**; survive the seeder being killed | ✅ Done on branch `feature/parallel-partial-seeding`: rarest-first, one request per provider, up to `--max-inflight` in total, failover | [docs/08](docs/08-swarming.md), `scripts/demo-parallel.sh` |
 | Pieces spread so **no single node has the whole file** | ✅ Done on branch `feature/parallel-partial-seeding`: peers serve and announce pieces before they're complete; the seeder can die once the leechers *together* hold every piece | [docs/08](docs/08-swarming.md), `scripts/demo-seeder-death.sh` (`main` has the failing "before" version) |
-| Runs across multiple devices / Wi-Fi | ⬜ Not started — `--advertise-ip` exists; untested off localhost | — |
+| Runs across multiple devices / Wi-Fi | ✅ Done for one subnet (home router, hotspot, switch) on branch `feature/multi-device`: the advertise IP is detected from the route to the bootstrap node, bad values are refused at startup, and every join scenario has a test. Tested in a network-namespace lab (separate network stacks on one laptop); the real-laptop runs are step-by-step checklists. No NAT traversal | [docs/09](docs/09-multi-device.md), `scripts/netns/`, `scripts/multi-device/` |
 | Sending messages (as opposed to files) | ⬜ Not started — `put`/`get` store short text, but there's no messaging feature | — |
 | Per-node HTTP API (for the visual demo) | ✅ Done: `--api` serves node info, routing table, stored values, files (with download progress) as JSON, plus a live event stream (SSE) of every RPC, stored value and piece; `--api-control` adds POST lookup/ping/put/get/share/fetch | `internal/nodeapi`, [docs/NODE-API.md](docs/NODE-API.md) |
 | Visual demo | ⬜ Not started | — |
 | Performance graphs (the four above) | ✅ Done on branch `eval/performance-graphs`, plus two more for this branch's own features (provider fan-in, join time). Localhost results recorded; the real-laptop halves of graphs 3 and 4 are a checklist to run by hand | `eval/`, [docs/10](docs/10-performance-graphs.md) |
-| Merkle trees | ✅ Done on branch `feature/merkle` (4 steps, including a diagram of a real file's tree) (`scripts/demo-merkle.sh` catches a dishonest provider and prints a manifest-size table): the tree, proofs and verification (RFC 6962, tested against the standard test vectors), and transfers use them. The manifest carries one root (138 bytes for a 1 MiB file, against 1,146 before), every piece travels with its proof, and partial seeders pass proofs on | [docs/09](docs/09-merkle-trees.md), `internal/transfer/merkle.go` |
+| Merkle trees | ✅ Done on branch `feature/merkle` (4 steps, including a diagram of a real file's tree) (`scripts/demo-merkle.sh` catches a dishonest provider and prints a manifest-size table): the tree, proofs and verification (RFC 6962, tested against the standard test vectors), and transfers use them. The manifest carries one root (138 bytes for a 1 MiB file, against 1,146 before), every piece travels with its proof, and partial seeders pass proofs on | [docs/11](docs/11-merkle-trees.md), `internal/transfer/merkle.go` |
 
 In short: nodes find each other and join, and any node can store and
 find small values. A file shared by one node is downloaded by others
@@ -230,7 +230,7 @@ piece with one byte flipped and the genuine Merkle proof. The downloader
 catches it with the proof check, takes 0 pieces from it, and finishes
 from the honest seeder with an identical file. Then a table shows the
 manifest staying ~135 bytes from 1 to 2,048 pieces, where the old flat
-hash list would have reached 137 KB ([09](docs/09-merkle-trees.md)):
+hash list would have reached 137 KB ([11](docs/11-merkle-trees.md)):
 
 ```
     [node3] level=WARN msg="provider failed, trying the next one" provider=127.0.0.1:9602 error="transfer: piece 8 failed its Merkle proof check"
@@ -509,7 +509,7 @@ Here is whether each one blocks the end goal:
 | `Closest()` sorts every known contact | No; at most a few thousand contacts. | Keep. |
 | Length-prefixed framing on UDP ([03](docs/03-message-framing.md)) | No — it gets reused for TCP. | Keep. |
 | JSON encoding | No, but it inflates the "control bytes" measurement. | Keep; say so in the evaluation. |
-| **Advertise IP set by hand** (`--advertise-ip`, default `127.0.0.1`; demos bootstrap via `127.0.0.1`) | **Yes, for multi-device.** Each node must be started with its LAN IP, and bootstrap via LAN addresses. No NAT traversal. | Before the multi-device demo: test on a LAN, maybe auto-detect the LAN IP. |
+| Advertise IP: the first node's is set by hand (`--advertise-ip`); the others' are detected from one route, the one to the bootstrap node ([09](docs/09-multi-device.md)) | No, on one subnet. Behind NAT or with several interfaces the detected IP can be wrong, and there's no NAT traversal. | Across the internet: an overlay VPN (no code change), or an "observed address" reply. |
 | **Synchronous lookup rounds** ([05](docs/05-iterative-parallel-lookup.md)) | **Yes, for the latency and recovery graphs.** A dead node stalls a round by a full RPC timeout, and the seeder-kill scenario is exactly that. | Before measuring latency or recovery time. |
 | Stale contacts: no replacement cache ([02](docs/02-routing-table-and-kbuckets.md#stale-contacts-a-node-that-stops-answering)) | No. A stale contact is replaced only when a new contact for its bucket messages us; until its back-off runs out, lookups skip it. | Keep; refresh refills buckets. |
 | Bucket refresh: one timer per node, not per bucket ([02](docs/02-routing-table-and-kbuckets.md#bucket-refresh-keeping-quiet-buckets-alive)) | No. One pass every `--refresh-interval` refreshes every bucket idle that long, so a bucket can wait up to two intervals. | Keep. Count refresh traffic in the control-bytes graph. |

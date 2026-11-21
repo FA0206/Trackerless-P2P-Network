@@ -20,7 +20,7 @@ type Library struct {
 	files map[kademlia.ID]*libraryEntry
 }
 
-// Every piece is served with its Merkle proof (docs/09-merkle-trees.md).
+// Every piece is served with its Merkle proof (docs/11-merkle-trees.md).
 // A file this peer shared has the whole tree and can make any proof. A
 // file it's downloading has no tree: it can't build one without every
 // piece, so it keeps the proof that came with each piece and passes that

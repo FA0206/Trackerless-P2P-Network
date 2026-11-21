@@ -455,7 +455,7 @@ peer.go          announce → kademlia Node.Store(key, {"node_id":"10f71961…",
 [node1] msg="share complete" key=5951f7ca… name=original.bin size=1048576 pieces=16
 ```
 
-With the Merkle tree ([09](09-merkle-trees.md)), `share complete` also
+With the Merkle tree ([11](11-merkle-trees.md)), `share complete` also
 reports the root and the manifest's size. From a later run of the same
 script (another random file, so another key):
 
