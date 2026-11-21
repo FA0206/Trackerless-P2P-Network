@@ -44,7 +44,7 @@ func TestWarnIfAdvertisingLoopback(t *testing.T) {
 
 			for i, from := range tt.senders {
 				peer := HashID([]byte{byte(i)})
-				n.handleMessage(from, Envelope{Type: MsgPong, RPCID: RandomID(), SenderID: peer})
+				n.handleMessage(from, Envelope{Type: MsgPong, RPCID: RandomID(), SenderID: peer}, 0)
 			}
 			if got := strings.Count(logs.String(), warning); got != tt.wantWarns {
 				t.Errorf("warnings = %d, want %d; logs:\n%s", got, tt.wantWarns, logs.String())

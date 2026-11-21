@@ -73,6 +73,13 @@ func (p *Peer) SetDebugCorruptPieces(on bool) {
 	p.srv.debugCorrupt.Store(on)
 }
 
+// SetDebugUploadRate is a DEBUG ONLY knob (CLI: --debug-upload-rate): the
+// file server sends at most bytesPerSec bytes per second in total, across
+// all connections, to model a real uplink on localhost. 0 turns it off.
+func (p *Peer) SetDebugUploadRate(bytesPerSec int64) {
+	p.srv.uplink.setRate(bytesPerSec)
+}
+
 // TCPPort is the port the file server listens on.
 func (p *Peer) TCPPort() int {
 	return p.srv.port()

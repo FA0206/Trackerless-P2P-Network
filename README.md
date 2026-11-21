@@ -39,7 +39,7 @@ evaluation includes performance graphs:
 | Sending messages (as opposed to files) | ⬜ Not started — `put`/`get` store short text, but there's no messaging feature | — |
 | Per-node HTTP API (for the visual demo) | ✅ Done: `--api` serves node info, routing table, stored values, files (with download progress) as JSON, plus a live event stream (SSE) of every RPC, stored value and piece; `--api-control` adds POST lookup/ping/put/get/share/fetch | `internal/nodeapi`, [docs/NODE-API.md](docs/NODE-API.md) |
 | Visual demo | ⬜ Not started | — |
-| Performance graphs (the four above) | ⬜ Not started | — |
+| Performance graphs (the four above) | ✅ Done on branch `eval/performance-graphs`, plus two more for this branch's own features (provider fan-in, join time). Localhost results recorded; the real-laptop halves of graphs 3 and 4 are a checklist to run by hand | `eval/`, [docs/10](docs/10-performance-graphs.md) |
 | Merkle trees | ✅ Done on branch `feature/merkle` (4 steps, including a diagram of a real file's tree) (`scripts/demo-merkle.sh` catches a dishonest provider and prints a manifest-size table): the tree, proofs and verification (RFC 6962, tested against the standard test vectors), and transfers use them. The manifest carries one root (138 bytes for a 1 MiB file, against 1,146 before), every piece travels with its proof, and partial seeders pass proofs on | [docs/09](docs/09-merkle-trees.md), `internal/transfer/merkle.go` |
 
 In short: nodes find each other and join, and any node can store and
@@ -62,7 +62,9 @@ needed, and which function implements it.
 6. [06 — STORE and FIND_VALUE](docs/06-store-and-find-value.md)
 7. [07 — File transfer over TCP](docs/07-file-transfer-over-tcp.md)
 8. [08 — Swarming: parallel downloads and partial seeding](docs/08-swarming.md)
-9. [09 — Merkle trees: one hash for the whole file, a short proof per piece](docs/09-merkle-trees.md)
+9. [09 — Several machines on one subnet](docs/09-multi-device.md)
+10. [10 — Performance graphs: what each one asks, and what it showed](docs/10-performance-graphs.md)
+11. [11 — Merkle trees: one hash for the whole file, a short proof per piece](docs/11-merkle-trees.md)
 
 **Reference:**
 
@@ -385,7 +387,9 @@ Then type console commands into a node's terminal:
 | `--max-inflight <n>` | most piece requests a download keeps in flight at once (default 4; always at most 1 per provider) |
 | `--api <host:port>` | serve this node's state as JSON over HTTP, e.g. `127.0.0.1:8000`, plus a live event stream; off by default ([NODE-API.md](docs/NODE-API.md)) |
 | `--api-control` | with `--api`: also accept POST commands (lookup, ping, put, get, share, fetch). Any web page in your browser could use them too: demo use only |
-| `--debug-corrupt-pieces` | **DEBUG ONLY**, off by default: flip one byte of every piece this node serves (sending the genuine Merkle proof), to show downloaders catching a dishonest provider (`scripts/demo-merkle.sh`) | **DEBUG ONLY**, off by default: wait this long before answering each piece request, so a demo can kill a node mid-transfer |
+| `--debug-corrupt-pieces` | **DEBUG ONLY**, off by default: flip one byte of every piece this node serves (sending the genuine Merkle proof), to show downloaders catching a dishonest provider (`scripts/demo-merkle.sh`) |
+| `--debug-serve-delay <dur>` | **DEBUG ONLY**, off by default: wait this long before answering each piece request, so a demo can kill a node mid-transfer |
+| `--debug-upload-rate <bytes/s>` | **DEBUG ONLY**, off by default: cap this node's total file upload, across all connections, to model a real uplink on localhost ([10](docs/10-performance-graphs.md), graph 2) |
 | `--id-seed <s>` | node ID = SHA-1(s); random if omitted |
 | `--bootstrap <host:port>` | join through this node |
 | `--lookup <hex>` `--lookup-after <dur>` | after joining, run one lookup and log it (used by the demo) |
@@ -464,7 +468,7 @@ internal/transfer/   file sharing on top of the DHT
   provider.go        provider record = the DHT value {node_id, ip, tcp_port}
   protocol.go        TCP request/response shapes
   library.go         files this peer can serve
-  server.go          TCP server
+  server.go          TCP server (+ the DEBUG ONLY upload cap)
   client.go          TCP client side
   peer.go            Config, Share, announce
   download.go        Download: event loop + workers (parallel, rarest-first, partial seeding)
@@ -484,7 +488,13 @@ scripts/demo-merkle.sh     a dishonest provider caught by the Merkle proof check
 scripts/lib/nodes.sh       shared helper: start N nodes with console FIFOs (bash 3.2)
 scripts/lib/edge.sh        helpers for the edge cases: brute-force closest nodes, wait for the Nth log line
 scripts/edge/              edge-case scripts, one per case, and run-all.sh (docs/EDGE-CASES.md)
-docs/                concept docs 01-09 + reference docs
+eval/                the performance graphs (eval/README.md, docs/10-performance-graphs.md)
+  scripts/*.sh       one experiment per graph, writing eval/results/*.csv; lib.sh = shared helpers
+  scripts/eval-field-tests.html  checklist for the real-laptop runs of graphs 3 and 4
+  fileserver/        graph 2's centralized baseline (plain net/http, same upload cap)
+  plot_graphs.py     CSVs to PNGs (matplotlib)
+  results/           the CSVs and the six PNGs
+docs/                concept docs 01-11 + reference docs
 .vscode/launch.json  debug configurations
 ```
 
@@ -548,8 +558,11 @@ roughly this order:
    before measuring recovery time. The swarm already hides them during
    downloads (they run in workers), but they still cost seconds in
    discovery after a death.
-2. **instrumentation** (bytes and timings) and the evaluation harness;
-3. **addresses on a real LAN**, for the multi-device demo.
+2. ~~**instrumentation** (bytes and timings) and the evaluation harness~~:
+   done on `eval/performance-graphs`, ahead of item 1, with item 1's gaps
+   stated as caveats ([docs/10](docs/10-performance-graphs.md));
+3. ~~**addresses on a real LAN**, for the multi-device demo~~: done on
+   `feature/multi-device` ([docs/09](docs/09-multi-device.md)).
 
 Each is a separate, testable step.
 

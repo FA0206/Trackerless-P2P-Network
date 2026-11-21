@@ -257,6 +257,25 @@ Don't use the flag for timing measurements: it's an artificial delay.
 requests at once. Set it to 1 to watch rarest-first one piece at a time
 in the logs (`piece requested` / `piece received`).
 
+### Giving a node a real uplink: `--debug-upload-rate`
+
+Loopback has no bandwidth limit: a localhost "server" can feed any
+number of downloaders at once, which hides the bottleneck P2P exists to
+remove. `--debug-upload-rate <bytes/s>` is a **DEBUG ONLY** flag, **off
+(0) by default**. It caps this node's total file upload, across all its
+connections, at that rate: every response reserves its share of one
+shared timeline before it's written (`uplink` in
+`internal/transfer/server.go`; set through `Peer.SetDebugUploadRate`).
+The node logs a `WARN` at startup:
+
+```
+WARN msg="DEBUG: capping this node's upload" bytes_per_sec=10000000
+```
+
+Unlike `--debug-serve-delay`, it is meant for measurements: graph 2 of
+[10-performance-graphs.md](10-performance-graphs.md) gives every node and
+the centralized baseline the same cap. Downloads stay uncapped.
+
 ### Scripts with many nodes: `scripts/lib/nodes.sh`
 
 The newer demos source a small helper. `start_node i port boot [flags…]`

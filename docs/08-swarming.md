@@ -171,9 +171,9 @@ connections and `Peer.Close` closes them all.
 
 | Simplification | Effect | Blocks the end goal? |
 |---|---|---|
-| One outstanding request per provider (no pipelining) | A single provider's throughput is limited by one round trip per piece | No; matters for throughput graphs |
+| One outstanding request per provider (no pipelining) | A single provider's throughput is limited by one round trip per piece | No; it's why more providers mean a faster download ([10](10-performance-graphs.md), graph 5) |
 | Bitfields are **polled** (every 500 ms when idle), not pushed (BitTorrent sends `have` messages) | Up to ~0.5 s of staleness; some duplicate requests to the seeder | No |
-| Providers are rediscovered by polling `FIND_VALUE` every 1 s | ~1 DHT lookup per second per download (more control traffic) | No; shows up in the control-bytes graph |
+| Providers are rediscovered by polling `FIND_VALUE` every 1 s | ~1 DHT lookup per second per download (more control traffic) | No; shows up in the control-bytes graph for downloads longer than a second ([10](10-performance-graphs.md), graph 4) |
 | Fixed timers: 500 ms bitfield age, 1 s rediscovery, 15 s stall timeout, 100 ms loop tick | Not tuned for real networks | Revisit for Wi-Fi |
 | Rarest-first uses only this downloader's (possibly stale) view | Not global rarity | No |
 | A provider that fails once stays dead for the whole download | A briefly unreachable peer is never retried | Revisit for Wi-Fi |
@@ -273,9 +273,9 @@ the three known gaps had to be fixed. What the real runs did turn up:
 
 ## What's next
 
-Per-piece availability is done, so the remaining items before the
-end-goal measurements are the known gaps: synchronous lookup rounds and
-record expiry. Republishing, stale contacts and bucket refresh are done
-on `feature/edge-case-fixes` ([FIXES.md](FIXES.md)). After those come
-instrumentation and the evaluation harness. See the README's
-simplifications table.
+Per-piece availability is done, and so are republishing, stale contacts
+and bucket refresh ([FIXES.md](FIXES.md)). The instrumentation and
+evaluation harness exist too ([10](10-performance-graphs.md)), but the
+graphs were measured before those fixes, so they state the gaps as
+caveats. Still open: synchronous lookup rounds and record expiry. See
+the README's simplifications table.
